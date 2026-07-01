@@ -3,6 +3,7 @@ import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from api import get_market_leaders, get_fear_greed, get_gas_price
+from handlers.util import escape_md, safe_reply
 
 # 看板显示市值前 N（过滤掉稳定币后）
 DASH_TOP_N = 15
@@ -46,7 +47,8 @@ async def build_dashboard():
                 continue
             change = c.get("change") or 0
             emoji = "📈" if change >= 0 else "📉"
-            lines.append(f"{emoji} {c['symbol']}: {_fmt_price(price)} ({change:+.2f}%)")
+            # 币名转义，防止个别符号含 _ * 等破坏 Markdown 渲染
+            lines.append(f"{emoji} {escape_md(c['symbol'])}: {_fmt_price(price)} ({change:+.2f}%)")
             shown += 1
             if shown >= DASH_TOP_N:
                 break
@@ -78,7 +80,7 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔄 刷新", callback_data="dash_refresh"),
              InlineKeyboardButton("📋 菜单", callback_data="menu_main")],
         ])
-        await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+        await safe_reply(update.message, text, reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"看板出错: {e}")
         await update.message.reply_text("生成失败，请稍后再试")

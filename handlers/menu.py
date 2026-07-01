@@ -6,7 +6,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from api import get_price, get_fear_greed, get_gas_price, get_market_data, get_top_movers
 from config import COIN_IDS
-from handlers.util import sanitize_link_text
+from handlers.util import sanitize_link_text, safe_edit
 
 POPULAR = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "LINK", "AVAX", "DOT"]
 
@@ -152,7 +152,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 [InlineKeyboardButton("🔄 刷新", callback_data="dash_refresh"),
                  InlineKeyboardButton("📋 菜单", callback_data="menu_main")],
             ])
-            await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+            await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"看板刷新出错: {e}")
             await query.edit_message_text("刷新失败", reply_markup=back_kb())

@@ -126,6 +126,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
             reply_markup=main_menu_kb(), parse_mode="Markdown")
 
+    # ---- 部署审批：确认/取消（仅管理员）----
+    elif d.startswith("jdok:") or d.startswith("jdno:"):
+        from config import ADMIN_CHAT_ID
+        tag = d.split(":", 1)[1]
+        uid = query.from_user.id
+        if not ADMIN_CHAT_ID or str(uid) != str(ADMIN_CHAT_ID):
+            await query.answer("只有管理员能操作部署", show_alert=True)
+            return
+        if d.startswith("jdno:"):
+            await query.answer("已取消")
+            await safe_edit(query, f"❌ 已取消部署 {tag}")
+            return
+        # 确认部署
+        await query.answer("已确认，正在触发部署…")
+        from handlers.deploy import trigger_deploy
+        ok, msg = await trigger_deploy(tag)
+        if ok:
+            await safe_edit(query, f"⏳ 已确认部署 *{tag}*，Jenkins 执行中…\n(部署结果看 Jenkins/服务器日志)", parse_mode="Markdown")
+        else:
+            await safe_edit(query, f"❌ 触发部署失败：{msg}")
+
     # ---- 查其他币（按来源决定后续动作）----
     elif d.startswith("askcoin:"):
         action = d.split(":", 1)[1]

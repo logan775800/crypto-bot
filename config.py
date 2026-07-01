@@ -24,5 +24,10 @@ AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "")
 AI_MODEL = os.environ.get("AI_MODEL", "gpt-4o-mini")
 
-# 管理员chat_id（运维告警接收）
+# 管理员chat_id（运维告警接收 + 部署审批人）
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
+
+# Jenkins 部署审批：点"确认"按钮后由机器人远程触发 Jenkins 部署任务
+JENKINS_URL = os.environ.get("JENKINS_URL", "")            # 如 https://logan-jenkins.22889.club
+JENKINS_JOB = os.environ.get("JENKINS_JOB", "update-crypto-bot")
+JENKINS_DEPLOY_TOKEN = os.environ.get("JENKINS_DEPLOY_TOKEN", "")  # Jenkins 任务"触发远程构建"的令牌

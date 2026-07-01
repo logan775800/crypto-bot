@@ -1,0 +1,40 @@
+// 部署审批通知任务：由 GitHub webhook 触发，向 Telegram 群发一条带"确认/取消"按钮的消息。
+// 点"确认"后由机器人远程触发真正的部署任务(update-crypto-bot)。
+//
+// 依赖 Jenkins 凭据(Secret text)：
+//   telegram-bot-token    机器人 BOT_TOKEN
+//   telegram-approve-chat 审批群的 chat_id
+// 任务配置：Pipeline from SCM，Script Path = Jenkinsfile.notify，勾选 "GitHub hook trigger for GITScm polling"
+pipeline {
+    agent { label 'built-in' }
+    options { timestamps(); disableConcurrentBuilds() }
+    triggers { githubPush() }
+
+    stages {
+        stage('发送审批通知') {
+            steps {
+                withCredentials([
+                    string(credentialsId: 'telegram-bot-token', variable: 'BOT'),
+                    string(credentialsId: 'telegram-approve-chat', variable: 'CHAT')
+                ]) {
+                    sh '''
+set -e
+git fetch --tags --force >/dev/null 2>&1 || true
+tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)
+if [ -z "$tag" ]; then echo "无版本 tag，跳过通知"; exit 0; fi
+echo "最新版本: $tag"
+
+# 用单引号拼 JSON，避免 Groovy/shell 的引号转义问题
+rm='{"inline_keyboard":[[{"text":"✅ 确认部署 '"$tag"'","callback_data":"jdok:'"$tag"'"},{"text":"❌ 取消","callback_data":"jdno:'"$tag"'"}]]}'
+
+curl -s "https://api.telegram.org/bot$BOT/sendMessage" \
+  --data-urlencode "chat_id=$CHAT" \
+  --data-urlencode "text=🆕 检测到新版本 $tag，是否部署到生产？（仅管理员可确认）" \
+  --data-urlencode "reply_markup=$rm" >/dev/null
+echo "已发送审批通知到群"
+'''
+                }
+            }
+        }
+    }
+}

@@ -33,3 +33,6 @@ JENKINS_JOB = os.environ.get("JENKINS_JOB", "update-crypto-bot")
 JENKINS_DEPLOY_TOKEN = os.environ.get("JENKINS_DEPLOY_TOKEN", "")  # 任务"触发远程构建"令牌(备选)
 JENKINS_USER = os.environ.get("JENKINS_USER", "")                  # Jenkins 用户名(推荐用API Token方式)
 JENKINS_API_TOKEN = os.environ.get("JENKINS_API_TOKEN", "")        # 该用户的 API Token
+
+# 巨鲸地址追踪（Etherscan V2 API，免费key：etherscan.io/apis）
+ETHERSCAN_API_KEY = os.environ.get("ETHERSCAN_API_KEY", "")

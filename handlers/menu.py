@@ -731,7 +731,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🛠 *实用工具*\n点按钮直接出结果：\n\n"
             "💡 订阅类(用命令)：\n"
             "`/gasalert 15` ETH Gas 跌破提醒\n"
-            "`/arbwatch 0.8` 跨所套利净价差监控",
+            "`/arbwatch 0.8` 跨所套利净价差监控\n"
+            "`/track 0x地址` 追踪巨鲸地址异动",
             reply_markup=kb, parse_mode="Markdown")
 
     elif d == "do_fear":

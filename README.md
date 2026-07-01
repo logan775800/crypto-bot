@@ -10,6 +10,9 @@
 - **分析**：`/analyze` 技术指标（RSI/均线/MACD/布林带/支撑阻力）、`/ai` AI 解读
 - **交易所专区**：🔥 OKX / 🅱️ 币安（新币榜、涨幅榜、资金费率、多空比、爆仓、合约行情）
 - **价格预警**：菜单里点选币种→方向→发价格，或 `/alert`；支持查看/取消
+- **Gas 提醒**：`/gas` 多链 gas；`/gasalert 15` 跌破阈值主动通知
+- **套利监控**：`/arb` 多所比价(扣手续费净价差)；`/arbwatch 0.8` 跨所净价差告警
+- **巨鲸地址追踪**：`/track 0x地址` 关注地址，ETH/代币转账即时通知（需 Etherscan key）
 - **持仓**（私聊）：`/buy` `/sell` `/portfolio` `/ranking`
 - **订阅推送**：市场异动告警、新闻、代币解锁、每日总结/播报
 - **实用工具**：恐惧贪婪指数、Gas、巨鲸监控、多所比价
@@ -70,6 +73,7 @@ docker compose logs -f    # 看到 "Bot 启动中..." 即成功
 | `JENKINS_URL` / `JENKINS_JOB` | Jenkins 地址与部署任务名 |
 | `JENKINS_USER` / `JENKINS_API_TOKEN` | 触发部署用的 Jenkins 用户 API Token（推荐） |
 | `JENKINS_DEPLOY_TOKEN` | 备选：任务「触发远程构建」令牌 |
+| `ETHERSCAN_API_KEY` | 巨鲸地址追踪用（免费申请 etherscan.io/apis） |
 
 > `.env` 已被 `.gitignore` 忽略，切勿提交。群里发 `/id` 可查当前会话的 chat_id。
 

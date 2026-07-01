@@ -1,0 +1,186 @@
+"""巨鲸地址追踪：关注指定地址，它一有链上动作(ETH 转账 / ERC20 代币转账)就通知。
+数据源：Etherscan V2 API（免费 key）。目前追踪以太坊主网(chainid=1)。
+"""
+import re
+import logging
+import asyncio
+import httpx
+from telegram import Update
+from telegram.ext import ContextTypes
+from config import ETHERSCAN_API_KEY
+from storage import data, save_data
+
+ES_BASE = "https://api.etherscan.io/v2/api"
+CHAIN_ID = 1
+MAX_ADDR_PER_CHAT = 10        # 每个会话最多关注地址数
+MAX_ALERTS_PER_ADDR = 5       # 每次轮询每个地址最多推几条，防刷屏
+ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
+
+
+def _short(a):
+    return a[:6] + "..." + a[-4:] if a and a.startswith("0x") and len(a) > 12 else (a or "?")
+
+
+async def _es_get(client, params):
+    p = {"chainid": CHAIN_ID, "apikey": ETHERSCAN_API_KEY, **params}
+    r = await client.get(ES_BASE, params=p)
+    r.raise_for_status()
+    return r.json()
+
+
+async def _current_block(client):
+    d = await _es_get(client, {"module": "proxy", "action": "eth_blockNumber"})
+    return int(d["result"], 16)
+
+
+async def _new_events(client, addr, last_block):
+    """取 addr 在 last_block 之后的新事件(ETH+代币)，返回 (events, max_block)。"""
+    events = []
+    max_block = last_block
+    start = last_block + 1
+    for action in ("txlist", "tokentx"):
+        try:
+            d = await _es_get(client, {
+                "module": "account", "action": action, "address": addr,
+                "startblock": start, "endblock": 99999999,
+                "page": 1, "offset": 30, "sort": "asc",
+            })
+        except Exception as e:
+            logging.error(f"etherscan {action} 出错 {addr}: {e}")
+            continue
+        if str(d.get("status")) != "1" or not isinstance(d.get("result"), list):
+            continue
+        for tx in d["result"]:
+            try:
+                blk = int(tx["blockNumber"])
+            except (KeyError, ValueError):
+                continue
+            if blk <= last_block:
+                continue
+            max_block = max(max_block, blk)
+            frm = (tx.get("from") or "").lower()
+            to = (tx.get("to") or "").lower()
+            direction = "转出" if frm == addr else ("转入" if to == addr else "相关")
+            other = to if direction == "转出" else frm
+            if action == "txlist":
+                try:
+                    amt = int(tx["value"]) / 1e18
+                except (KeyError, ValueError):
+                    amt = 0
+                if amt <= 0:
+                    continue   # 跳过 0-ETH 的合约调用
+                events.append({"blk": blk, "hash": tx.get("hash", ""),
+                               "sym": "ETH", "amt": amt, "dir": direction, "other": other})
+            else:  # tokentx
+                try:
+                    dec = int(tx.get("tokenDecimal") or 18)
+                    amt = int(tx["value"]) / (10 ** dec)
+                except (KeyError, ValueError):
+                    amt = 0
+                events.append({"blk": blk, "hash": tx.get("hash", ""),
+                               "sym": tx.get("tokenSymbol") or "TOKEN", "amt": amt,
+                               "dir": direction, "other": other})
+        await asyncio.sleep(0.25)  # 尊重免费额度(5/s)
+    events.sort(key=lambda x: x["blk"])
+    return events, max_block
+
+
+# ---------- 命令 ----------
+async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not ETHERSCAN_API_KEY:
+        await update.message.reply_text("未配置 Etherscan API key，无法追踪地址（管理员需在 .env 设 ETHERSCAN_API_KEY）")
+        return
+    if not context.args:
+        await update.message.reply_text("用法：/track 0x地址 [备注]\n(该地址在以太坊主网有转账/代币转账时通知你)")
+        return
+    addr = context.args[0].lower()
+    if not ADDR_RE.match(addr):
+        await update.message.reply_text("地址格式不对，应为 0x 开头的 42 位地址")
+        return
+    label = " ".join(context.args[1:])[:30] if len(context.args) > 1 else _short(addr)
+    chat_id = str(update.effective_chat.id)
+    data.setdefault("whale_addr", {}).setdefault(chat_id, {})
+    if addr not in data["whale_addr"][chat_id] and len(data["whale_addr"][chat_id]) >= MAX_ADDR_PER_CHAT:
+        await update.message.reply_text(f"最多关注 {MAX_ADDR_PER_CHAT} 个地址，先 /untrack 删一个")
+        return
+    await update.message.reply_text("正在登记地址...")
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            cur = await _current_block(client)
+    except Exception as e:
+        logging.error(f"获取当前区块失败: {e}")
+        cur = 0
+    data["whale_addr"][chat_id][addr] = {"label": label, "last": cur}
+    save_data()
+    await update.message.reply_text(
+        f"✅ 已关注 {label}\n`{addr}`\n之后它一有动作(ETH/代币转账)就通知你。\n"
+        f"查看 /tracked，取消 /untrack 0x地址",
+        parse_mode="Markdown")
+
+
+async def untrack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("用法：/untrack 0x地址")
+        return
+    addr = context.args[0].lower()
+    chat_id = str(update.effective_chat.id)
+    d = data.get("whale_addr", {}).get(chat_id, {})
+    if addr in d:
+        del d[addr]
+        save_data()
+        await update.message.reply_text("已取消关注")
+    else:
+        await update.message.reply_text("没关注这个地址")
+
+
+async def tracked(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    d = data.get("whale_addr", {}).get(chat_id, {})
+    if not d:
+        await update.message.reply_text("还没关注任何地址。用 /track 0x地址 [备注] 添加")
+        return
+    lines = ["🐋 你关注的地址：\n"]
+    for addr, cfg in d.items():
+        lines.append(f"• {cfg.get('label') or _short(addr)}\n  `{addr}`")
+    lines.append("\n取消：/untrack 0x地址")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ---------- 后台轮询 ----------
+async def check_tracked(context: ContextTypes.DEFAULT_TYPE):
+    watch = data.get("whale_addr", {})
+    if not watch or not ETHERSCAN_API_KEY:
+        return
+    changed = False
+    async with httpx.AsyncClient(timeout=15) as client:
+        for chat_id, addrs in list(watch.items()):
+            for addr, cfg in list(addrs.items()):
+                last = cfg.get("last", 0)
+                try:
+                    events, max_blk = await _new_events(client, addr, last)
+                except Exception as e:
+                    logging.error(f"追踪地址出错 {addr}: {e}")
+                    continue
+                if max_blk > last:
+                    cfg["last"] = max_blk
+                    changed = True
+                if not events:
+                    continue
+                label = cfg.get("label") or _short(addr)
+                shown = events[-MAX_ALERTS_PER_ADDR:]
+                lines = [f"🐋 *关注地址异动*：{label}\n"]
+                for e in shown:
+                    arrow = "➡️" if e["dir"] == "转出" else "⬅️"
+                    lines.append(f"{arrow} {e['dir']} {e['amt']:,.4g} {e['sym']}  对手 {_short(e['other'])}")
+                if len(events) > len(shown):
+                    lines.append(f"...另有 {len(events)-len(shown)} 笔")
+                last_hash = shown[-1].get("hash")
+                if last_hash:
+                    lines.append(f"\n🔗 https://etherscan.io/tx/{last_hash}")
+                try:
+                    await context.bot.send_message(chat_id=int(chat_id), text="\n".join(lines),
+                                                   parse_mode="Markdown", disable_web_page_preview=True)
+                except Exception as e:
+                    logging.error(f"地址异动推送失败 {chat_id}: {e}")
+    if changed:
+        save_data()

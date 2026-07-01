@@ -85,6 +85,34 @@ def back_to(cat):
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回", callback_data=cat),
                                   InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")]])
 
+def _alert_desc(a):
+    """把一条预警渲染成一行说明。"""
+    t = a.get("type")
+    if t == "pct":
+        return f"{a['symbol']} 涨跌±{a['pct']:g}% (基准 ${a['base_price']:,.2f}) [一次]"
+    arrow = "涨破" if a.get("direction") == "above" else "跌破"
+    tag = "[持续]" if t == "watch" else "[一次]"
+    return f"{a['symbol']} {arrow} ${a['target']:,.2f} {tag}"
+
+async def render_my_alerts(query):
+    """列出当前会话的所有预警，每条带删除按钮。查看和删除后都用它刷新。"""
+    from storage import data as _ad
+    chat_id = query.message.chat_id
+    mine = [(gi, a) for gi, a in enumerate(_ad.get("alerts", [])) if a.get("chat_id") == chat_id]
+    if not mine:
+        await query.edit_message_text(
+            "📋 *我的价格预警*\n\n你还没有设置任何预警。\n返回上一步选币即可添加👇",
+            reply_markup=back_to("cat_alert"), parse_mode="Markdown")
+        return
+    lines = ["📋 *我的价格预警*\n点下方 ❌ 取消对应预警：\n"]
+    rows = []
+    for n, (gi, a) in enumerate(mine, 1):
+        lines.append(f"{n}. {_alert_desc(a)}")
+        rows.append([InlineKeyboardButton(f"❌ 删除 {n}. {a['symbol']}", callback_data=f"delalert:{gi}")])
+    rows.append([InlineKeyboardButton("🔄 刷新", callback_data="my_alerts"),
+                 InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")])
+    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+
 # ============ 按钮处理 ============
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -221,10 +249,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ============ 预警（引导式：选币→选方向→发价格）============
     elif d == "cat_alert":
+        rows = []
+        for i in range(0, len(POPULAR), 5):
+            rows.append([InlineKeyboardButton(c, callback_data=f"alertcoin:{c}") for c in POPULAR[i:i+5]])
+        rows.append([InlineKeyboardButton("🔍 查其他币", callback_data="askcoin:alertcoin")])
+        rows.append([InlineKeyboardButton("📋 我的预警(查看/取消)", callback_data="my_alerts")])
+        rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")])
         await query.edit_message_text(
             "🔔 *价格预警*\n\n先选要提醒的币👇\n"
             "(选完再选涨破/跌破，最后发个价格即可)",
-            reply_markup=coin_grid("alertcoin", "menu_main"), parse_mode="Markdown")
+            reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+
+    # 查看我的预警列表（每条带删除按钮）
+    elif d == "my_alerts":
+        await render_my_alerts(query)
+
+    # 删除某条预警（按全局下标，校验归属）
+    elif d.startswith("delalert:"):
+        from storage import data as _ad, save_data as _as
+        chat_id = query.message.chat_id
+        try:
+            gi = int(d.split(":")[1])
+        except ValueError:
+            gi = -1
+        alerts = _ad.get("alerts", [])
+        if 0 <= gi < len(alerts) and alerts[gi].get("chat_id") == chat_id:
+            alerts.pop(gi)
+            _as()
+        await render_my_alerts(query)
 
     # 选好币 → 选方向
     elif d.startswith("alertcoin:"):

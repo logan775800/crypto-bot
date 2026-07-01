@@ -30,4 +30,6 @@ ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
 # Jenkins 部署审批：点"确认"按钮后由机器人远程触发 Jenkins 部署任务
 JENKINS_URL = os.environ.get("JENKINS_URL", "")            # 如 https://logan-jenkins.22889.club
 JENKINS_JOB = os.environ.get("JENKINS_JOB", "update-crypto-bot")
-JENKINS_DEPLOY_TOKEN = os.environ.get("JENKINS_DEPLOY_TOKEN", "")  # Jenkins 任务"触发远程构建"的令牌
+JENKINS_DEPLOY_TOKEN = os.environ.get("JENKINS_DEPLOY_TOKEN", "")  # 任务"触发远程构建"令牌(备选)
+JENKINS_USER = os.environ.get("JENKINS_USER", "")                  # Jenkins 用户名(推荐用API Token方式)
+JENKINS_API_TOKEN = os.environ.get("JENKINS_API_TOKEN", "")        # 该用户的 API Token

@@ -151,20 +151,34 @@ def arb_panel(chat_id):
             f"自定义 `/arbwatch 1.2`\n⚠️ 净价差已扣约0.2%手续费，未含提币费/滑点")
     return text, kb
 
+def _fmt_usd(u):
+    if u <= 0:
+        return "全部(不过滤)"
+    if u >= 10000:
+        return f"${u/10000:g}万"
+    return f"${u:,.0f}"
+
 def track_panel(chat_id):
     from storage import data as _d
     d = _d.get("whale_addr", {}).get(str(chat_id), {})
+    min_usd = _d.get("whale_min", {}).get(str(chat_id), 100000)
     rows = []
     if d:
-        lines = ["🐋 *地址追踪*\n已关注(点❌取消)："]
+        lines = [f"🐋 *地址追踪*  (只推 ≥ {_fmt_usd(min_usd)})\n已关注(点❌取消)："]
         for addr, cfg in d.items():
             lbl = cfg.get("label") or _short_addr(addr)
             lines.append(f"• {lbl}")
             rows.append([InlineKeyboardButton(f"❌ {lbl}", callback_data=f"trackdel:{addr}")])
         text = "\n".join(lines)
     else:
-        text = "🐋 *地址追踪*\n还没关注任何地址。\n关注后该地址有 ETH/代币转账会通知你。"
+        text = f"🐋 *地址追踪*  (只推 ≥ {_fmt_usd(min_usd)})\n还没关注任何地址。\n关注后该地址有大额 ETH/稳定币转账会通知你。"
     rows.append([InlineKeyboardButton("➕ 添加地址", callback_data="trackadd")])
+    rows.append([InlineKeyboardButton("≥$1万", callback_data="trackmin:10000"),
+                 InlineKeyboardButton("≥$5万", callback_data="trackmin:50000"),
+                 InlineKeyboardButton("≥$10万", callback_data="trackmin:100000"),
+                 InlineKeyboardButton("≥$50万", callback_data="trackmin:500000")],
+        )
+    rows.append([InlineKeyboardButton("全部(不过滤)", callback_data="trackmin:0")])
     rows.append([InlineKeyboardButton("⬅️ 返回", callback_data="cat_tools"),
                  InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")])
     return text, InlineKeyboardMarkup(rows)
@@ -831,6 +845,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cid = str(query.message.chat_id); addr = d.split(":", 1)[1]
         _d.get("whale_addr", {}).get(cid, {}).pop(addr, None); _s()
         await query.answer("已取消关注")
+        text, kb = track_panel(cid)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+    elif d.startswith("trackmin:"):
+        from storage import data as _d, save_data as _s
+        cid = str(query.message.chat_id); val = int(d.split(":")[1])
+        _d.setdefault("whale_min", {})[cid] = val; _s()
+        await query.answer("已设最小金额")
         text, kb = track_panel(cid)
         await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
 

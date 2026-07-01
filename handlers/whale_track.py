@@ -9,6 +9,18 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from config import ETHERSCAN_API_KEY
 from storage import data, save_data
+from api import get_price
+
+DEFAULT_MIN_USD = 100000      # 默认只推 ≥ $10万 的转账，过滤热钱包小额噪音
+STABLES = {"USDT", "USDC", "DAI", "TUSD", "FDUSD", "USDE", "USDS", "BUSD", "PYUSD"}
+
+def _usd(sym, amt, eth_price):
+    """估算美元价值：稳定币=面值，ETH=按现价，其它无法定价返回 None。"""
+    if sym in STABLES:
+        return amt
+    if sym == "ETH" and eth_price:
+        return amt * eth_price
+    return None
 
 ES_BASE = "https://api.etherscan.io/v2/api"
 CHAIN_ID = 1
@@ -152,9 +164,17 @@ async def check_tracked(context: ContextTypes.DEFAULT_TYPE):
     watch = data.get("whale_addr", {})
     if not watch or not ETHERSCAN_API_KEY:
         return
+    # 取一次 ETH 现价用于折算美元
+    try:
+        r = await get_price("ETH")
+        eth_price = r["price"] if r else None
+    except Exception:
+        eth_price = None
+    mins = data.get("whale_min", {})
     changed = False
     async with httpx.AsyncClient(timeout=15) as client:
         for chat_id, addrs in list(watch.items()):
+            min_usd = mins.get(str(chat_id), DEFAULT_MIN_USD)
             for addr, cfg in list(addrs.items()):
                 last = cfg.get("last", 0)
                 try:
@@ -165,16 +185,24 @@ async def check_tracked(context: ContextTypes.DEFAULT_TYPE):
                 if max_blk > last:
                     cfg["last"] = max_blk
                     changed = True
-                if not events:
+                # 过滤：min_usd=0 全推；否则只推能折算美元且 ≥ 阈值的(稳定币/ETH)
+                kept = []
+                for e in events:
+                    u = _usd(e["sym"], e["amt"], eth_price)
+                    if min_usd <= 0 or (u is not None and u >= min_usd):
+                        e["usd"] = u
+                        kept.append(e)
+                if not kept:
                     continue
                 label = cfg.get("label") or _short(addr)
-                shown = events[-MAX_ALERTS_PER_ADDR:]
+                shown = kept[-MAX_ALERTS_PER_ADDR:]
                 lines = [f"🐋 *关注地址异动*：{label}\n"]
                 for e in shown:
                     arrow = "➡️" if e["dir"] == "转出" else "⬅️"
-                    lines.append(f"{arrow} {e['dir']} {e['amt']:,.4g} {e['sym']}  对手 {_short(e['other'])}")
-                if len(events) > len(shown):
-                    lines.append(f"...另有 {len(events)-len(shown)} 笔")
+                    usd = f" (~${e['usd']:,.0f})" if e.get("usd") else ""
+                    lines.append(f"{arrow} {e['dir']} {e['amt']:,.4g} {e['sym']}{usd}  对手 {_short(e['other'])}")
+                if len(kept) > len(shown):
+                    lines.append(f"...另有 {len(kept)-len(shown)} 笔达标")
                 last_hash = shown[-1].get("hash")
                 if last_hash:
                     lines.append(f"\n🔗 https://etherscan.io/tx/{last_hash}")

@@ -153,7 +153,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                  InlineKeyboardButton("📋 菜单", callback_data="menu_main")],
             ])
             await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
-        except Exception:
+        except Exception as e:
+            logging.error(f"看板刷新出错: {e}")
             await query.edit_message_text("刷新失败", reply_markup=back_kb())
 
     # ============ 行情查询 ============

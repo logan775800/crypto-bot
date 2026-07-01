@@ -41,8 +41,12 @@ async def build_dashboard():
         for c in leaders:
             if c["symbol"] in STABLES:
                 continue
-            emoji = "📈" if c["change"] >= 0 else "📉"
-            lines.append(f"{emoji} {c['symbol']}: {_fmt_price(c['price'])} ({c['change']:+.2f}%)")
+            price = c.get("price")
+            if price is None:          # 个别币 CoinGecko 可能返回空价，跳过避免整表报错
+                continue
+            change = c.get("change") or 0
+            emoji = "📈" if change >= 0 else "📉"
+            lines.append(f"{emoji} {c['symbol']}: {_fmt_price(price)} ({change:+.2f}%)")
             shown += 1
             if shown >= DASH_TOP_N:
                 break

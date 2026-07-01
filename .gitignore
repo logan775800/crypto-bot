@@ -6,6 +6,10 @@ data.json
 data.json.tmp
 backups/
 
+# 部署状态（Jenkins 回滚点，仅存在于服务器）
+.deploy_prev
+.deploy_current
+
 # Python
 __pycache__/
 *.py[cod]

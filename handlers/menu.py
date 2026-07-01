@@ -50,8 +50,9 @@ def main_menu_kb():
     ])
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 打开菜单即视为放弃未完成的预警设置，避免残留状态误把后续数字当价格
+    # 打开菜单即视为放弃未完成的预警设置，避免残留状态误把后续输入当价格/币名
     context.user_data.pop("await_alert", None)
+    context.user_data.pop("await_alert_coin", None)
     await update.message.reply_text(
         "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
         reply_markup=main_menu_kb(), parse_mode="Markdown"
@@ -62,9 +63,20 @@ def coin_grid(action, back="menu_main"):
     rows = []
     for i in range(0, len(POPULAR), 5):
         rows.append([InlineKeyboardButton(c, callback_data=f"{action}:{c}") for c in POPULAR[i:i+5]])
-    rows.append([InlineKeyboardButton("🔍 查其他币", callback_data="ask_coin")])
+    # 带上来源 action，"查其他币"才能知道点完币名后要接着做什么
+    rows.append([InlineKeyboardButton("🔍 查其他币", callback_data=f"askcoin:{action}")])
     rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data=back)])
     return InlineKeyboardMarkup(rows)
+
+# 预警方向选择键盘（选完币后用；quickprice 也复用）
+def alert_direction_kb(symbol):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📈 涨破提醒(一次)", callback_data=f"alertset:{symbol}:above"),
+         InlineKeyboardButton("📉 跌破提醒(一次)", callback_data=f"alertset:{symbol}:below")],
+        [InlineKeyboardButton("⚡ 涨跌超±5% 就提醒(一次)", callback_data=f"alertpctset:{symbol}")],
+        [InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert"),
+         InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")],
+    ])
 
 def back_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")]])
@@ -85,12 +97,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
             reply_markup=main_menu_kb(), parse_mode="Markdown")
 
-    # ---- 查其他币（提示直接发币名）----
-    elif d == "ask_coin":
-        await query.edit_message_text(
-            "🔍 *查其他币*\n\n直接发送币名即可，例如：`pepe`、`wif`、`arb`\n"
-            "（几百种币都支持，大小写都行）",
-            reply_markup=back_kb(), parse_mode="Markdown")
+    # ---- 查其他币（按来源决定后续动作）----
+    elif d.startswith("askcoin:"):
+        action = d.split(":", 1)[1]
+        if action == "alertcoin":
+            # 预警场景：记下"等用户发币名来设预警"，quickprice 会接住
+            context.user_data["await_alert_coin"] = True
+            await query.edit_message_text(
+                "🔍 *给其他币设预警*\n\n发送币名即可，例如 `pepe`、`arb`\n"
+                "（发完会让你选涨破/跌破；取消发 /menu）",
+                parse_mode="Markdown")
+        else:
+            # 查价/详情/分析等：直接发币名即可，纯文字查价会接住
+            await query.edit_message_text(
+                "🔍 *查其他币*\n\n直接发送币名即可，例如：`pepe`、`wif`、`arb`\n"
+                "（几百种币都支持，大小写都行）",
+                reply_markup=back_kb(), parse_mode="Markdown")
 
     # ---- 刷新看板 ----
     elif d == "dash_refresh":
@@ -207,15 +229,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 选好币 → 选方向
     elif d.startswith("alertcoin:"):
         symbol = d.split(":")[1]
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("📈 涨破提醒", callback_data=f"alertset:{symbol}:above"),
-             InlineKeyboardButton("📉 跌破提醒", callback_data=f"alertset:{symbol}:below")],
-            [InlineKeyboardButton("⚡ 涨跌超±5% 就提醒", callback_data=f"alertpctset:{symbol}")],
-            [InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert"),
-             InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")],
-        ])
         await query.edit_message_text(
-            f"🔔 *{symbol} 价格预警*\n选择提醒方式：", reply_markup=kb, parse_mode="Markdown")
+            f"🔔 *{symbol} 价格预警*\n选择提醒方式：",
+            reply_markup=alert_direction_kb(symbol), parse_mode="Markdown")
 
     # 选好方向 → 等用户发价格（存到 user_data，quickprice 会接住）
     elif d.startswith("alertset:"):

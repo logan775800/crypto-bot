@@ -58,6 +58,23 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.startswith("/"):
         return
 
+    # 引导式预警：用户点了"查其他币"，现在发来的是"要设预警的币名"
+    if context.user_data.get("await_alert_coin"):
+        cand = text.upper()
+        if not cand or " " in cand or len(cand) > 12:
+            await update.message.reply_text("请发送单个币名，例如 pepe（取消发 /menu）")
+            return
+        if cand not in COIN_IDS:
+            await update.message.reply_text(
+                f"暂不支持给 {cand} 设预警（仅支持市值较前的币）。换一个，或发 /menu 取消")
+            return
+        context.user_data.pop("await_alert_coin", None)
+        from handlers.menu import alert_direction_kb
+        await update.message.reply_text(
+            f"🔔 *{cand} 价格预警*\n选择提醒方式：",
+            reply_markup=alert_direction_kb(cand), parse_mode="Markdown")
+        return
+
     # 引导式预警：用户刚点了"选币→选方向"，现在发来的是触发价格
     pending = context.user_data.get("await_alert")
     if pending:

@@ -161,7 +161,7 @@ def _fmt_usd(u):
 def track_panel(chat_id):
     from storage import data as _d
     d = _d.get("whale_addr", {}).get(str(chat_id), {})
-    min_usd = _d.get("whale_min", {}).get(str(chat_id), 100000)
+    min_usd = _d.get("whale_min", {}).get(str(chat_id), 10000)
     rows = []
     if d:
         lines = [f"🐋 *地址追踪*  (只推 ≥ {_fmt_usd(min_usd)})\n已关注(点❌取消)："]

@@ -11,7 +11,7 @@ from config import ETHERSCAN_API_KEY
 from storage import data, save_data
 from api import get_price
 
-DEFAULT_MIN_USD = 100000      # 默认只推 ≥ $10万 的转账，过滤热钱包小额噪音
+DEFAULT_MIN_USD = 10000       # 默认只推 ≥ $1万 的转账，过滤小额噪音
 STABLES = {"USDT", "USDC", "DAI", "TUSD", "FDUSD", "USDE", "USDS", "BUSD", "PYUSD"}
 
 def _usd(sym, amt, eth_price):

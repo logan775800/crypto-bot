@@ -137,7 +137,12 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         spot = spot_cg or spot_okx or spot_bn
         if spot:
             e = "📈" if spot["change"] >= 0 else "📉"
-            src = "" if spot_cg else (" (OKX)" if spot_okx else " (币安)")
+            if spot_cg:
+                src = " (CoinGecko)"
+            elif spot_okx:
+                src = " (OKX)"
+            else:
+                src = " (币安)"
             lines.append(f"{e} 现货: ${fmt_price(spot['price'])} ({spot['change']:+.2f}%){src}")
         if swap_tk:
             e2 = "📈" if swap_tk["change"] >= 0 else "📉"

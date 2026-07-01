@@ -1,0 +1,28 @@
+import os
+
+TOKEN = os.environ["BOT_TOKEN"]
+DATA_FILE = "/app/data.json"
+
+# 基础币种（保底，启动时会被动态列表覆盖/扩充）
+COIN_IDS = {
+    "BTC": "bitcoin", "ETH": "ethereum", "BNB": "binancecoin",
+    "SOL": "solana", "XRP": "ripple", "DOGE": "dogecoin",
+    "ADA": "cardano", "USDT": "tether",
+}
+
+# 动态更新币种列表（启动时调用）
+def update_coins(new_mapping):
+    COIN_IDS.update(new_mapping)
+
+# 定时播报配置
+BROADCAST_HOUR = 9
+BROADCAST_MINUTE = 0
+BROADCAST_COINS = ["BTC", "ETH", "BNB", "SOL"]
+
+# AI 中转站配置
+AI_API_KEY = os.environ.get("AI_API_KEY", "")
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "")
+AI_MODEL = os.environ.get("AI_MODEL", "gpt-4o-mini")
+
+# 管理员chat_id（运维告警接收）
+ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")

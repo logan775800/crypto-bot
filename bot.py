@@ -1,0 +1,178 @@
+import logging
+import datetime
+from telegram import Update
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
+    filters, ContextTypes
+)
+from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
+import api
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock
+
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("你好！发 /menu 打开菜单，或 /price BTC 查币价")
+
+async def post_init(application):
+    """启动时加载币种 + 设置命令菜单"""
+    import logging
+    from telegram import BotCommand
+    # 加载币种
+    try:
+        mapping = await api.fetch_top_coins(250)
+        update_coins(mapping)
+        logging.info(f"已加载 {len(COIN_IDS)} 种币")
+    except Exception as e:
+        logging.error(f"加载币种列表失败，使用默认: {e}")
+    # 设置 Telegram 原生命令菜单
+    commands = [
+        BotCommand("menu", "📋 功能菜单"),
+        BotCommand("dashboard", "📊 市场看板"),
+        BotCommand("summary", "📰 每日市场总结"),
+        BotCommand("price", "💰 查币价"),
+        BotCommand("top", "🚀 涨跌榜"),
+        BotCommand("movers", "📸 异动快照"),
+        BotCommand("analyze", "📈 技术分析"),
+        BotCommand("ai", "🤖 AI分析"),
+        BotCommand("news", "📰 最新新闻"),
+        BotCommand("unlock", "🔓 代币解锁查询"),
+        BotCommand("unlocks", "🔓 近期解锁排行"),
+        BotCommand("new", "🆕 OKX新币榜"),
+        BotCommand("gainers", "🚀 OKX涨跌榜"),
+        BotCommand("funding", "💵 资金费率"),
+        BotCommand("fprice", "📊 合约行情"),
+        BotCommand("liq", "💥 爆仓数据"),
+        BotCommand("ratio", "⚖️ 多空比"),
+        BotCommand("fear", "😱 恐惧贪婪"),
+        BotCommand("gas", "⛽ Gas费"),
+        BotCommand("whale", "🐋 巨鲸监控"),
+        BotCommand("arb", "💱 多所比价"),
+        BotCommand("alert", "🔔 价格预警"),
+        BotCommand("watchmarket", "🚨 订阅市场异动告警"),
+        BotCommand("subnews", "📰 订阅新闻推送"),
+        BotCommand("subunlock", "🔓 订阅解锁提醒"),
+        BotCommand("subsummary", "📊 订阅每日总结"),
+        BotCommand("setalert", "⚙️ 设置告警阈值"),
+        BotCommand("follow", "⭐ 关注币种"),
+        BotCommand("myalert", "⚙️ 我的设置"),
+        BotCommand("buy", "💼 买入(私聊)"),
+        BotCommand("portfolio", "💼 我的持仓(私聊)"),
+        BotCommand("ranking", "🏆 盈亏排行(私聊)"),
+    ]
+    try:
+        await application.bot.set_my_commands(commands)
+        logging.info("命令菜单已设置")
+    except Exception as e:
+        logging.error(f"设置命令菜单失败: {e}")
+
+def main():
+    app = Application.builder().token(TOKEN).post_init(post_init).build()
+
+    # 基础
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("menu", menu.menu))
+    app.add_handler(CommandHandler("dashboard", dashboard.dashboard))
+    # 行情
+    app.add_handler(CommandHandler("price", price.price))
+    app.add_handler(CommandHandler("top", price.top))
+    app.add_handler(CommandHandler("compare", price.compare))
+    app.add_handler(CommandHandler("info", price.info))
+    app.add_handler(CommandHandler("analyze", analysis.analyze))
+    app.add_handler(CommandHandler("ai", ai.ai_analyze))
+    app.add_handler(CommandHandler("arb", arbitrage.arb))
+    app.add_handler(CommandHandler("whale", whale.whale))
+    app.add_handler(CommandHandler("funding", okx.funding))
+    app.add_handler(CommandHandler("fprice", okx.fprice))
+    app.add_handler(CommandHandler("oi", okx.open_interest))
+    app.add_handler(CommandHandler("okxk", okx.okx_kline))
+    app.add_handler(CommandHandler("new", okx.new_coins))
+    app.add_handler(CommandHandler("gainers", okx.gainers))
+    app.add_handler(CommandHandler("swap", okx.swap_gainers))
+    app.add_handler(CommandHandler("depth", okx.depth))
+    app.add_handler(CommandHandler("ratio", okx.long_short))
+    app.add_handler(CommandHandler("liq", okx.liquidation))
+    app.add_handler(CommandHandler("fundingrank", okx.funding_rank))
+    app.add_handler(CommandHandler("multi", analysis.multi_period))
+    app.add_handler(CommandHandler("indicators", analysis.indicators_cmd))
+    app.add_handler(CommandHandler("calc", price.calc))
+    app.add_handler(CommandHandler("chart", chart.chart))
+    app.add_handler(CommandHandler("chartanalyze", chart.analyze_chart))
+    app.add_handler(CommandHandler("fear", market.fear))
+    app.add_handler(CommandHandler("gas", market.gas))
+    app.add_handler(CommandHandler("stock", stock.stock))
+    app.add_handler(CommandHandler("index", stock.index))
+    app.add_handler(CommandHandler("piechart", chart.portfolio_chart))
+    # 预警
+    app.add_handler(CommandHandler("alert", alert.alert))
+    app.add_handler(CommandHandler("alertpct", alert.alert_pct))
+    app.add_handler(CommandHandler("watch", alert.watch))
+    app.add_handler(CommandHandler("alerts", alert.list_alerts))
+    app.add_handler(CommandHandler("delalert", alert.del_alert))
+    # 持仓
+    app.add_handler(CommandHandler("add", portfolio.add_holding))
+    app.add_handler(CommandHandler("buy", portfolio.buy))
+    app.add_handler(CommandHandler("sell", portfolio.sell))
+    app.add_handler(CommandHandler("portfolio", portfolio.portfolio))
+    app.add_handler(CommandHandler("ranking", portfolio.ranking))
+    app.add_handler(CommandHandler("holdings", portfolio.holdings_list))
+    app.add_handler(CommandHandler("delhold", portfolio.del_holding))
+    # 播报（功能1）
+    app.add_handler(CommandHandler("subscribe", broadcast.subscribe))
+    app.add_handler(CommandHandler("unsubscribe", broadcast.unsubscribe))
+    app.add_handler(CommandHandler("broadcast", broadcast.broadcast_now))
+    # 按钮
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome.welcome))
+    app.add_handler(CommandHandler("follow", prefs.follow))
+    app.add_handler(CommandHandler("unfollow", prefs.unfollow))
+    app.add_handler(CommandHandler("myfollows", prefs.my_follows))
+    app.add_handler(CommandHandler("setalert", prefs.set_alert))
+    app.add_handler(CommandHandler("myalert", prefs.my_alert))
+    app.add_handler(CommandHandler("quiet", prefs.set_quiet))
+    app.add_handler(CommandHandler("watchmarket", market_alert.watch_market))
+    app.add_handler(CommandHandler("movers", movers.movers))
+    app.add_handler(CommandHandler("news", news.news))
+    app.add_handler(CommandHandler("unlock", unlock.unlock))
+    app.add_handler(CommandHandler("unlocks", unlock.unlocks))
+    app.add_handler(CommandHandler("summary", summary.summary))
+    app.add_handler(CommandHandler("subsummary", summary.sub_summary))
+    app.add_handler(CommandHandler("unsubsummary", summary.unsub_summary))
+    app.add_handler(CommandHandler("subunlock", unlock.sub_unlock))
+    app.add_handler(CommandHandler("unsubunlock", unlock.unsub_unlock))
+    app.add_handler(CommandHandler("subnews", news.sub_news))
+    app.add_handler(CommandHandler("unsubnews", news.unsub_news))
+    app.add_handler(CommandHandler("unwatchmarket", market_alert.unwatch_market))
+    app.add_handler(CommandHandler("backup", backup.backup_now))
+    app.add_handler(CommandHandler("watchhold", portfolio.watch_holdings))
+    app.add_handler(CommandHandler("unwatchhold", portfolio.unwatch_holdings))
+    app.add_handler(CommandHandler("subanalysis", broadcast.sub_analysis))
+    app.add_handler(CommandHandler("unsubanalysis", broadcast.unsub_analysis))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, quickprice.quick_price))
+    app.add_handler(CallbackQueryHandler(menu.button_handler))
+
+    # 定时任务
+    jq = app.job_queue
+    jq.run_repeating(alert.check_alerts, interval=60, first=10)
+    jq.run_repeating(market_alert.scan_market, interval=300, first=30)  # 市场异动扫描
+    jq.run_repeating(news.push_news, interval=3600, first=120)  # 新闻推送
+    jq.run_repeating(unlock.check_unlocks, interval=86400, first=180)  # 解锁检查，每天
+    jq.run_repeating(backup.auto_backup, interval=86400, first=60)  # 每天自动备份
+    jq.run_repeating(monitor.health_check, interval=300, first=120)  # 数据源健康检查，每5分钟
+    jq.run_repeating(portfolio.check_holding_moves, interval=900, first=90)  # 持仓异动检查，每15分钟
+    jq.run_once(monitor.startup_notify, when=15)  # 启动告警
+    # 每日播报：每天固定时间（用 UTC，注意时区换算）
+    jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))
+    jq.run_daily(summary.daily_summary, time=datetime.time(hour=0, minute=0))  # 每日总结，北京8点
+    jq.run_daily(
+        broadcast.daily_broadcast,
+        time=datetime.time(hour=BROADCAST_HOUR, minute=BROADCAST_MINUTE)
+    )
+
+    logging.info("Bot 启动中...")
+    app.run_polling()
+
+if __name__ == "__main__":
+    main()

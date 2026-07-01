@@ -1,0 +1,17 @@
+services:
+  crypto-bot:
+    image: python:3.11-slim
+    container_name: crypto-bot
+    restart: unless-stopped
+    working_dir: /app
+    volumes:
+      - ./:/app
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      AI_API_KEY: ${AI_API_KEY}
+      AI_BASE_URL: ${AI_BASE_URL}
+      AI_MODEL: ${AI_MODEL}
+      ADMIN_CHAT_ID: ${ADMIN_CHAT_ID}
+      TZ: Asia/Shanghai
+    command: >
+      bash -c "pip install --no-cache-dir -r requirements.txt && python bot.py"

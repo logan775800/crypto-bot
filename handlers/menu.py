@@ -727,7 +727,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("💱 多所比价", callback_data="sub_arb")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text("🛠 *实用工具*\n点按钮直接出结果：", reply_markup=kb, parse_mode="Markdown")
+        await query.edit_message_text(
+            "🛠 *实用工具*\n点按钮直接出结果：\n\n"
+            "💡 订阅类(用命令)：\n"
+            "`/gasalert 15` ETH Gas 跌破提醒\n"
+            "`/arbwatch 0.8` 跨所套利净价差监控",
+            reply_markup=kb, parse_mode="Markdown")
 
     elif d == "do_fear":
         await query.edit_message_text("😱 获取中...")

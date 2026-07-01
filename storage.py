@@ -33,6 +33,9 @@ data.setdefault("summary_subs", [])     # 订阅每日总结的chat_id
 data.setdefault("analysis_subs", [])    # 订阅每日分析推送的chat_id
 data.setdefault("holding_watch", {})    # 持仓异动提醒 {uid: chat_id}
 data.setdefault("holding_alerted", {})  # 持仓异动冷却记录
+data.setdefault("gas_subs", {})         # gas提醒订阅 {chat_id: {"threshold":gwei,"armed":bool}}
+data.setdefault("arb_subs", {})         # 套利监控订阅 {chat_id: {"threshold":pct}}
+data.setdefault("arb_alerted", {})      # 套利告警冷却 {sym: 时间戳}
 
 def save_data():
     # 原子写入：先写临时文件再 os.replace，避免写盘中途被打断（多个定时任务并发保存）

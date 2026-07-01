@@ -41,33 +41,94 @@ async def fear(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-from api import get_gas_price
+from api import get_gas_price, get_gas_multi
+from storage import data, save_data
 
-# 功能16：Gas费查询 /gas
+def _gas_level(gwei):
+    if gwei < 10:
+        return "🟢 很低，适合转账"
+    elif gwei < 30:
+        return "🟡 正常"
+    elif gwei < 80:
+        return "🟠 偏高"
+    return "🔴 拥堵，建议等等"
+
+# 功能16：Gas费查询 /gas（多链）
 async def gas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_action("typing")
     try:
-        gwei = await get_gas_price()
+        rows = await get_gas_multi()
     except Exception as e:
         logging.error(f"gas查询出错: {e}")
         await update.message.reply_text("获取失败，请稍后再试")
         return
+    lines = ["⛽ 各链 Gas 费 (gwei)\n"]
+    eth_gwei = None
+    for name, g in rows:
+        if g is None:
+            lines.append(f"{name}: 获取失败")
+        else:
+            lines.append(f"{name}: {g:.3f}")
+            if name == "ETH":
+                eth_gwei = g
+    if eth_gwei is not None:
+        eth_cost = eth_gwei * 21000 / 1e9
+        lines.append(f"\nETH主网: {_gas_level(eth_gwei)}")
+        lines.append(f"普通转账(21000 gas)约 {eth_cost:.6f} ETH")
+    lines.append("\n💡 设提醒: /gasalert 15 (ETH跌破15gwei时通知)")
+    await update.message.reply_text("\n".join(lines))
 
-    # 简单分级提示
-    if gwei < 10:
-        level = "🟢 很低，适合转账"
-    elif gwei < 30:
-        level = "🟡 正常"
-    elif gwei < 80:
-        level = "🟠 偏高"
-    else:
-        level = "🔴 拥堵，建议等等"
 
-    # 估算一笔普通转账成本（21000 gas）
-    eth_cost = gwei * 21000 / 1e9  # ETH
-
+# Gas 阈值提醒：/gasalert 15  或  /gasalert off
+async def set_gas_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = str(update.effective_chat.id)
+    data.setdefault("gas_subs", {})
+    if context.args and context.args[0].lower() in ("off", "取消", "关闭", "0"):
+        if chat_id in data["gas_subs"]:
+            del data["gas_subs"][chat_id]
+            save_data()
+        await update.message.reply_text("已关闭 Gas 提醒")
+        return
+    if not context.args:
+        await update.message.reply_text("用法：/gasalert 15\n(ETH主网 gas 跌破 15 gwei 时提醒你；关闭用 /gasalert off)")
+        return
+    try:
+        threshold = float(context.args[0])
+    except ValueError:
+        await update.message.reply_text("阈值要是数字，例如 /gasalert 15")
+        return
+    data["gas_subs"][chat_id] = {"threshold": threshold, "armed": True}
+    save_data()
     await update.message.reply_text(
-        f"⛽ 以太坊 Gas 费\n\n"
-        f"当前: {gwei:.2f} gwei\n"
-        f"{level}\n\n"
-        f"普通转账(21000 gas)约: {eth_cost:.6f} ETH"
+        f"✅ 已设 Gas 提醒：ETH 主网 gas 跌破 {threshold:g} gwei 时通知你\n"
+        f"(触发一次后，等 gas 回升到阈值以上会自动重新武装；关闭用 /gasalert off)"
     )
+
+# 后台检查 gas 提醒（job，边沿触发防刷屏）
+async def check_gas_alerts(context: ContextTypes.DEFAULT_TYPE):
+    subs = data.get("gas_subs", {})
+    if not subs:
+        return
+    try:
+        gwei = await get_gas_price()
+    except Exception as e:
+        logging.error(f"gas提醒查价出错: {e}")
+        return
+    changed = False
+    for chat_id, cfg in list(subs.items()):
+        th = cfg.get("threshold", 0)
+        armed = cfg.get("armed", True)
+        if gwei <= th and armed:
+            try:
+                await context.bot.send_message(
+                    chat_id=int(chat_id),
+                    text=f"⛽ Gas 提醒\nETH 主网 gas 已跌破 {th:g} gwei，当前 {gwei:.2f} gwei —— 适合转账/上链操作。")
+            except Exception as e:
+                logging.error(f"gas提醒推送失败 {chat_id}: {e}")
+            cfg["armed"] = False
+            changed = True
+        elif gwei > th and not armed:
+            cfg["armed"] = True   # 回升后重新武装
+            changed = True
+    if changed:
+        save_data()

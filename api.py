@@ -167,6 +167,30 @@ async def get_gas_price():
         gwei = wei / 1e9
         return gwei
 
+# 多链 gas（各链公共RPC，返回 gwei）
+GAS_CHAINS = [
+    ("ETH", "https://ethereum-rpc.publicnode.com"),
+    ("Arbitrum", "https://arbitrum-one-rpc.publicnode.com"),
+    ("Optimism", "https://optimism-rpc.publicnode.com"),
+    ("Base", "https://base-rpc.publicnode.com"),
+    ("Polygon", "https://polygon-bor-rpc.publicnode.com"),
+    ("BSC", "https://bsc-rpc.publicnode.com"),
+]
+
+async def _gas_of(client, rpc):
+    try:
+        resp = await client.post(rpc, json={"jsonrpc": "2.0", "method": "eth_gasPrice", "params": [], "id": 1})
+        resp.raise_for_status()
+        return int(resp.json()["result"], 16) / 1e9
+    except Exception:
+        return None
+
+async def get_gas_multi():
+    """并发拿多链 gas，返回 [(链名, gwei或None), ...]"""
+    async with httpx.AsyncClient(timeout=10) as client:
+        results = await asyncio.gather(*[_gas_of(client, rpc) for _, rpc in GAS_CHAINS])
+    return [(GAS_CHAINS[i][0], results[i]) for i in range(len(GAS_CHAINS))]
+
 async def fetch_top_coins(limit=250):
     """拉取市值前N的币，构建 symbol -> id 映射"""
     raw = await _get("/coins/markets", {

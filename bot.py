@@ -24,6 +24,7 @@ HELP_TEXT = (
     "/top 涨跌榜　/analyze BTC 技术分析\n"
     "/ai BTC AI 解读　/news 最新新闻\n"
     "/alert 价格预警（也可在菜单里点着设）\n"
+    "/gasalert 15 Gas跌破提醒　/arbwatch 0.8 套利监控\n"
     "/portfolio 我的持仓（请私聊使用）\n\n"
     "*底部快捷键*：📋菜单 / 📊看板 / 💰查价 / ❓帮助\n"
     "⚠️ 所有数据仅供参考，不构成投资建议"
@@ -82,8 +83,10 @@ async def post_init(application):
         BotCommand("ratio", "⚖️ 多空比"),
         BotCommand("fear", "😱 恐惧贪婪"),
         BotCommand("gas", "⛽ Gas费"),
+        BotCommand("gasalert", "⛽ Gas提醒(跌破阈值)"),
         BotCommand("whale", "🐋 巨鲸监控"),
         BotCommand("arb", "💱 多所比价"),
+        BotCommand("arbwatch", "💱 套利监控告警"),
         BotCommand("alert", "🔔 价格预警"),
         BotCommand("watchmarket", "🚨 订阅市场异动告警"),
         BotCommand("subnews", "📰 订阅新闻推送"),
@@ -138,6 +141,8 @@ def main():
     app.add_handler(CommandHandler("chartanalyze", chart.analyze_chart))
     app.add_handler(CommandHandler("fear", market.fear))
     app.add_handler(CommandHandler("gas", market.gas))
+    app.add_handler(CommandHandler("gasalert", market.set_gas_alert))
+    app.add_handler(CommandHandler("arbwatch", arbitrage.set_arb_watch))
     app.add_handler(CommandHandler("stock", stock.stock))
     app.add_handler(CommandHandler("index", stock.index))
     app.add_handler(CommandHandler("piechart", chart.portfolio_chart))
@@ -202,6 +207,8 @@ def main():
     jq.run_repeating(backup.auto_backup, interval=86400, first=60)  # 每天自动备份
     jq.run_repeating(monitor.health_check, interval=300, first=120)  # 数据源健康检查，每5分钟
     jq.run_repeating(portfolio.check_holding_moves, interval=900, first=90)  # 持仓异动检查，每15分钟
+    jq.run_repeating(market.check_gas_alerts, interval=300, first=100)  # Gas阈值提醒，每5分钟
+    jq.run_repeating(arbitrage.scan_arb, interval=300, first=150)  # 套利监控扫描，每5分钟
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))

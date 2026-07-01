@@ -12,6 +12,9 @@ services:
       AI_BASE_URL: ${AI_BASE_URL}
       AI_MODEL: ${AI_MODEL}
       ADMIN_CHAT_ID: ${ADMIN_CHAT_ID}
+      JENKINS_URL: ${JENKINS_URL:-}
+      JENKINS_JOB: ${JENKINS_JOB:-update-crypto-bot}
+      JENKINS_DEPLOY_TOKEN: ${JENKINS_DEPLOY_TOKEN:-}
       TZ: Asia/Shanghai
     command: >
       bash -c "pip install --no-cache-dir -r requirements.txt && python bot.py"

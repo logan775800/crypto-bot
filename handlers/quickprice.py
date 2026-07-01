@@ -59,6 +59,19 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.startswith("/"):
         return
 
+    # 地址追踪：用户点了"添加地址"，现在发来的是以太坊地址
+    if context.user_data.get("await_track_addr"):
+        import re as _re
+        cand = text.strip()
+        if not _re.match(r"^0x[0-9a-fA-F]{40}$", cand):
+            await update.message.reply_text("请发送 0x 开头的 42 位以太坊地址（取消发 /menu）")
+            return
+        context.user_data.pop("await_track_addr", None)
+        from handlers.whale_track import add_tracked_addr
+        ok, msg = await add_tracked_addr(update.effective_chat.id, cand)
+        await update.message.reply_text(msg)
+        return
+
     # 引导式预警：用户点了"查其他币"，现在发来的是"要设预警的币名"
     if context.user_data.get("await_alert_coin"):
         cand = text.upper()

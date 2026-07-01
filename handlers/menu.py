@@ -54,6 +54,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 打开菜单即视为放弃未完成的预警设置，避免残留状态误把后续输入当价格/币名
     context.user_data.pop("await_alert", None)
     context.user_data.pop("await_alert_coin", None)
+    context.user_data.pop("await_track_addr", None)
     await update.message.reply_text(
         "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
         reply_markup=main_menu_kb(), parse_mode="Markdown"
@@ -113,6 +114,60 @@ async def render_my_alerts(query):
     rows.append([InlineKeyboardButton("🔄 刷新", callback_data="my_alerts"),
                  InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")])
     await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+
+def _short_addr(a):
+    return a[:6] + "..." + a[-4:] if a and len(a) > 12 else a
+
+def gas_panel(chat_id):
+    from storage import data as _d
+    cur = _d.get("gas_subs", {}).get(str(chat_id))
+    status = f"✅ 已开启：ETH gas 跌破 {cur['threshold']:g} gwei 提醒" if cur else "⬜ 未开启"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("≤10", callback_data="gasset:10"),
+         InlineKeyboardButton("≤15", callback_data="gasset:15"),
+         InlineKeyboardButton("≤20", callback_data="gasset:20"),
+         InlineKeyboardButton("≤30", callback_data="gasset:30")],
+        [InlineKeyboardButton("❌ 关闭提醒", callback_data="gasset:off")],
+        [InlineKeyboardButton("⬅️ 返回", callback_data="cat_tools"),
+         InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")],
+    ])
+    text = f"⛽ *Gas 提醒*\n{status}\n\n点阈值设置(ETH主网 gas 跌破即通知)；自定义用 `/gasalert 12`"
+    return text, kb
+
+def arb_panel(chat_id):
+    from storage import data as _d
+    cur = _d.get("arb_subs", {}).get(str(chat_id))
+    status = f"✅ 已开启：净价差 ≥ {cur['threshold']:g}% 告警" if cur else "⬜ 未开启"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("≥0.5%", callback_data="arbset:0.5"),
+         InlineKeyboardButton("≥0.8%", callback_data="arbset:0.8"),
+         InlineKeyboardButton("≥1.5%", callback_data="arbset:1.5"),
+         InlineKeyboardButton("≥3%", callback_data="arbset:3")],
+        [InlineKeyboardButton("❌ 关闭监控", callback_data="arbset:off")],
+        [InlineKeyboardButton("⬅️ 返回", callback_data="cat_tools"),
+         InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")],
+    ])
+    text = (f"💱 *套利监控*\n{status}\n\n点阈值(跨所净价差达标即告警，每5分钟扫)；"
+            f"自定义 `/arbwatch 1.2`\n⚠️ 净价差已扣约0.2%手续费，未含提币费/滑点")
+    return text, kb
+
+def track_panel(chat_id):
+    from storage import data as _d
+    d = _d.get("whale_addr", {}).get(str(chat_id), {})
+    rows = []
+    if d:
+        lines = ["🐋 *地址追踪*\n已关注(点❌取消)："]
+        for addr, cfg in d.items():
+            lbl = cfg.get("label") or _short_addr(addr)
+            lines.append(f"• {lbl}")
+            rows.append([InlineKeyboardButton(f"❌ {lbl}", callback_data=f"trackdel:{addr}")])
+        text = "\n".join(lines)
+    else:
+        text = "🐋 *地址追踪*\n还没关注任何地址。\n关注后该地址有 ETH/代币转账会通知你。"
+    rows.append([InlineKeyboardButton("➕ 添加地址", callback_data="trackadd")])
+    rows.append([InlineKeyboardButton("⬅️ 返回", callback_data="cat_tools"),
+                 InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")])
+    return text, InlineKeyboardMarkup(rows)
 
 # ============ 按钮处理 ============
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -722,18 +777,62 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "cat_tools":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("😱 恐惧贪婪", callback_data="do_fear"),
-             InlineKeyboardButton("⛽ Gas费", callback_data="do_gas")],
-            [InlineKeyboardButton("🐋 巨鲸监控", callback_data="do_whale"),
+             InlineKeyboardButton("⛽ Gas查询", callback_data="do_gas")],
+            [InlineKeyboardButton("⛽ Gas提醒", callback_data="cat_gasalert"),
              InlineKeyboardButton("💱 多所比价", callback_data="sub_arb")],
+            [InlineKeyboardButton("💱 套利监控", callback_data="cat_arbwatch"),
+             InlineKeyboardButton("🐋 巨鲸扫描", callback_data="do_whale")],
+            [InlineKeyboardButton("🐋 地址追踪", callback_data="cat_track")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text(
-            "🛠 *实用工具*\n点按钮直接出结果：\n\n"
-            "💡 订阅类(用命令)：\n"
-            "`/gasalert 15` ETH Gas 跌破提醒\n"
-            "`/arbwatch 0.8` 跨所套利净价差监控\n"
-            "`/track 0x地址` 追踪巨鲸地址异动",
-            reply_markup=kb, parse_mode="Markdown")
+        await query.edit_message_text("🛠 *实用工具*\n点按钮直接出结果：", reply_markup=kb, parse_mode="Markdown")
+
+    # ---- Gas 提醒（按钮设阈值）----
+    elif d == "cat_gasalert":
+        text, kb = gas_panel(query.message.chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+    elif d.startswith("gasset:"):
+        from storage import data as _d, save_data as _s
+        cid = str(query.message.chat_id); val = d.split(":")[1]
+        _d.setdefault("gas_subs", {})
+        if val == "off":
+            _d["gas_subs"].pop(cid, None); _s(); await query.answer("已关闭")
+        else:
+            _d["gas_subs"][cid] = {"threshold": float(val), "armed": True}; _s()
+            await query.answer(f"已设：跌破 {val} gwei")
+        text, kb = gas_panel(cid)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+
+    # ---- 套利监控（按钮设阈值）----
+    elif d == "cat_arbwatch":
+        text, kb = arb_panel(query.message.chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+    elif d.startswith("arbset:"):
+        from storage import data as _d, save_data as _s
+        cid = str(query.message.chat_id); val = d.split(":")[1]
+        _d.setdefault("arb_subs", {})
+        if val == "off":
+            _d["arb_subs"].pop(cid, None); _s(); await query.answer("已关闭")
+        else:
+            _d["arb_subs"][cid] = {"threshold": float(val)}; _s()
+            await query.answer(f"已设：净价差≥{val}%")
+        text, kb = arb_panel(cid)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+
+    # ---- 地址追踪（按钮增删）----
+    elif d == "cat_track":
+        text, kb = track_panel(query.message.chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+    elif d == "trackadd":
+        context.user_data["await_track_addr"] = True
+        await query.edit_message_text("🐋 发送要追踪的以太坊地址(0x 开头 42 位)，我就开始盯它。\n(取消发 /menu)")
+    elif d.startswith("trackdel:"):
+        from storage import data as _d, save_data as _s
+        cid = str(query.message.chat_id); addr = d.split(":", 1)[1]
+        _d.get("whale_addr", {}).get(cid, {}).pop(addr, None); _s()
+        await query.answer("已取消关注")
+        text, kb = track_panel(cid)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
 
     elif d == "do_fear":
         await query.edit_message_text("😱 获取中...")

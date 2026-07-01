@@ -85,37 +85,38 @@ async def _new_events(client, addr, last_block):
     return events, max_block
 
 
-# ---------- 命令 ----------
-async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- 登记(命令和按钮共用) ----------
+async def add_tracked_addr(chat_id, addr, label=None):
+    """登记一个追踪地址，返回 (是否成功, 提示文本)。"""
     if not ETHERSCAN_API_KEY:
-        await update.message.reply_text("未配置 Etherscan API key，无法追踪地址（管理员需在 .env 设 ETHERSCAN_API_KEY）")
-        return
-    if not context.args:
-        await update.message.reply_text("用法：/track 0x地址 [备注]\n(该地址在以太坊主网有转账/代币转账时通知你)")
-        return
-    addr = context.args[0].lower()
+        return False, "未配置 Etherscan API key（管理员需在 .env 设 ETHERSCAN_API_KEY）"
+    addr = addr.lower()
     if not ADDR_RE.match(addr):
-        await update.message.reply_text("地址格式不对，应为 0x 开头的 42 位地址")
-        return
-    label = " ".join(context.args[1:])[:30] if len(context.args) > 1 else _short(addr)
-    chat_id = str(update.effective_chat.id)
-    data.setdefault("whale_addr", {}).setdefault(chat_id, {})
-    if addr not in data["whale_addr"][chat_id] and len(data["whale_addr"][chat_id]) >= MAX_ADDR_PER_CHAT:
-        await update.message.reply_text(f"最多关注 {MAX_ADDR_PER_CHAT} 个地址，先 /untrack 删一个")
-        return
-    await update.message.reply_text("正在登记地址...")
+        return False, "地址格式不对，应为 0x 开头的 42 位地址"
+    cid = str(chat_id)
+    data.setdefault("whale_addr", {}).setdefault(cid, {})
+    if addr not in data["whale_addr"][cid] and len(data["whale_addr"][cid]) >= MAX_ADDR_PER_CHAT:
+        return False, f"最多关注 {MAX_ADDR_PER_CHAT} 个地址，先删一个"
+    label = (label or _short(addr))[:30]
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             cur = await _current_block(client)
     except Exception as e:
         logging.error(f"获取当前区块失败: {e}")
         cur = 0
-    data["whale_addr"][chat_id][addr] = {"label": label, "last": cur}
+    data["whale_addr"][cid][addr] = {"label": label, "last": cur}
     save_data()
-    await update.message.reply_text(
-        f"✅ 已关注 {label}\n`{addr}`\n之后它一有动作(ETH/代币转账)就通知你。\n"
-        f"查看 /tracked，取消 /untrack 0x地址",
-        parse_mode="Markdown")
+    return True, f"✅ 已关注 {label}，之后它一有动作(ETH/代币转账)就通知你"
+
+
+# ---------- 命令 ----------
+async def track(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.args:
+        await update.message.reply_text("用法：/track 0x地址 [备注]\n(该地址在以太坊主网有转账/代币转账时通知你)")
+        return
+    label = " ".join(context.args[1:]) if len(context.args) > 1 else None
+    ok, msg = await add_tracked_addr(update.effective_chat.id, context.args[0], label)
+    await update.message.reply_text(msg)
 
 
 async def untrack(update: Update, context: ContextTypes.DEFAULT_TYPE):

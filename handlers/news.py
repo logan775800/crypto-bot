@@ -5,6 +5,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 from xml.etree import ElementTree
 from config import AI_API_KEY, AI_BASE_URL, AI_MODEL
+from handlers.util import sanitize_link_text
 
 NEWS_SOURCES = [
     ("Cointelegraph", "https://cointelegraph.com/rss"),
@@ -88,7 +89,7 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         lines = ["📰 *最新加密货币新闻*\n"]
         for i, it in enumerate(items, 1):
-            title = cn_titles.get(i, it["title"]) if cn_titles else it["title"]
+            title = sanitize_link_text(cn_titles.get(i, it["title"]) if cn_titles else it["title"])
             # 中文标题 + 链接（用Markdown链接格式，标题可点）
             lines.append(f"{i}. [{title}]({it['link']})")
         lines.append("\n📎 来源: Cointelegraph | 点标题看原文")
@@ -153,7 +154,7 @@ async def push_news(context: ContextTypes.DEFAULT_TYPE):
 
         lines = ["📰 *最新加密新闻*\n"]
         for i, it in enumerate(new_items, 1):
-            title = cn_titles.get(i, it["title"]) if cn_titles else it["title"]
+            title = sanitize_link_text(cn_titles.get(i, it["title"]) if cn_titles else it["title"])
             lines.append(f"{i}. [{title}]({it['link']})")
         lines.append("\n📎 来源: Cointelegraph")
         text = "\n".join(lines)
@@ -224,7 +225,7 @@ async def push_news(context: ContextTypes.DEFAULT_TYPE):
 
         lines = ["📰 *最新加密新闻*\n"]
         for i, it in enumerate(new_items, 1):
-            title = cn_titles.get(i, it["title"]) if cn_titles else it["title"]
+            title = sanitize_link_text(cn_titles.get(i, it["title"]) if cn_titles else it["title"])
             lines.append(f"{i}. [{title}]({it['link']})")
         lines.append("\n📎 来源: Cointelegraph")
         text = "\n".join(lines)

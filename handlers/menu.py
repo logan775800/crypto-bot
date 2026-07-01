@@ -1,10 +1,38 @@
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import (
+    Update, InlineKeyboardButton, InlineKeyboardMarkup,
+    ReplyKeyboardMarkup, KeyboardButton,
+)
 from telegram.ext import ContextTypes
 from api import get_price, get_fear_greed, get_gas_price, get_market_data, get_top_movers
 from config import COIN_IDS
+from handlers.util import sanitize_link_text
 
 POPULAR = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "LINK", "AVAX", "DOT"]
+
+# 欢迎语（/start 与群欢迎共用）
+WELCOME_TEXT = (
+    "👋 *欢迎使用加密货币助手* 🤖\n\n"
+    "我能帮你：\n"
+    "📊 查币价、市场看板、涨跌榜\n"
+    "📈 技术分析 + AI 解读\n"
+    "🔔 到价自动提醒\n"
+    "🛠 多所比价、市场情绪、Gas、巨鲸\n"
+    "💼 记录持仓盈亏（私聊）\n\n"
+    "💡 *最快上手*：直接发币名即可查价，例如 `BTC`、`pepe`\n"
+    "或点下方按钮 👇"
+)
+
+# ============ 底部常驻键盘 ============
+def persistent_kb():
+    """常驻在输入框下方的快捷键，菜单滚走了也能一键唤起。"""
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("📋 菜单"), KeyboardButton("📊 看板")],
+            [KeyboardButton("💰 查价"), KeyboardButton("❓ 帮助")],
+        ],
+        resize_keyboard=True,
+    )
 
 # ============ 主菜单 ============
 def main_menu_kb():
@@ -22,6 +50,8 @@ def main_menu_kb():
     ])
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # 打开菜单即视为放弃未完成的预警设置，避免残留状态误把后续数字当价格
+    context.user_data.pop("await_alert", None)
     await update.message.reply_text(
         "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
         reply_markup=main_menu_kb(), parse_mode="Markdown"
@@ -32,6 +62,7 @@ def coin_grid(action, back="menu_main"):
     rows = []
     for i in range(0, len(POPULAR), 5):
         rows.append([InlineKeyboardButton(c, callback_data=f"{action}:{c}") for c in POPULAR[i:i+5]])
+    rows.append([InlineKeyboardButton("🔍 查其他币", callback_data="ask_coin")])
     rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data=back)])
     return InlineKeyboardMarkup(rows)
 
@@ -53,6 +84,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
             reply_markup=main_menu_kb(), parse_mode="Markdown")
+
+    # ---- 查其他币（提示直接发币名）----
+    elif d == "ask_coin":
+        await query.edit_message_text(
+            "🔍 *查其他币*\n\n直接发送币名即可，例如：`pepe`、`wif`、`arb`\n"
+            "（几百种币都支持，大小写都行）",
+            reply_markup=back_kb(), parse_mode="Markdown")
 
     # ---- 刷新看板 ----
     elif d == "dash_refresh":
@@ -159,18 +197,58 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"AI出错: {e}")
             await query.edit_message_text("AI分析失败", reply_markup=back_to("cat_analysis"))
 
-    # ============ 预警 ============
+    # ============ 预警（引导式：选币→选方向→发价格）============
     elif d == "cat_alert":
         await query.edit_message_text(
-            "🔔 *价格预警*\n\n"
-            "`/alert BTC 60000 above` 涨破提醒\n"
-            "`/alert BTC 50000 below` 跌破提醒\n"
-            "`/alertpct BTC 5` 涨跌超5%\n"
-            "`/watch BTC 60000 above` 持续监控\n"
-            "`/alerts` 查看 | `/delalert 1` 删除\n"
-            "`/subscribe` 订阅每日播报\n\n"
-            "(预警需输入价格，用命令设置)",
-            reply_markup=back_kb(), parse_mode="Markdown")
+            "🔔 *价格预警*\n\n先选要提醒的币👇\n"
+            "(选完再选涨破/跌破，最后发个价格即可)",
+            reply_markup=coin_grid("alertcoin", "menu_main"), parse_mode="Markdown")
+
+    # 选好币 → 选方向
+    elif d.startswith("alertcoin:"):
+        symbol = d.split(":")[1]
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📈 涨破提醒", callback_data=f"alertset:{symbol}:above"),
+             InlineKeyboardButton("📉 跌破提醒", callback_data=f"alertset:{symbol}:below")],
+            [InlineKeyboardButton("⚡ 涨跌超±5% 就提醒", callback_data=f"alertpctset:{symbol}")],
+            [InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert"),
+             InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")],
+        ])
+        await query.edit_message_text(
+            f"🔔 *{symbol} 价格预警*\n选择提醒方式：", reply_markup=kb, parse_mode="Markdown")
+
+    # 选好方向 → 等用户发价格（存到 user_data，quickprice 会接住）
+    elif d.startswith("alertset:"):
+        _, symbol, direction = d.split(":")
+        context.user_data["await_alert"] = {"symbol": symbol, "direction": direction}
+        arrow = "涨破" if direction == "above" else "跌破"
+        await query.edit_message_text(
+            f"🔔 *{symbol} {arrow}提醒*\n\n请直接发送触发价格，例如 `65000`\n"
+            f"（发送后自动设置，到价会提醒你；取消发 /menu）",
+            parse_mode="Markdown")
+
+    # 一键 ±5% 预警（用当前价做基准）
+    elif d.startswith("alertpctset:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"⚡ 设置 {symbol} ±5% 提醒中...")
+        from storage import data as _ad, save_data as _as
+        try:
+            r = await get_price(symbol)
+            if not r:
+                await query.edit_message_text("获取当前价失败，稍后再试", reply_markup=back_to("cat_alert"))
+            else:
+                _ad["alerts"].append({
+                    "type": "pct", "chat_id": query.message.chat_id,
+                    "symbol": symbol, "pct": 5, "base_price": r["price"],
+                    "set_by": query.from_user.first_name,
+                })
+                _as()
+                await query.edit_message_text(
+                    f"✅ 已设置 *{symbol}* 涨跌超 ±5% 提醒\n基准价 ${r['price']:,.2f}",
+                    reply_markup=back_to("cat_alert"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"一键百分比预警出错: {e}")
+            await query.edit_message_text("设置失败，稍后再试", reply_markup=back_to("cat_alert"))
 
     # ============ OKX 专区 ============
     elif d == "cat_okx":
@@ -271,7 +349,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cn = await translate_news(items)
             lines = ["📰 *最新加密新闻*\n"]
             for i, it in enumerate(items, 1):
-                title = cn.get(i, it["title"]) if cn else it["title"]
+                title = sanitize_link_text(cn.get(i, it["title"]) if cn else it["title"])
                 lines.append(f"{i}. [{title}]({it['link']})")
             await query.edit_message_text("\n".join(lines), reply_markup=back_to("cat_news"),
                 parse_mode="Markdown", disable_web_page_preview=True)
@@ -380,9 +458,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 各订阅状态检查
         def status(key, is_dict=False):
             v = _sd.get(key, {} if is_dict else [])
-            if is_dict:
-                return "✅" if str(chat_id) in v or chat_id in v else "⬜"
-            return "✅" if chat_id in v else "⬜"
+            # 兼容历史数据里 chat_id 存成 int 或 str 两种情况
+            return "✅" if (chat_id in v or str(chat_id) in v) else "⬜"
         m = status("market_watch")
         nw = status("news_subs")
         ul = status("unlock_subs")
@@ -420,14 +497,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if what in sub_map:
             key, is_dict = sub_map[what]
             _sd.setdefault(key, [])
-            if chat_id in _sd[key]:
-                _sd[key].remove(chat_id)
+            # 兼容历史 int/str 混存：已订阅则两种形式都清掉；未订阅则以 int 存
+            if chat_id in _sd[key] or str(chat_id) in _sd[key]:
+                _sd[key] = [x for x in _sd[key] if x != chat_id and x != str(chat_id)]
             else:
                 _sd[key].append(chat_id)
             _ss()
         # 重新渲染订阅菜单（刷新状态）
         def status(key):
-            return "✅" if chat_id in _sd.get(key, []) else "⬜"
+            v = _sd.get(key, [])
+            return "✅" if (chat_id in v or str(chat_id) in v) else "⬜"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"{status('market_watch')} 市场异动告警", callback_data="tog_market")],
             [InlineKeyboardButton(f"{status('news_subs')} 新闻推送", callback_data="tog_news")],

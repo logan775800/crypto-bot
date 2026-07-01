@@ -14,8 +14,32 @@ logging.basicConfig(
     level=logging.INFO
 )
 
+HELP_TEXT = (
+    "❓ *使用帮助*\n\n"
+    "*最快上手*：直接发币名就能查价，例如 `BTC`、`eth`、`pepe`\n\n"
+    "*常用命令*\n"
+    "/menu 打开功能菜单（推荐，点按钮即可）\n"
+    "/dashboard 市场看板\n"
+    "/price BTC 查币价（/price BTC cny 看人民币）\n"
+    "/top 涨跌榜　/analyze BTC 技术分析\n"
+    "/ai BTC AI 解读　/news 最新新闻\n"
+    "/alert 价格预警（也可在菜单里点着设）\n"
+    "/portfolio 我的持仓（请私聊使用）\n\n"
+    "*底部快捷键*：📋菜单 / 📊看板 / 💰查价 / ❓帮助\n"
+    "⚠️ 所有数据仅供参考，不构成投资建议"
+)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("你好！发 /menu 打开菜单，或 /price BTC 查币价")
+    # 先发欢迎语并装上底部常驻键盘，再弹出分类菜单
+    await update.message.reply_text(
+        menu.WELCOME_TEXT, reply_markup=menu.persistent_kb(), parse_mode="Markdown")
+    await update.message.reply_text(
+        "👇 点分类直接出结果，无需记命令",
+        reply_markup=menu.main_menu_kb(), parse_mode="Markdown")
+
+async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        HELP_TEXT, reply_markup=menu.persistent_kb(), parse_mode="Markdown")
 
 async def post_init(application):
     """启动时加载币种 + 设置命令菜单"""
@@ -31,6 +55,7 @@ async def post_init(application):
     # 设置 Telegram 原生命令菜单
     commands = [
         BotCommand("menu", "📋 功能菜单"),
+        BotCommand("help", "❓ 使用帮助"),
         BotCommand("dashboard", "📊 市场看板"),
         BotCommand("summary", "📰 每日市场总结"),
         BotCommand("price", "💰 查币价"),
@@ -74,6 +99,7 @@ def main():
 
     # 基础
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("menu", menu.menu))
     app.add_handler(CommandHandler("dashboard", dashboard.dashboard))
     # 行情
@@ -150,6 +176,11 @@ def main():
     app.add_handler(CommandHandler("unwatchhold", portfolio.unwatch_holdings))
     app.add_handler(CommandHandler("subanalysis", broadcast.sub_analysis))
     app.add_handler(CommandHandler("unsubanalysis", broadcast.unsub_analysis))
+    # 底部常驻键盘按钮（必须在纯文字查价之前注册，先匹配先生效）
+    app.add_handler(MessageHandler(filters.Regex(r"^📋 菜单$"), menu.menu))
+    app.add_handler(MessageHandler(filters.Regex(r"^📊 看板$"), dashboard.dashboard))
+    app.add_handler(MessageHandler(filters.Regex(r"^💰 查价$"), quickprice.price_hint))
+    app.add_handler(MessageHandler(filters.Regex(r"^❓ 帮助$"), help_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, quickprice.quick_price))
     app.add_handler(CallbackQueryHandler(menu.button_handler))
 

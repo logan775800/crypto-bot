@@ -85,4 +85,6 @@ async def build_ai_text(symbol):
     data_text = (f"币种:{symbol} 价${cur['price']:,.2f} 24h{cur['change']:+.2f}% "
                  f"RSI:{r.get('rsi',0):.1f} MA7:${r.get('ma7',0):,.0f} MA30:${r.get('ma30',0):,.0f} MACD:{ms}")
     reply = await ask_ai(f"分析这些技术指标：{data_text}，给简洁趋势解读")
-    return f"🤖 *{symbol} AI分析*\n\n{reply}\n\n⚠️ 不构成投资建议"
+    # AI 输出是自由文本，可能含 _ * ` 等字符，转义后再嵌入 Markdown，避免整条消息渲染失败
+    from handlers.util import escape_md
+    return f"🤖 *{symbol} AI分析*\n\n{escape_md(reply)}\n\n⚠️ 不构成投资建议"

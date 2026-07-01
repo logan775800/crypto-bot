@@ -46,12 +46,41 @@ async def _okx_funding(inst):
         pass
     return None
 
+async def price_hint(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """底部'💰 查价'快捷键：提示直接发币名。"""
+    await update.message.reply_text("💰 直接发送币名即可查价，例如：BTC、eth、pepe")
+
+
 async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text:
         return
     text = update.message.text.strip()
     if text.startswith("/"):
         return
+
+    # 引导式预警：用户刚点了"选币→选方向"，现在发来的是触发价格
+    pending = context.user_data.get("await_alert")
+    if pending:
+        try:
+            target = float(text.replace(",", "").replace("$", "").replace("，", ""))
+        except ValueError:
+            await update.message.reply_text("请发送数字价格，例如 65000（取消发 /menu）")
+            return
+        from storage import data as _ad, save_data as _as
+        _ad["alerts"].append({
+            "type": "fixed", "chat_id": update.effective_chat.id,
+            "symbol": pending["symbol"], "target": target,
+            "direction": pending["direction"],
+            "set_by": update.effective_user.first_name,
+        })
+        _as()
+        context.user_data.pop("await_alert", None)
+        arrow = "涨破" if pending["direction"] == "above" else "跌破"
+        await update.message.reply_text(
+            f"✅ 预警已设置：{pending['symbol']} {arrow} ${target:,.2f}\n到价会自动提醒你。"
+        )
+        return
+
     if " " in text or len(text) > 12 or len(text) < 2:
         return
     symbol = text.upper()

@@ -17,6 +17,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vs = context.args[1].lower() if len(context.args) > 1 else "usd"
     if vs not in FIAT:
         vs = "usd"
+    await update.effective_chat.send_action("typing")
     try:
         result = await get_price(symbol, vs)
         if result is None:
@@ -49,6 +50,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 功能2：/top 涨跌榜
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.effective_chat.send_action("typing")
     try:
         gainers, losers = await get_top_movers(5)
     except Exception as e:
@@ -73,6 +75,7 @@ async def compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not valid:
         await update.message.reply_text("没有支持的币种")
         return
+    await update.effective_chat.send_action("typing")
     try:
         prices = await get_prices(valid)
     except Exception as e:
@@ -97,6 +100,7 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if symbol not in COIN_IDS:
         await update.message.reply_text(f"不支持的币种：{symbol}")
         return
+    await update.effective_chat.send_action("typing")
     try:
         md = await get_market_data([symbol])
     except Exception as e:

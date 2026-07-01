@@ -145,7 +145,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if ok:
             await safe_edit(query, f"⏳ 已确认部署 *{tag}*，Jenkins 执行中…\n(部署结果看 Jenkins/服务器日志)", parse_mode="Markdown")
         else:
-            await safe_edit(query, f"❌ 触发部署失败：{msg}")
+            # 失败保留按钮，修好后可直接重试，不用重新发通知
+            kb = InlineKeyboardMarkup([[
+                InlineKeyboardButton(f"🔁 重试部署 {tag}", callback_data=f"jdok:{tag}"),
+                InlineKeyboardButton("❌ 取消", callback_data=f"jdno:{tag}"),
+            ]])
+            await safe_edit(query, f"❌ 触发部署失败：{msg}\n修好后点重试。", reply_markup=kb)
 
     # ---- 查其他币（按来源决定后续动作）----
     elif d.startswith("askcoin:"):

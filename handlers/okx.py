@@ -267,12 +267,17 @@ async def build_gainers_text(inst_type="SPOT"):
     return "\n".join(lines)
 
 async def build_funding_text(symbol):
-    d = await _okx_get("/api/v5/public/funding-rate", {"instId": f"{symbol}-USDT-SWAP"})
-    if d["code"] != "0" or not d["data"]:
-        return f"未找到 {symbol} 合约"
-    rate = float(d["data"][0]["fundingRate"]) * 100
-    hint = "偏多" if rate > 0 else "偏空"
-    return f"💵 *{symbol} 永续合约*\n资金费率: {rate:+.4f}% ({hint})\n⚠️ 不构成投资建议"
+    try:
+        d = await _okx_get("/api/v5/public/funding-rate", {"instId": f"{symbol}-USDT-SWAP"})
+        if d["code"] == "0" and d["data"]:
+            rate = float(d["data"][0]["fundingRate"]) * 100
+            hint = "偏多" if rate > 0 else "偏空"
+            return f"💵 *{symbol} 永续合约* (OKX)\n资金费率: {rate:+.4f}% ({hint})\n⚠️ 不构成投资建议"
+    except Exception as e:
+        logging.error(f"OKX资金费率出错,转币安: {e}")
+    # OKX 没有 → 回退币安
+    from handlers.binance import build_funding_text_bn
+    return await build_funding_text_bn(symbol)
 
 
 # /depth BTC - 订单簿深度
@@ -396,12 +401,16 @@ async def liquidation(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def build_ratio_text(symbol):
-    d = await _okx_get("/api/v5/rubik/stat/contracts/long-short-account-ratio", {"ccy": symbol, "period": "5m"})
-    if d["code"] != "0" or not d["data"]:
-        return f"未找到 {symbol} 多空比"
-    ratio = float(d["data"][0][1])
-    hint = "散户偏多" if ratio > 1 else "散户偏空"
-    return f"⚖️ *{symbol} 多空比*\n多空账户比: {ratio:.2f} ({hint})\n(散户情绪，常作反向参考)\n⚠️ 不构成投资建议"
+    try:
+        d = await _okx_get("/api/v5/rubik/stat/contracts/long-short-account-ratio", {"ccy": symbol, "period": "5m"})
+        if d["code"] == "0" and d["data"]:
+            ratio = float(d["data"][0][1])
+            hint = "散户偏多" if ratio > 1 else "散户偏空"
+            return f"⚖️ *{symbol} 多空比* (OKX)\n多空账户比: {ratio:.2f} ({hint})\n(散户情绪，常作反向参考)\n⚠️ 不构成投资建议"
+    except Exception as e:
+        logging.error(f"OKX多空比出错,转币安: {e}")
+    from handlers.binance import build_ratio_text_bn
+    return await build_ratio_text_bn(symbol)
 
 async def build_liq_text(symbol):
     d = await _okx_get("/api/v5/public/liquidation-orders", {"instType": "SWAP", "instFamily": f"{symbol}-USDT", "state": "filled", "limit": "20"})
@@ -528,7 +537,7 @@ async def fprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def build_fprice_text(symbol):
-    """合约行情文本（供按钮调用）"""
+    """合约行情文本（供按钮调用）。OKX 没有该合约则回退币安。"""
     import asyncio
     swap = f"{symbol}-USDT-SWAP"
     ticker, funding, oi = await asyncio.gather(
@@ -538,7 +547,8 @@ async def build_fprice_text(symbol):
         return_exceptions=True
     )
     if not (isinstance(ticker, dict) and ticker.get("code") == "0" and ticker.get("data")):
-        return f"未找到 {symbol} 永续合约"
+        from handlers.binance import build_fprice_text_bn
+        return await build_fprice_text_bn(symbol)
     t = ticker["data"][0]
     last = float(t["last"]); op = float(t["open24h"])
     change = (last - op) / op * 100 if op > 0 else 0

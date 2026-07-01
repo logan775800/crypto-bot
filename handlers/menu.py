@@ -40,7 +40,8 @@ def main_menu_kb():
         [InlineKeyboardButton("📊 市场看板", callback_data="dash_refresh")],
         [InlineKeyboardButton("💰 行情查询", callback_data="cat_price"),
          InlineKeyboardButton("📈 技术分析", callback_data="cat_analysis")],
-        [InlineKeyboardButton("🔥 OKX专区", callback_data="cat_okx")],
+        [InlineKeyboardButton("🔥 OKX专区", callback_data="cat_okx"),
+         InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance")],
         [InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news"),
          InlineKeyboardButton("🔔 订阅推送", callback_data="cat_subs")],
         [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
@@ -602,6 +603,94 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"合约行情出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("okx_fprice_sel"))
+
+    # ============ 币安专区（镜像 OKX，数据来自 Binance）============
+    elif d == "cat_binance":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🆕 新币榜", callback_data="bn_new"),
+             InlineKeyboardButton("🚀 涨幅榜", callback_data="bn_gainers")],
+            [InlineKeyboardButton("📊 合约涨幅", callback_data="bn_swap"),
+             InlineKeyboardButton("💵 资金费率", callback_data="bn_funding_sel")],
+            [InlineKeyboardButton("⚖️ 多空比", callback_data="bn_ratio_sel"),
+             InlineKeyboardButton("💥 爆仓", callback_data="bn_liq_sel")],
+            [InlineKeyboardButton("📊 合约行情", callback_data="bn_fprice_sel")],
+            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+        ])
+        await query.edit_message_text("🅱️ *币安专区* (Binance 数据)\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
+
+    elif d == "bn_new":
+        await query.edit_message_text("🆕 查询中...")
+        from handlers.binance import build_new_text_bn
+        try:
+            await safe_edit(query, await build_new_text_bn(), reply_markup=back_to("cat_binance"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"币安新币榜出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("cat_binance"))
+
+    elif d == "bn_gainers":
+        await query.edit_message_text("🚀 查询中...")
+        from handlers.binance import build_gainers_text_bn
+        try:
+            await safe_edit(query, await build_gainers_text_bn("SPOT"), reply_markup=back_to("cat_binance"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"币安涨幅榜出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("cat_binance"))
+
+    elif d == "bn_swap":
+        await query.edit_message_text("📊 查询中...")
+        from handlers.binance import build_gainers_text_bn
+        try:
+            await safe_edit(query, await build_gainers_text_bn("SWAP"), reply_markup=back_to("cat_binance"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"币安合约榜出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("cat_binance"))
+
+    elif d == "bn_funding_sel":
+        await query.edit_message_text("💵 *资金费率* - 点币种：", reply_markup=coin_grid("bnfunding", "cat_binance"), parse_mode="Markdown")
+
+    elif d.startswith("bnfunding:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"💵 查询 {symbol}...")
+        from handlers.binance import build_funding_text_bn
+        try:
+            await safe_edit(query, await build_funding_text_bn(symbol), reply_markup=back_to("bn_funding_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"币安资金费率出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("bn_funding_sel"))
+
+    elif d == "bn_ratio_sel":
+        await query.edit_message_text("⚖️ *多空比* - 点币种：", reply_markup=coin_grid("bnratio", "cat_binance"), parse_mode="Markdown")
+
+    elif d.startswith("bnratio:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"⚖️ 查询 {symbol}...")
+        from handlers.binance import build_ratio_text_bn
+        try:
+            await safe_edit(query, await build_ratio_text_bn(symbol), reply_markup=back_to("bn_ratio_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"币安多空比出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("bn_ratio_sel"))
+
+    elif d == "bn_liq_sel":
+        await query.edit_message_text("💥 *爆仓* - 点币种：", reply_markup=coin_grid("bnliq", "cat_binance"), parse_mode="Markdown")
+
+    elif d.startswith("bnliq:"):
+        symbol = d.split(":")[1]
+        from handlers.binance import build_liq_text_bn
+        await safe_edit(query, await build_liq_text_bn(symbol), reply_markup=back_to("bn_liq_sel"), parse_mode="Markdown")
+
+    elif d == "bn_fprice_sel":
+        await query.edit_message_text("📊 *合约行情* - 点币种：", reply_markup=coin_grid("bnfprice", "cat_binance"), parse_mode="Markdown")
+
+    elif d.startswith("bnfprice:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"📊 查询 {symbol} 合约...")
+        from handlers.binance import build_fprice_text_bn
+        try:
+            await safe_edit(query, await build_fprice_text_bn(symbol), reply_markup=back_to("bn_fprice_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"币安合约行情出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("bn_fprice_sel"))
 
     # ============ 工具（按钮直达）============
     elif d == "cat_tools":

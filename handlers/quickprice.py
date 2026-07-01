@@ -110,10 +110,23 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         spot_cg = await get_price(symbol)
         spot_okx = await get_price_okx(symbol) if spot_cg is None else None
+        # CoinGecko、OKX 都没有 → 回退币安
+        spot_bn = None
+        if spot_cg is None and spot_okx is None:
+            from handlers.binance import get_price_binance
+            spot_bn = await get_price_binance(symbol)
+
         swap_tk = await _okx_ticker(f"{symbol}-USDT-SWAP")
         swap_fr = await _okx_funding(f"{symbol}-USDT-SWAP") if swap_tk else None
+        swap_src = "OKX"
+        if not swap_tk:  # OKX 无该永续 → 回退币安
+            from handlers.binance import get_swap_ticker_binance, get_funding_binance
+            swap_tk = await get_swap_ticker_binance(symbol)
+            if swap_tk:
+                swap_src = "币安"
+                swap_fr = await get_funding_binance(symbol)
 
-        if spot_cg is None and spot_okx is None and not swap_tk:
+        if spot_cg is None and spot_okx is None and spot_bn is None and not swap_tk:
             # 群里对太短(<3)的不提示，避免把 ok/hi 之类当查询刷屏；私聊一律提示
             if is_group(update) and len(text) < 3:
                 return
@@ -121,15 +134,15 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         lines = [f"💎 *{escape_md(symbol)}*\n"]
-        spot = spot_cg or spot_okx
+        spot = spot_cg or spot_okx or spot_bn
         if spot:
             e = "📈" if spot["change"] >= 0 else "📉"
-            src = "" if spot_cg else " (OKX)"
+            src = "" if spot_cg else (" (OKX)" if spot_okx else " (币安)")
             lines.append(f"{e} 现货: ${fmt_price(spot['price'])} ({spot['change']:+.2f}%){src}")
         if swap_tk:
             e2 = "📈" if swap_tk["change"] >= 0 else "📉"
             fr_text = f" | 费率{swap_fr:+.3f}%" if swap_fr is not None else ""
-            lines.append(f"{e2} 合约: ${fmt_price(swap_tk['price'])} ({swap_tk['change']:+.2f}%){fr_text}")
+            lines.append(f"{e2} 合约: ${fmt_price(swap_tk['price'])} ({swap_tk['change']:+.2f}%){fr_text} ({swap_src})")
         else:
             lines.append("(无永续合约)")
 

@@ -101,16 +101,11 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if " " in text or len(text) > 12 or len(text) < 2:
         return
+    # 群里只把"像币代码"的消息(纯ASCII字母/数字)当查询；
+    # 中文、带标点、普通聊天不触发，避免刷屏
+    if is_group(update) and not (text.isascii() and text.isalnum()):
+        return
     symbol = text.upper()
-    # 群里：靠"是否真币名"防误触发（大小写都接受，但必须是已知币种）
-    if is_group(update):
-        # 必须是纯字母 + 是已知币种（COIN_IDS里有），才响应
-        # 这样 btc/BTC/Btc 都能查，但普通聊天词不会误触发
-        if not text.isalpha() or symbol not in COIN_IDS:
-            # 不在已知列表的，群里静默（避免把聊天词当币名）
-            # 但允许：长度>=3的纯字母大写词尝试OKX（可能是新币）
-            if not (text.isupper() and len(text) >= 2 and text.isalpha()):
-                return
 
     try:
         spot_cg = await get_price(symbol)
@@ -119,8 +114,10 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         swap_fr = await _okx_funding(f"{symbol}-USDT-SWAP") if swap_tk else None
 
         if spot_cg is None and spot_okx is None and not swap_tk:
-            if not is_group(update):
-                await update.message.reply_text(f"没查到 {symbol}。试试 /price {symbol} 或检查币名")
+            # 群里对太短(<3)的不提示，避免把 ok/hi 之类当查询刷屏；私聊一律提示
+            if is_group(update) and len(text) < 3:
+                return
+            await update.message.reply_text(f"没查到 {symbol}，检查下币名（或试 /price {symbol}）")
             return
 
         lines = [f"💎 *{escape_md(symbol)}*\n"]

@@ -41,6 +41,14 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         HELP_TEXT, reply_markup=menu.persistent_kb(), parse_mode="Markdown")
 
+async def chat_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/id 显示当前会话的 chat_id（配置审批群等用）"""
+    c = update.effective_chat
+    u = update.effective_user
+    await update.message.reply_text(
+        f"本会话 chat_id: `{c.id}`\n类型: {c.type}\n你的 user_id: `{u.id}`",
+        parse_mode="Markdown")
+
 async def post_init(application):
     """启动时加载币种 + 设置命令菜单"""
     import logging
@@ -100,6 +108,7 @@ def main():
     # 基础
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("id", chat_id_cmd))
     app.add_handler(CommandHandler("menu", menu.menu))
     app.add_handler(CommandHandler("dashboard", dashboard.dashboard))
     # 行情

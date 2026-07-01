@@ -52,15 +52,15 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.effective_chat.send_action("typing")
     try:
-        gainers, losers = await get_top_movers(5)
+        gainers, losers = await get_top_movers(15)
     except Exception as e:
         logging.error(f"涨跌榜出错: {e}")
         await update.message.reply_text("查询失败，请稍后再试")
         return
-    lines = ["🚀 24h 涨幅榜 TOP5\n"]
+    lines = ["🚀 24h 涨幅榜 TOP15\n"]
     for i, c in enumerate(gainers, 1):
         lines.append(f"{i}. {c['symbol']}: ${c['price']:,.4g} (+{c['change']:.2f}%)")
-    lines.append("\n📉 24h 跌幅榜 TOP5\n")
+    lines.append("\n📉 24h 跌幅榜 TOP15\n")
     for i, c in enumerate(losers, 1):
         lines.append(f"{i}. {c['symbol']}: ${c['price']:,.4g} ({c['change']:.2f}%)")
     await update.message.reply_text("\n".join(lines))

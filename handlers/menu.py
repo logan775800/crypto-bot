@@ -177,11 +177,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "do_top":
         await query.edit_message_text("🚀 正在获取涨跌榜...")
         try:
-            gainers, losers = await get_top_movers(5)
-            lines = ["🚀 *24h涨幅榜*"]
+            gainers, losers = await get_top_movers(15)
+            lines = ["🚀 *24h涨幅榜 TOP15*"]
             for i, c in enumerate(gainers, 1):
                 lines.append(f"{i}. {c['symbol']}: +{c['change']:.2f}%")
-            lines.append("\n📉 *24h跌幅榜*")
+            lines.append("\n📉 *24h跌幅榜 TOP15*")
             for i, c in enumerate(losers, 1):
                 lines.append(f"{i}. {c['symbol']}: {c['change']:.2f}%")
             await query.edit_message_text("\n".join(lines), reply_markup=back_to("cat_price"), parse_mode="Markdown")

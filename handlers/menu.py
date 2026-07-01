@@ -6,7 +6,7 @@ from telegram import (
 from telegram.ext import ContextTypes
 from api import get_price, get_fear_greed, get_gas_price, get_market_data, get_top_movers
 from config import COIN_IDS
-from handlers.util import sanitize_link_text, safe_edit
+from handlers.util import sanitize_link_text, safe_edit, escape_md
 
 POPULAR = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "LINK", "AVAX", "DOT"]
 
@@ -181,11 +181,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             gainers, losers = await get_top_movers(15)
             lines = ["🚀 *24h涨幅榜 TOP15*"]
             for i, c in enumerate(gainers, 1):
-                lines.append(f"{i}. {c['symbol']}: +{c['change']:.2f}%")
+                lines.append(f"{i}. {escape_md(c['symbol'])}: +{c['change']:.2f}%")
             lines.append("\n📉 *24h跌幅榜 TOP15*")
             for i, c in enumerate(losers, 1):
-                lines.append(f"{i}. {c['symbol']}: {c['change']:.2f}%")
-            await query.edit_message_text("\n".join(lines), reply_markup=back_to("cat_price"), parse_mode="Markdown")
+                lines.append(f"{i}. {escape_md(c['symbol'])}: {c['change']:.2f}%")
+            await safe_edit(query, "\n".join(lines), reply_markup=back_to("cat_price"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"涨跌榜出错: {e}")
             await query.edit_message_text("获取失败", reply_markup=back_to("cat_price"))
@@ -195,8 +195,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             r = await get_price(symbol)
             emoji = "📈" if r["change"] >= 0 else "📉"
-            await query.edit_message_text(
-                f"{emoji} *{symbol}*\n价格: ${r['price']:,.2f}\n24h: {r['change']:+.2f}%",
+            await safe_edit(query,
+                f"{emoji} *{escape_md(symbol)}*\n价格: ${r['price']:,.2f}\n24h: {r['change']:+.2f}%",
                 reply_markup=back_to("sub_price"), parse_mode="Markdown")
         except Exception:
             await query.edit_message_text("查询失败", reply_markup=back_to("sub_price"))
@@ -207,8 +207,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             md = await get_market_data([symbol])
             x = md.get(symbol)
             if x:
-                await query.edit_message_text(
-                    f"📋 *{symbol}*\n价格: ${x['price']:,.2f}\n市值排名: #{x['market_cap_rank']}\n"
+                await safe_edit(query,
+                    f"📋 *{escape_md(symbol)}*\n价格: ${x['price']:,.2f}\n市值排名: #{x['market_cap_rank']}\n"
                     f"市值: ${x['market_cap']:,.0f}\n24h量: ${x['volume']:,.0f}\n"
                     f"24h: {x['change_24h']:+.2f}% | 7d: {x['change_7d']:+.2f}% | 30d: {x['change_30d']:+.2f}%",
                     reply_markup=back_to("sub_info"), parse_mode="Markdown")
@@ -228,7 +228,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.analysis import build_analysis_text
         try:
             text = await build_analysis_text(symbol)
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+            await safe_edit(query, text, reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("🤖 AI解读", callback_data=f"doai:{symbol}")],
                 [InlineKeyboardButton("⬅️ 返回", callback_data="cat_analysis"),
                  InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")]
@@ -243,7 +243,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.ai import build_ai_text
         try:
             text = await build_ai_text(symbol)
-            await query.edit_message_text(text, reply_markup=back_to("cat_analysis"), parse_mode="Markdown")
+            await safe_edit(query, text, reply_markup=back_to("cat_analysis"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"AI出错: {e}")
             await query.edit_message_text("AI分析失败", reply_markup=back_to("cat_analysis"))
@@ -337,7 +337,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🆕 查询中...")
         from handlers.okx import build_new_text
         try:
-            await query.edit_message_text(await build_new_text(), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
+            await safe_edit(query, await build_new_text(), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"新币榜出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("cat_okx"))
@@ -346,7 +346,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🚀 查询中...")
         from handlers.okx import build_gainers_text
         try:
-            await query.edit_message_text(await build_gainers_text("SPOT"), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
+            await safe_edit(query, await build_gainers_text("SPOT"), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"涨幅榜出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("cat_okx"))
@@ -355,7 +355,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📊 查询中...")
         from handlers.okx import build_gainers_text
         try:
-            await query.edit_message_text(await build_gainers_text("SWAP"), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
+            await safe_edit(query, await build_gainers_text("SWAP"), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"合约榜出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("cat_okx"))
@@ -368,7 +368,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"💵 查询 {symbol}...")
         from handlers.okx import build_funding_text
         try:
-            await query.edit_message_text(await build_funding_text(symbol), reply_markup=back_to("okx_funding_sel"), parse_mode="Markdown")
+            await safe_edit(query, await build_funding_text(symbol), reply_markup=back_to("okx_funding_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"资金费率出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("okx_funding_sel"))
@@ -381,7 +381,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"⚖️ 查询 {symbol}...")
         from handlers.okx import build_ratio_text
         try:
-            await query.edit_message_text(await build_ratio_text(symbol), reply_markup=back_to("okx_ratio_sel"), parse_mode="Markdown")
+            await safe_edit(query, await build_ratio_text(symbol), reply_markup=back_to("okx_ratio_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"多空比出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("okx_ratio_sel"))
@@ -394,7 +394,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"💥 查询 {symbol}...")
         from handlers.okx import build_liq_text
         try:
-            await query.edit_message_text(await build_liq_text(symbol), reply_markup=back_to("okx_liq_sel"), parse_mode="Markdown")
+            await safe_edit(query, await build_liq_text(symbol), reply_markup=back_to("okx_liq_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"爆仓出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("okx_liq_sel"))
@@ -445,10 +445,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             g=sorted(coins,key=lambda x:x["change"],reverse=True)[:5]
             l=sorted(coins,key=lambda x:x["change"])[:5]
             lines=["📸 *异动快照*\n🚀涨幅:"]
-            for c in g: lines.append(f"  {c['sym']}: {c['change']:+.1f}%")
+            for c in g: lines.append(f"  {escape_md(c['sym'])}: {c['change']:+.1f}%")
             lines.append("💥跌幅:")
-            for c in l: lines.append(f"  {c['sym']}: {c['change']:+.1f}%")
-            await query.edit_message_text("\n".join(lines), reply_markup=back_to("cat_news"), parse_mode="Markdown")
+            for c in l: lines.append(f"  {escape_md(c['sym'])}: {c['change']:+.1f}%")
+            await safe_edit(query, "\n".join(lines), reply_markup=back_to("cat_news"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单异动出错: {e}")
             await query.edit_message_text("获取失败", reply_markup=back_to("cat_news"))
@@ -457,7 +457,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("📊 生成市场总结...")
         from handlers.summary import build_summary
         try:
-            await query.edit_message_text(await build_summary(), reply_markup=back_to("cat_news"), parse_mode="Markdown")
+            await safe_edit(query, await build_summary(), reply_markup=back_to("cat_news"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单总结出错: {e}")
             await query.edit_message_text("生成失败", reply_markup=back_to("cat_news"))
@@ -486,8 +486,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines=["🔓 *未来30天大额解锁*\n"]
                 for x in r[:10]:
                     dt=datetime.datetime.fromtimestamp(x["ts"]).strftime("%m-%d")
-                    lines.append(f"{dt} {x['sym']} 解锁{x['pct']:.1f}%")
-                await query.edit_message_text("\n".join(lines), reply_markup=back_to("cat_news"), parse_mode="Markdown")
+                    lines.append(f"{dt} {escape_md(x['sym'])} 解锁{x['pct']:.1f}%")
+                await safe_edit(query, "\n".join(lines), reply_markup=back_to("cat_news"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单解锁出错: {e}")
             await query.edit_message_text("获取失败", reply_markup=back_to("cat_news"))
@@ -598,7 +598,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f"📊 查询 {symbol} 合约...")
         from handlers.okx import build_fprice_text
         try:
-            await query.edit_message_text(await build_fprice_text(symbol), reply_markup=back_to("okx_fprice_sel"), parse_mode="Markdown")
+            await safe_edit(query, await build_fprice_text(symbol), reply_markup=back_to("okx_fprice_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"合约行情出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("okx_fprice_sel"))
@@ -638,7 +638,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.whale import build_whale_text
         try:
             text = await build_whale_text(100)
-            await query.edit_message_text(text, reply_markup=back_to("cat_tools"), parse_mode="Markdown")
+            await safe_edit(query, text, reply_markup=back_to("cat_tools"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"巨鲸出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("cat_tools"))
@@ -653,7 +653,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.arbitrage import build_arb_text
         try:
             text = await build_arb_text(symbol)
-            await query.edit_message_text(text, reply_markup=back_to("sub_arb"), parse_mode="Markdown")
+            await safe_edit(query, text, reply_markup=back_to("sub_arb"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"比价出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("sub_arb"))

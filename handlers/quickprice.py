@@ -5,6 +5,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from api import get_price, get_price_okx
 from config import COIN_IDS
+from handlers.util import escape_md, safe_reply
 
 
 def fmt_price(p):
@@ -122,7 +123,7 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(f"没查到 {symbol}。试试 /price {symbol} 或检查币名")
             return
 
-        lines = [f"💎 *{symbol}*\n"]
+        lines = [f"💎 *{escape_md(symbol)}*\n"]
         spot = spot_cg or spot_okx
         if spot:
             e = "📈" if spot["change"] >= 0 else "📉"
@@ -139,6 +140,6 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("📋 详情", callback_data=f"getinfo:{symbol}"),
             InlineKeyboardButton("📈 分析", callback_data=f"doanalyze:{symbol}"),
         ]])
-        await update.message.reply_text("\n".join(lines), reply_markup=kb, parse_mode="Markdown")
+        await safe_reply(update.message, "\n".join(lines), reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"快捷查价出错: {e}")

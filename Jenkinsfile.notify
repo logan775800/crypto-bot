@@ -24,13 +24,22 @@ tag=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' | sort -V | tail -1)
 if [ -z "$tag" ]; then echo "无版本 tag，跳过通知"; exit 0; fi
 echo "最新版本: $tag"
 
-# 用单引号拼 JSON，避免 Groovy/shell 的引号转义问题
-rm='{"inline_keyboard":[[{"text":"✅ 确认部署 '"$tag"'","callback_data":"jdok:'"$tag"'"},{"text":"❌ 取消","callback_data":"jdno:'"$tag"'"}]]}'
+# 去掉凭据里可能的首尾空白/换行(粘贴时常见)，否则 URL 会非法
+BOT=$(printf %s "$BOT" | tr -d '[:space:]')
+CHAT=$(printf %s "$CHAT" | tr -d '[:space:]')
 
-curl -s "https://api.telegram.org/bot$BOT/sendMessage" \
-  --data-urlencode "chat_id=$CHAT" \
-  --data-urlencode "text=🆕 检测到新版本 $tag，是否部署到生产？（仅管理员可确认）" \
-  --data-urlencode "reply_markup=$rm" >/dev/null
+# 用 JSON body 发送，避免 urlencode 的引号/编码问题
+cat > /tmp/tg_$$.json <<JSON
+{"chat_id":"$CHAT","text":"🆕 检测到新版本 $tag，是否部署到生产？（仅管理员可确认）","reply_markup":{"inline_keyboard":[[{"text":"✅ 确认部署 $tag","callback_data":"jdok:$tag"},{"text":"❌ 取消","callback_data":"jdno:$tag"}]]}}
+JSON
+
+code=$(curl -s -o /tmp/tg_resp_$$ -w "%{http_code}" -X POST \
+  "https://api.telegram.org/bot$BOT/sendMessage" \
+  -H "Content-Type: application/json" --data @/tmp/tg_$$.json)
+echo "Telegram 返回 HTTP $code"
+cat /tmp/tg_resp_$$ 2>/dev/null || true
+rm -f /tmp/tg_$$.json /tmp/tg_resp_$$
+[ "$code" = "200" ] || { echo "发送失败"; exit 1; }
 echo "已发送审批通知到群"
 '''
                 }

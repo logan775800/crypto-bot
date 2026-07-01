@@ -28,6 +28,8 @@ echo "最新版本: $tag"
 # 去掉凭据里可能的首尾空白/换行(粘贴时常见)，否则 URL 会非法
 BOT=$(printf %s "$BOT" | tr -d '[:space:]')
 CHAT=$(printf %s "$CHAT" | tr -d '[:space:]')
+# 诊断：长度 + 前11位(公开的botID部分)，不泄露密钥
+echo "诊断 token长度=${#BOT} 前11位=$(printf %s "$BOT" | cut -c1-11)  chat=$CHAT"
 
 # 用 JSON body 发送，避免 urlencode 的引号/编码问题
 cat > /tmp/tg_$$.json <<JSON

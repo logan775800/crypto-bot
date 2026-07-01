@@ -115,6 +115,21 @@ async def get_top_movers(limit=10):
     losers = sorted(coins, key=lambda x: x["change"])[:limit]
     return gainers, losers
 
+async def get_market_leaders(limit=22):
+    """按市值取前N的币（含价格+24h涨跌），用于市场看板。多取几个方便调用方过滤稳定币。"""
+    raw = await _get("/coins/markets", {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": limit,
+        "page": 1,
+        "price_change_percentage": "24h",
+    })
+    return [{
+        "symbol": c["symbol"].upper(),
+        "price": c["current_price"],
+        "change": c.get("price_change_percentage_24h") or 0,
+    } for c in raw]
+
 async def get_market_chart(symbol: str, days: int = 7):
     """获取历史价格：返回 [(timestamp_ms, price), ...]"""
     from config import COIN_IDS

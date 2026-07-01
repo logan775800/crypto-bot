@@ -2,32 +2,50 @@ import logging
 import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from api import get_prices, get_fear_greed, get_gas_price
+from api import get_market_leaders, get_fear_greed, get_gas_price
 
-DASH_COINS = ["BTC", "ETH", "BNB", "SOL"]
+# 看板显示市值前 N（过滤掉稳定币后）
+DASH_TOP_N = 15
+# 稳定币不参与看板展示（价格恒为1、涨跌≈0，占位无意义）
+STABLES = {"USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE", "USDS", "PYUSD", "BUSD"}
+
+def _fmt_price(p):
+    """按价格量级智能保留小数，避免小价币显示成 $0.00。"""
+    if p >= 1:
+        return f"${p:,.2f}"
+    elif p >= 0.01:
+        return f"${p:.4f}"
+    elif p >= 0.0001:
+        return f"${p:.6f}"
+    else:
+        return f"${p:.8f}"
 
 async def build_dashboard():
     """生成看板文本"""
-    # 并发拿价格、情绪、gas
-    prices_task = get_prices(DASH_COINS)
+    # 并发拿市值榜、情绪、gas
+    leaders_task = get_market_leaders(DASH_TOP_N + 8)
     fear_task = get_fear_greed()
     gas_task = get_gas_price()
 
-    prices, fear, gas = await asyncio.gather(
-        prices_task, fear_task, gas_task,
+    leaders, fear, gas = await asyncio.gather(
+        leaders_task, fear_task, gas_task,
         return_exceptions=True
     )
 
     lines = ["📊 *市场看板*\n"]
 
-    # 价格
-    lines.append("💰 *主流币*")
-    if isinstance(prices, dict):
-        for sym in DASH_COINS:
-            info = prices.get(sym)
-            if info:
-                emoji = "📈" if info["change"] >= 0 else "📉"
-                lines.append(f"{emoji} {sym}: ${info['price']:,.2f} ({info['change']:+.2f}%)")
+    # 价格（市值前 N，跳过稳定币）
+    lines.append(f"💰 *市值 Top {DASH_TOP_N}*")
+    if isinstance(leaders, list) and leaders:
+        shown = 0
+        for c in leaders:
+            if c["symbol"] in STABLES:
+                continue
+            emoji = "📈" if c["change"] >= 0 else "📉"
+            lines.append(f"{emoji} {c['symbol']}: {_fmt_price(c['price'])} ({c['change']:+.2f}%)")
+            shown += 1
+            if shown >= DASH_TOP_N:
+                break
     else:
         lines.append("价格获取失败")
 

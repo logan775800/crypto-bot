@@ -83,7 +83,32 @@ REMOTE
     }
 
     post {
-        success { echo '✅ 部署完成' }
-        failure { echo '❌ 部署失败（若为启动失败，服务器已自动回滚，看上面日志）' }
+        always {
+            script {
+                def tag = (params.TAG && params.TAG.trim()) ? params.TAG.trim() : '最新版本'
+                def msg = (currentBuild.currentResult == 'SUCCESS') ?
+                    "✅ 部署成功: ${tag}" :
+                    "❌ 部署失败: ${tag}（若为启动失败，服务器已自动回滚）"
+                try {
+                    withCredentials([
+                        string(credentialsId: 'telegram-bot-token', variable: 'BOT'),
+                        string(credentialsId: 'telegram-approve-chat', variable: 'CHAT')
+                    ]) {
+                        withEnv(["TG_MSG=${msg}"]) {
+                            sh '''
+set +x
+BOT=$(printf %s "$BOT" | tr -d '[:space:]')
+CHAT=$(printf %s "$CHAT" | tr -d '[:space:]')
+curl -s -X POST "https://api.telegram.org/bot$BOT/sendMessage" \
+  --data-urlencode "chat_id=$CHAT" \
+  --data-urlencode "text=$TG_MSG" >/dev/null || true
+'''
+                        }
+                    }
+                } catch (e) {
+                    echo "结果通知发送失败(忽略): ${e}"
+                }
+            }
+        }
     }
 }

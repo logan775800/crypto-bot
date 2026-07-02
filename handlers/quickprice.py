@@ -123,11 +123,15 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         spot_cg = await get_price(symbol)
         spot_okx = await get_price_okx(symbol) if spot_cg is None else None
-        # CoinGecko、OKX 都没有 → 回退币安
+        # CoinGecko、OKX 都没有 → 回退币安 → 再回退 Bybit
         spot_bn = None
+        spot_by = None
         if spot_cg is None and spot_okx is None:
             from handlers.binance import get_price_binance
             spot_bn = await get_price_binance(symbol)
+            if spot_bn is None:
+                from handlers.bybit import get_price_bybit
+                spot_by = await get_price_bybit(symbol)
 
         swap_tk = await _okx_ticker(f"{symbol}-USDT-SWAP")
         swap_fr = await _okx_funding(f"{symbol}-USDT-SWAP") if swap_tk else None
@@ -138,8 +142,14 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if swap_tk:
                 swap_src = "币安"
                 swap_fr = await get_funding_binance(symbol)
+        if not swap_tk:  # 币安也没有 → 回退 Bybit
+            from handlers.bybit import get_swap_ticker_bybit, get_funding_bybit
+            swap_tk = await get_swap_ticker_bybit(symbol)
+            if swap_tk:
+                swap_src = "Bybit"
+                swap_fr = await get_funding_bybit(symbol)
 
-        if spot_cg is None and spot_okx is None and spot_bn is None and not swap_tk:
+        if spot_cg is None and spot_okx is None and spot_bn is None and spot_by is None and not swap_tk:
             # 群里对太短(<3)的不提示，避免把 ok/hi 之类当查询刷屏；私聊一律提示
             if is_group(update) and len(text) < 3:
                 return
@@ -147,15 +157,17 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         lines = [f"💎 *{escape_md(symbol)}*\n"]
-        spot = spot_cg or spot_okx or spot_bn
+        spot = spot_cg or spot_okx or spot_bn or spot_by
         if spot:
             e = "📈" if spot["change"] >= 0 else "📉"
             if spot_cg:
                 src = " (CoinGecko)"
             elif spot_okx:
                 src = " (OKX)"
-            else:
+            elif spot_bn:
                 src = " (币安)"
+            else:
+                src = " (Bybit)"
             lines.append(f"{e} 现货: ${fmt_price(spot['price'])} ({spot['change']:+.2f}%){src}")
         if swap_tk:
             e2 = "📈" if swap_tk["change"] >= 0 else "📉"

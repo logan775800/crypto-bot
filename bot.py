@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -91,6 +91,7 @@ async def post_init(application):
         BotCommand("arb", "💱 多所比价"),
         BotCommand("arbwatch", "💱 套利监控告警"),
         BotCommand("alert", "🔔 价格预警"),
+        BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
         BotCommand("watchmarket", "🚨 订阅市场异动告警"),
         BotCommand("subnews", "📰 订阅新闻推送"),
         BotCommand("subunlock", "🔓 订阅解锁提醒"),
@@ -158,6 +159,8 @@ def main():
     app.add_handler(CommandHandler("watch", alert.watch))
     app.add_handler(CommandHandler("alerts", alert.list_alerts))
     app.add_handler(CommandHandler("delalert", alert.del_alert))
+    app.add_handler(CommandHandler("rsialert", indicator_alert.rsi_alert))
+    app.add_handler(CommandHandler("rsialerts", indicator_alert.rsi_alerts))
     # 持仓
     app.add_handler(CommandHandler("add", portfolio.add_holding))
     app.add_handler(CommandHandler("buy", portfolio.buy))
@@ -207,6 +210,7 @@ def main():
     # 定时任务
     jq = app.job_queue
     jq.run_repeating(alert.check_alerts, interval=60, first=10)
+    jq.run_repeating(indicator_alert.check_ti_alerts, interval=900, first=45)  # 技术指标告警，每15分钟
     jq.run_repeating(market_alert.scan_market, interval=300, first=30)  # 市场异动扫描
     jq.run_repeating(news.push_news, interval=3600, first=120)  # 新闻推送
     jq.run_repeating(unlock.check_unlocks, interval=86400, first=180)  # 解锁检查，每天

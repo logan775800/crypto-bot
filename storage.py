@@ -38,6 +38,7 @@ data.setdefault("arb_subs", {})         # 套利监控订阅 {chat_id: {"thresho
 data.setdefault("arb_alerted", {})      # 套利告警冷却 {sym: 时间戳}
 data.setdefault("whale_addr", {})       # 巨鲸地址追踪 {chat_id: {addr: {"label":..,"last":块高}}}
 data.setdefault("whale_min", {})        # 地址追踪最小美元阈值 {chat_id: usd}
+data.setdefault("ti_alerts", [])        # 技术指标告警订阅 [{chat_id,symbol,rsi_state,ma_state}]
 
 def save_data():
     # 原子写入：先写临时文件再 os.replace，避免写盘中途被打断（多个定时任务并发保存）

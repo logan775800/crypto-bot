@@ -41,7 +41,8 @@ def main_menu_kb():
         [InlineKeyboardButton("💰 行情查询", callback_data="cat_price"),
          InlineKeyboardButton("📈 技术分析", callback_data="cat_analysis")],
         [InlineKeyboardButton("🔥 OKX专区", callback_data="cat_okx"),
-         InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance")],
+         InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance"),
+         InlineKeyboardButton("🟡 Bybit专区", callback_data="cat_bybit")],
         [InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news"),
          InlineKeyboardButton("🔔 订阅推送", callback_data="cat_subs")],
         [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
@@ -786,6 +787,94 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"币安合约行情出错: {e}")
             await query.edit_message_text("查询失败", reply_markup=back_to("bn_fprice_sel"))
+
+    # ============ Bybit 专区（镜像 OKX/币安，数据来自 Bybit）============
+    elif d == "cat_bybit":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🆕 新币榜", callback_data="by_new"),
+             InlineKeyboardButton("🚀 涨幅榜", callback_data="by_gainers")],
+            [InlineKeyboardButton("📊 合约涨幅", callback_data="by_swap"),
+             InlineKeyboardButton("💵 资金费率", callback_data="by_funding_sel")],
+            [InlineKeyboardButton("⚖️ 多空比", callback_data="by_ratio_sel"),
+             InlineKeyboardButton("💥 爆仓", callback_data="by_liq_sel")],
+            [InlineKeyboardButton("📊 合约行情", callback_data="by_fprice_sel")],
+            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+        ])
+        await query.edit_message_text("🟡 *Bybit 专区* (Bybit 数据)\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
+
+    elif d == "by_new":
+        await query.edit_message_text("🆕 查询中...")
+        from handlers.bybit import build_new_text_by
+        try:
+            await safe_edit(query, await build_new_text_by(), reply_markup=back_to("cat_bybit"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Bybit新币榜出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("cat_bybit"))
+
+    elif d == "by_gainers":
+        await query.edit_message_text("🚀 查询中...")
+        from handlers.bybit import build_gainers_text_by
+        try:
+            await safe_edit(query, await build_gainers_text_by("SPOT"), reply_markup=back_to("cat_bybit"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Bybit涨幅榜出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("cat_bybit"))
+
+    elif d == "by_swap":
+        await query.edit_message_text("📊 查询中...")
+        from handlers.bybit import build_gainers_text_by
+        try:
+            await safe_edit(query, await build_gainers_text_by("SWAP"), reply_markup=back_to("cat_bybit"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Bybit合约榜出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("cat_bybit"))
+
+    elif d == "by_funding_sel":
+        await query.edit_message_text("💵 *资金费率* - 点币种：", reply_markup=coin_grid("byfunding", "cat_bybit"), parse_mode="Markdown")
+
+    elif d.startswith("byfunding:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"💵 查询 {symbol}...")
+        from handlers.bybit import build_funding_text_by
+        try:
+            await safe_edit(query, await build_funding_text_by(symbol), reply_markup=back_to("by_funding_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Bybit资金费率出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("by_funding_sel"))
+
+    elif d == "by_ratio_sel":
+        await query.edit_message_text("⚖️ *多空比* - 点币种：", reply_markup=coin_grid("byratio", "cat_bybit"), parse_mode="Markdown")
+
+    elif d.startswith("byratio:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"⚖️ 查询 {symbol}...")
+        from handlers.bybit import build_ratio_text_by
+        try:
+            await safe_edit(query, await build_ratio_text_by(symbol), reply_markup=back_to("by_ratio_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Bybit多空比出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("by_ratio_sel"))
+
+    elif d == "by_liq_sel":
+        await query.edit_message_text("💥 *爆仓* - 点币种：", reply_markup=coin_grid("byliq", "cat_bybit"), parse_mode="Markdown")
+
+    elif d.startswith("byliq:"):
+        symbol = d.split(":")[1]
+        from handlers.bybit import build_liq_text_by
+        await safe_edit(query, await build_liq_text_by(symbol), reply_markup=back_to("by_liq_sel"), parse_mode="Markdown")
+
+    elif d == "by_fprice_sel":
+        await query.edit_message_text("📊 *合约行情* - 点币种：", reply_markup=coin_grid("byfprice", "cat_bybit"), parse_mode="Markdown")
+
+    elif d.startswith("byfprice:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"📊 查询 {symbol} 合约...")
+        from handlers.bybit import build_fprice_text_by
+        try:
+            await safe_edit(query, await build_fprice_text_by(symbol), reply_markup=back_to("by_fprice_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Bybit合约行情出错: {e}")
+            await query.edit_message_text("查询失败", reply_markup=back_to("by_fprice_sel"))
 
     # ============ 工具（按钮直达）============
     elif d == "cat_tools":

@@ -396,9 +396,11 @@ async def build_signal_chart(symbol):
 async def send_full_detail(message, symbol, spot, spot_src, swap, swap_fr, swap_src, reply_markup=None):
     """由 quick_price 调用：先发信息卡，再发蜡烛图+研判。任一失败不影响另一条。"""
     sym = symbol.upper()
+    # do_quote=False：群里直接发普通消息，不引用用户那条币名消息
     try:
         card = await build_info_card(sym, spot, spot_src, swap, swap_fr, swap_src)
-        await safe_reply(message, card, reply_markup=reply_markup, parse_mode="Markdown")
+        await safe_reply(message, card, reply_markup=reply_markup,
+                         parse_mode="Markdown", do_quote=False)
     except Exception as e:
         log.error(f"[detail] {sym} 信息卡失败: {e}")
 
@@ -406,6 +408,6 @@ async def send_full_detail(message, symbol, spot, spot_src, swap, swap_fr, swap_
         chart = await build_signal_chart(sym)
         if chart:
             buf, caption = chart
-            await message.reply_photo(photo=buf, caption=caption)
+            await message.reply_photo(photo=buf, caption=caption, do_quote=False)
     except Exception as e:
         log.error(f"[detail] {sym} 蜡烛图失败: {e}")

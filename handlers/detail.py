@@ -12,8 +12,8 @@ import asyncio
 import logging
 import httpx
 
-from api import get_market_data
-from indicators import rsi as _rsi, sma, macd_hist, adx as _adx
+from api import get_market_data, get_fear_greed
+from indicators import rsi as _rsi, sma, macd_hist, adx as _adx, support_resistance
 from handlers.util import escape_md, safe_reply
 
 log = logging.getLogger(__name__)
@@ -164,6 +164,46 @@ async def build_rsi_multi(symbol):
     return r4, r1
 
 
+# ---------- 合约深度：持仓量 OI(+24h变化) + 多空比（币安合约数据） ----------
+async def build_oi_ls(symbol):
+    """返回 {oi_usd, oi_chg, ls} 或 None。币安合约接口，取不到的字段留 None。"""
+    sym = symbol.upper() + "USDT"
+    oi_usd = oi_chg = ls = None
+    async with httpx.AsyncClient(timeout=10) as client:
+        # 持仓量 + 24h 变化：1h 粒度取 25 根，比较首尾（sumOpenInterestValue 为 USD 名义值）
+        try:
+            r = await client.get("https://fapi.binance.com/futures/data/openInterestHist",
+                                 params={"symbol": sym, "period": "1h", "limit": 25})
+            r.raise_for_status()
+            hist = r.json()
+            if isinstance(hist, list) and len(hist) >= 2:
+                old = float(hist[0]["sumOpenInterestValue"])
+                new = float(hist[-1]["sumOpenInterestValue"])
+                oi_usd = new
+                if old > 0:
+                    oi_chg = (new - old) / old * 100
+        except Exception:
+            pass
+        # 多空账户比
+        try:
+            r = await client.get("https://fapi.binance.com/futures/data/globalLongShortAccountRatio",
+                                 params={"symbol": sym, "period": "5m", "limit": 1})
+            d = r.json()
+            if isinstance(d, list) and d:
+                ls = float(d[-1]["longShortRatio"])
+        except Exception:
+            pass
+    if oi_usd is None and ls is None:
+        return None
+    return {"oi_usd": oi_usd, "oi_chg": oi_chg, "ls": ls}
+
+
+_FNG_ZH = {
+    "Extreme Fear": "极度恐惧", "Fear": "恐惧", "Neutral": "中性",
+    "Greed": "贪婪", "Extreme Greed": "极度贪婪",
+}
+
+
 # ---------- 信息卡（消息 1） ----------
 async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
     """组装完整信息卡文本。spot/swap 为 quick_price 已取到的行情，避免重复请求。"""
@@ -183,12 +223,13 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
             price = swap["price"]
     lines.append(f"来源: {spot_src or swap_src or '—'}")
 
-    # 市值 / RSI(4h·1d) / 四所买卖聚合 三块并发拉取
-    md_res, rsi_res, flow = await asyncio.gather(
+    # 市值 / RSI / 四所买卖聚合 / 合约深度 / 恐惧贪婪 五块并发拉取
+    md_res, rsi_res, flow, oils, fng = await asyncio.gather(
         get_market_data([sym]), build_rsi_multi(sym), build_flow_block(sym),
+        build_oi_ls(sym), get_fear_greed(),
         return_exceptions=True)
 
-    # 市值/排名/成交量/多周期涨跌（CoinGecko）
+    # 市值/排名/成交量/多周期涨跌 + 24h高低 + ATH + 供应量/FDV（CoinGecko 同一接口）
     md = None
     if isinstance(md_res, dict):
         md = md_res.get(sym)
@@ -201,6 +242,16 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
         lines.append(f"24h成交量: ${md['volume']:,.0f}")
         lines.append(f"涨跌幅: 24h: {md['change_24h']:+.2f}% | "
                      f"7d: {md['change_7d']:+.2f}% | 30d: {md['change_30d']:+.2f}%")
+        if md.get("high_24h") and md.get("low_24h"):
+            lines.append(f"24h高/低: ${_fmt_price(md['high_24h'])} / ${_fmt_price(md['low_24h'])}")
+        if md.get("ath"):
+            chg = f"（距ATH {md['ath_change']:+.1f}%）" if md.get("ath_change") is not None else ""
+            lines.append(f"历史最高: ${_fmt_price(md['ath'])}{chg}")
+        if md.get("circ_supply"):
+            tot = f" / 总量 {md['total_supply']:,.0f}" if md.get("total_supply") else ""
+            lines.append(f"供应量: 流通 {md['circ_supply']:,.0f}{tot} 枚")
+        if md.get("fdv"):
+            lines.append(f"FDV(完全稀释): ${md['fdv']:,.0f}")
 
     # RSI 4h / 1d
     r4, r1 = rsi_res if isinstance(rsi_res, tuple) else (None, None)
@@ -213,6 +264,20 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
     # 资金费率
     if swap_fr is not None:
         lines.append(f"资金费率: {swap_fr:+.4f}% {swap_src or ''}".rstrip())
+
+    # 合约深度：持仓量 OI(24h变化) + 多空比
+    if isinstance(oils, dict):
+        if oils.get("oi_usd"):
+            chg = f" (24h {oils['oi_chg']:+.1f}%)" if oils.get("oi_chg") is not None else ""
+            lines.append(f"持仓量: ${oils['oi_usd']:,.0f}{chg}")
+        if oils.get("ls") is not None:
+            hint = "散户偏多" if oils["ls"] > 1 else "散户偏空"
+            lines.append(f"多空比: {oils['ls']:.2f}（{hint}，常作反向参考）")
+
+    # 恐惧贪婪指数（全局）
+    if isinstance(fng, dict) and fng.get("value") is not None:
+        zh = _FNG_ZH.get(fng.get("classification"), fng.get("classification", ""))
+        lines.append(f"恐惧贪婪指数: {fng['value']}（{zh}）")
 
     # 全市场买卖估算（四所齐全才显示）
     if isinstance(flow, list) and flow:
@@ -355,7 +420,15 @@ def _build_signal_text(o, h, l, c, v):
     suffix = f"（{('，'.join(parts))}）" if parts else ""
     signal_line = f"综合信号：{head}·{strength}{suffix}"
 
-    return "\n".join([signal_line, trend_line, momo_line, vol_line, strg_line])
+    # —— 关键位（近30根支撑/阻力）——
+    sr = support_resistance(closes)
+    sr_line = (f"关键位：阻力 ${_fmt_price(sr['resistance'])} | 支撑 ${_fmt_price(sr['support'])}"
+               if sr else None)
+
+    out = [signal_line, trend_line, momo_line, vol_line, strg_line]
+    if sr_line:
+        out.append(sr_line)
+    return "\n".join(out)
 
 
 async def build_signal_chart(symbol):

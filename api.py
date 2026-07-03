@@ -94,6 +94,11 @@ async def get_market_data(symbols):
             "change_30d": c.get("price_change_percentage_30d_in_currency") or 0,
             "high_24h": c["high_24h"],
             "low_24h": c["low_24h"],
+            "ath": c.get("ath"),
+            "ath_change": c.get("ath_change_percentage"),
+            "circ_supply": c.get("circulating_supply"),
+            "total_supply": c.get("total_supply"),
+            "fdv": c.get("fully_diluted_valuation"),
         }
     return result
 

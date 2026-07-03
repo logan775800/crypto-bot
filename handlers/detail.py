@@ -42,11 +42,15 @@ async def _binance_klines(client, sym):
     return out
 
 
-def _split_by_direction(o, c, vol):
-    """无主动买卖字段的所：按 K 线方向估算(阳线记买、阴线记卖)。"""
-    if c >= o:
-        return vol, 0.0
-    return 0.0, vol
+def _split_intrabar(h, l, c, vol):
+    """无主动买卖字段的所：按收盘在当根振幅中的位置估算主动买卖强度。
+    buy_ratio=(收-低)/(高-低)——收盘越靠近高点，主动买占比越大。比阴阳线一刀切更接近真实。"""
+    rng = h - l
+    if rng <= 0:
+        return vol / 2, vol / 2
+    buy_ratio = (c - l) / rng
+    buy = vol * buy_ratio
+    return buy, vol - buy
 
 
 async def _okx_klines(client, sym):
@@ -59,8 +63,8 @@ async def _okx_klines(client, sym):
     rows = list(reversed(d["data"]))   # OKX 最新在前 → 反转成正序
     out = []
     for k in rows:
-        o = float(k[1]); c = float(k[4]); vol = float(k[5])
-        buy, sell = _split_by_direction(o, c, vol)
+        o = float(k[1]); h = float(k[2]); l = float(k[3]); c = float(k[4]); vol = float(k[5])
+        buy, sell = _split_intrabar(h, l, c, vol)
         out.append({"open": o, "close": c, "vol": vol, "buy": buy, "sell": sell})
     return out
 
@@ -76,8 +80,8 @@ async def _bybit_klines(client, sym):
     rows = list(reversed(d["result"]["list"]))   # Bybit 最新在前 → 反转成正序
     out = []
     for k in rows:
-        o = float(k[1]); c = float(k[4]); vol = float(k[5])
-        buy, sell = _split_by_direction(o, c, vol)
+        o = float(k[1]); h = float(k[2]); l = float(k[3]); c = float(k[4]); vol = float(k[5])
+        buy, sell = _split_intrabar(h, l, c, vol)
         out.append({"open": o, "close": c, "vol": vol, "buy": buy, "sell": sell})
     return out
 
@@ -92,8 +96,8 @@ async def _bitget_klines(client, sym):
     rows = sorted(d["data"], key=lambda x: int(x[0]))   # 按时间正序
     out = []
     for k in rows:
-        o = float(k[1]); c = float(k[4]); vol = float(k[5])   # 5 = base volume
-        buy, sell = _split_by_direction(o, c, vol)
+        o = float(k[1]); h = float(k[2]); l = float(k[3]); c = float(k[4]); vol = float(k[5])   # 5 = base volume
+        buy, sell = _split_intrabar(h, l, c, vol)
         out.append({"open": o, "close": c, "vol": vol, "buy": buy, "sell": sell})
     return out
 
@@ -342,7 +346,12 @@ def _build_signal_text(o, h, l, c, v):
         head = "卖出信号"
     else:
         head = "观望信号"
-    strength = "强" if abs(score) >= 3 else ("中" if abs(score) >= 2 else "弱")
+    # 强度按分数分档；量能不足(缩量/参与度低)时降一级——避免"缩量却给强信号"自相矛盾
+    levels = ["弱", "中", "强"]
+    lvl = 2 if abs(score) >= 3 else (1 if abs(score) >= 2 else 0)
+    if vol_ratio <= 0.7:
+        lvl = max(0, lvl - 1)
+    strength = levels[lvl]
     suffix = f"（{('，'.join(parts))}）" if parts else ""
     signal_line = f"综合信号：{head}·{strength}{suffix}"
 
@@ -375,7 +384,8 @@ async def build_signal_chart(symbol):
     mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit",
                                wick="inherit", volume="in")
     style = mpf.make_mpf_style(base_mpf_style="charles", marketcolors=mc,
-                               gridstyle=":", facecolor="white")
+                               gridstyle=":", facecolor="white",
+                               mavcolors=["#f5b800", "#2962ff", "#8e44ad"])  # MA7黄/MA25蓝/MA99紫
     buf = io.BytesIO()
     try:
         mpf.plot(df, type="candle", mav=(7, 25, 99), volume=True, style=style,

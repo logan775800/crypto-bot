@@ -7,22 +7,22 @@ def sma(prices, period):
     return sum(prices[-period:]) / period
 
 def rsi(prices, period=14):
-    """相对强弱指数 RSI"""
+    """相对强弱指数 RSI —— Wilder 平滑法（与 TradingView/交易所口径一致）。
+
+    首个均值取前 period 根的简单平均，其后每根用 Wilder 递推平滑；
+    传入的 K 线越多，收敛越准（本项目查价时喂 ~120 根日/时线）。"""
     if len(prices) < period + 1:
         return None
-    gains = []
-    losses = []
-    for i in range(1, len(prices)):
-        change = prices[i] - prices[i-1]
-        if change >= 0:
-            gains.append(change)
-            losses.append(0)
-        else:
-            gains.append(0)
-            losses.append(-change)
-    # 取最近 period 个
-    avg_gain = sum(gains[-period:]) / period
-    avg_loss = sum(losses[-period:]) / period
+    deltas = [prices[i] - prices[i - 1] for i in range(1, len(prices))]
+    gains = [d if d > 0 else 0.0 for d in deltas]
+    losses = [-d if d < 0 else 0.0 for d in deltas]
+    # 初始平均涨/跌：前 period 根的简单平均
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    # Wilder 递推平滑其余各根
+    for i in range(period, len(deltas)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
     if avg_loss == 0:
         return 100.0
     rs = avg_gain / avg_loss

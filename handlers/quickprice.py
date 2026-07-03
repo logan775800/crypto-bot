@@ -156,30 +156,27 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"没查到 {symbol}，检查下币名（或试 /price {symbol}）")
             return
 
-        lines = [f"💎 *{escape_md(symbol)}*\n"]
         spot = spot_cg or spot_okx or spot_bn or spot_by
-        if spot:
-            e = "📈" if spot["change"] >= 0 else "📉"
-            if spot_cg:
-                src = " (CoinGecko)"
-            elif spot_okx:
-                src = " (OKX)"
-            elif spot_bn:
-                src = " (币安)"
-            else:
-                src = " (Bybit)"
-            lines.append(f"{e} 现货: ${fmt_price(spot['price'])} ({spot['change']:+.2f}%){src}")
-        if swap_tk:
-            e2 = "📈" if swap_tk["change"] >= 0 else "📉"
-            fr_text = f" | 费率{swap_fr:+.3f}%" if swap_fr is not None else ""
-            lines.append(f"{e2} 合约: ${fmt_price(swap_tk['price'])} ({swap_tk['change']:+.2f}%){fr_text} ({swap_src})")
+        if spot_cg:
+            spot_src = "CoinGecko"
+        elif spot_okx:
+            spot_src = "OKX"
+        elif spot_bn:
+            spot_src = "Binance"
+        elif spot_by:
+            spot_src = "Bybit"
         else:
-            lines.append("(无永续合约)")
+            spot_src = None
+        # 资金费率/合约来源统一成英文所名，跟卡片风格一致（币安→Binance）
+        swap_src_disp = {"币安": "Binance"}.get(swap_src, swap_src)
 
         kb = InlineKeyboardMarkup([[
-            InlineKeyboardButton("📋 详情", callback_data=f"getinfo:{symbol}"),
-            InlineKeyboardButton("📈 分析", callback_data=f"doanalyze:{symbol}"),
+            InlineKeyboardButton("🤖 AI解读", callback_data=f"doai:{symbol}"),
+            InlineKeyboardButton("📈 深度分析", callback_data=f"doanalyze:{symbol}"),
         ]])
-        await safe_reply(update.message, "\n".join(lines), reply_markup=kb, parse_mode="Markdown")
+        # 完整信息：信息卡 + 蜡烛图/研判 两条消息（永久全自动推送）
+        from handlers.detail import send_full_detail
+        await send_full_detail(update.message, symbol, spot, spot_src,
+                               swap_tk, swap_fr, swap_src_disp, reply_markup=kb)
     except Exception as e:
         logging.error(f"快捷查价出错: {e}")

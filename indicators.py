@@ -165,3 +165,72 @@ def volume_analysis(volumes):
     else:
         signal = "量能正常"
     return {"recent": recent, "avg": avg, "ratio": ratio, "signal": signal}
+
+
+def _ema_series(prices, period):
+    """EMA 序列（与 prices 等长），用于 MACD。"""
+    k = 2 / (period + 1)
+    ema_val = prices[0]
+    out = [ema_val]
+    for p in prices[1:]:
+        ema_val = p * k + ema_val * (1 - k)
+        out.append(ema_val)
+    return out
+
+
+def macd_hist(prices):
+    """完整 MACD：返回 {dif, dea, hist, hist_prev}。数据不足返回 None。
+    hist>0 = 红柱(多头动能)，hist<0 = 绿柱(空头动能)；hist 绝对值较上一根变大=走强。"""
+    if len(prices) < 35:
+        return None
+    ema12 = _ema_series(prices, 12)
+    ema26 = _ema_series(prices, 26)
+    dif = [ema12[i] - ema26[i] for i in range(len(prices))]
+    dea = _ema_series(dif, 9)
+    hist = dif[-1] - dea[-1]
+    hist_prev = dif[-2] - dea[-2]
+    return {"dif": dif[-1], "dea": dea[-1], "hist": hist, "hist_prev": hist_prev}
+
+
+def adx(highs, lows, closes, period=14):
+    """平均趋向指数 ADX：衡量趋势强度（不分方向）。
+    <20 无趋势/震荡，20-25 趋势萌芽，>25 趋势明确，>40 趋势强。数据不足返回 None。"""
+    n = len(closes)
+    if n < period * 2 + 1 or len(highs) != n or len(lows) != n:
+        return None
+    trs, plus_dm, minus_dm = [], [], []
+    for i in range(1, n):
+        up = highs[i] - highs[i - 1]
+        down = lows[i - 1] - lows[i]
+        plus_dm.append(up if (up > down and up > 0) else 0.0)
+        minus_dm.append(down if (down > up and down > 0) else 0.0)
+        trs.append(max(
+            highs[i] - lows[i],
+            abs(highs[i] - closes[i - 1]),
+            abs(lows[i] - closes[i - 1]),
+        ))
+
+    def _wilder(vals):
+        # Wilder 平滑：首值取前 period 之和，其后逐根衰减累加
+        s = [sum(vals[:period])]
+        for v in vals[period:]:
+            s.append(s[-1] - s[-1] / period + v)
+        return s
+
+    atr = _wilder(trs)
+    pdm = _wilder(plus_dm)
+    mdm = _wilder(minus_dm)
+    dxs = []
+    for i in range(len(atr)):
+        if atr[i] == 0:
+            continue
+        pdi = 100 * pdm[i] / atr[i]
+        mdi = 100 * mdm[i] / atr[i]
+        denom = pdi + mdi
+        dxs.append(100 * abs(pdi - mdi) / denom if denom else 0.0)
+    if len(dxs) < period:
+        return sum(dxs) / len(dxs) if dxs else None
+    adx_val = sum(dxs[:period]) / period
+    for dx in dxs[period:]:
+        adx_val = (adx_val * (period - 1) + dx) / period
+    return adx_val

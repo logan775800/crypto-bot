@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -71,6 +71,8 @@ async def post_init(application):
         BotCommand("price", "💰 查币价"),
         BotCommand("top", "🚀 涨跌榜"),
         BotCommand("movers", "📸 异动快照"),
+        BotCommand("weak", "😴 弱势/横盘扫描"),
+        BotCommand("momentum", "📈 动量轮动回测"),
         BotCommand("analyze", "📈 技术分析"),
         BotCommand("ai", "🤖 AI分析"),
         BotCommand("news", "📰 最新新闻"),
@@ -183,6 +185,8 @@ def main():
     app.add_handler(CommandHandler("quiet", prefs.set_quiet))
     app.add_handler(CommandHandler("watchmarket", market_alert.watch_market))
     app.add_handler(CommandHandler("movers", movers.movers))
+    app.add_handler(CommandHandler("weak", strategy.weak))
+    app.add_handler(CommandHandler("momentum", strategy.momentum))
     app.add_handler(CommandHandler("news", news.news))
     app.add_handler(CommandHandler("unlock", unlock.unlock))
     app.add_handler(CommandHandler("unlocks", unlock.unlocks))

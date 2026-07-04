@@ -135,6 +135,34 @@ async def get_market_leaders(limit=22):
         "change": c.get("price_change_percentage_24h") or 0,
     } for c in raw]
 
+async def get_markets_full(limit=50):
+    """市值前N的币，带 24h/7d/30d 涨跌 + 24h 高低。用于弱势/横盘扫描。
+    返回 [{symbol, price, rank, change_24h, change_7d, change_30d, range_24h}, ...]"""
+    raw = await _get("/coins/markets", {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": limit,
+        "page": 1,
+        "price_change_percentage": "24h,7d,30d",
+    })
+    out = []
+    for c in raw:
+        price = c.get("current_price") or 0
+        hi = c.get("high_24h") or price
+        lo = c.get("low_24h") or price
+        rng = (hi - lo) / price * 100 if price else 0.0
+        out.append({
+            "symbol": c["symbol"].upper(),
+            "price": price,
+            "rank": c.get("market_cap_rank"),
+            "change_24h": c.get("price_change_percentage_24h_in_currency") or 0.0,
+            "change_7d": c.get("price_change_percentage_7d_in_currency") or 0.0,
+            "change_30d": c.get("price_change_percentage_30d_in_currency") or 0.0,
+            "range_24h": rng,
+        })
+    return out
+
+
 async def get_market_chart(symbol: str, days: int = 7):
     """获取历史价格：返回 [(timestamp_ms, price), ...]"""
     from config import COIN_IDS

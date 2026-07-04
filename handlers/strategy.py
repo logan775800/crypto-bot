@@ -9,13 +9,20 @@ from telegram.ext import ContextTypes
 import api
 from handlers.util import safe_reply
 
-# 稳定币 / 包装币 / 质押衍生品：无独立行情，扫描时剔除
+# 稳定币 / 包装币 / 质押衍生品 / 代币化美债：无独立行情，扫描时剔除
 SKIP = {
     "USDT", "USDC", "DAI", "FDUSD", "TUSD", "USDE", "USDS", "PYUSD",
     "USDD", "GUSD", "USDP", "FRAX", "LUSD", "BUSD", "EURC", "USD1",
+    "USDG", "RLUSD", "AUSD", "USDX", "BUIDL", "USYC", "USDY", "OUSG",
     "WBTC", "WETH", "STETH", "WSTETH", "WEETH", "WBETH", "RETH",
     "CBBTC", "LBTC", "SOLVBTC", "BSC-USD", "WBNB", "JITOSOL", "MSOL",
 }
+
+
+def _is_pegged(c):
+    """行为判定挂钩美元资产(稳定币/代币化美债)：价格贴近$1 且 30天几乎不动。
+    硬编码 SKIP 追不完新币，用行为兜底，避免『最横盘』榜被 $1 挂钩资产霸榜。"""
+    return 0.90 <= c["price"] <= 1.10 and abs(c["change_30d"]) < 3.0
 
 
 def _pct(x):
@@ -33,7 +40,8 @@ async def weak(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
     await update.message.reply_text(f"🔎 扫描市值前 {top} 主流币...")
     try:
-        rows = [c for c in await api.get_markets_full(top) if c["symbol"] not in SKIP]
+        rows = [c for c in await api.get_markets_full(top)
+                if c["symbol"] not in SKIP and not _is_pegged(c)]
         if not rows:
             await update.message.reply_text("没拿到数据，稍后再试。")
             return

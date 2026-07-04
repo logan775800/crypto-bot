@@ -179,6 +179,10 @@ def track_panel(chat_id):
                  InlineKeyboardButton("≥$10万", callback_data="trackmin:100000"),
                  InlineKeyboardButton("≥$50万", callback_data="trackmin:500000")],
         )
+    rows.append([InlineKeyboardButton("≥$100万", callback_data="trackmin:1000000"),
+                 InlineKeyboardButton("≥$150万", callback_data="trackmin:1500000"),
+                 InlineKeyboardButton("≥$300万", callback_data="trackmin:3000000")],
+        )
     rows.append([InlineKeyboardButton("全部(不过滤)", callback_data="trackmin:0")])
     rows.append([InlineKeyboardButton("⬅️ 返回", callback_data="cat_tools"),
                  InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")])

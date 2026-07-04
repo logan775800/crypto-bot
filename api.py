@@ -261,6 +261,23 @@ async def get_daily_prices(symbol: str, days: int = 35):
     prices = raw.get("prices", [])
     return [p[1] for p in prices]  # 只要价格
 
+# 日线长效缓存：日线一天才变一次，缓存1小时可让 /momentum 重复回测
+# 复用同一批数据（结果稳定、可比），并大幅减少对 CoinGecko 免费额度的消耗。
+_daily_cache = {}       # (symbol, days) -> (ts, prices)
+_daily_ttl = 3600       # 1 小时
+
+async def get_daily_prices_stable(symbol: str, days: int = 180):
+    """带 1 小时长效缓存的日线收盘价。命中缓存直接返回，避免密集调用被限流。"""
+    key = (symbol.upper(), days)
+    now = time.time()
+    hit = _daily_cache.get(key)
+    if hit and now - hit[0] < _daily_ttl:
+        return hit[1]
+    prices = await get_daily_prices(symbol, days)  # 失败会抛/返回 None
+    if prices:
+        _daily_cache[key] = (now, prices)
+    return prices
+
 async def get_daily_ohlc_prices(symbol: str, days: int = 35):
     """日线价格带时间戳，用于画技术分析图"""
     from config import COIN_IDS

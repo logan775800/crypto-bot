@@ -4,6 +4,7 @@
 复用 api.py（带缓存+限流的 CoinGecko 封装），输出为 Telegram 友好的精简排行。
 ⚠️ 所有结果不构成投资建议。
 """
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes
@@ -142,28 +143,25 @@ async def build_momentum_text(N=12, lookback=30, hold=3, rebalance=7, days=180):
     if "BTC" not in syms:
         syms = ["BTC"] + syms[:N - 1]
 
-    # 逐币容错：数据源(CoinGecko免费额度)易触发限流(429)，
-    # 单个币拉失败就跳过，拿到几个算几个，避免整个回测崩掉。
+    # 逐币容错 + 长效缓存：日线走 get_daily_prices_stable(缓存1小时)，
+    # 命中缓存的币直接返回不打接口，只有没拿到的币才真正请求 → 大幅减少限流。
+    # 再对失败的币重试一遍(缓存成功的会跳过)，让宇宙尽量凑满、每次回测成分稳定。
     panel = {}
-    skipped = 0
     min_len = lookback + rebalance + 5
-    for s in syms:
-        try:
-            prices = await api.get_daily_prices(s, days)
-        except Exception:
-            prices = None
-        if prices and len(prices) >= min_len:
-            panel[s] = prices
-        else:
-            skipped += 1
-    # BTC 是基准，若被限流漏掉，单独补拉一次
-    if "BTC" not in panel:
-        try:
-            b = await api.get_daily_prices("BTC", days)
-            if b and len(b) >= min_len:
-                panel["BTC"] = b
-        except Exception:
-            pass
+    for _attempt in (1, 2, 3):
+        for s in syms:
+            if s in panel:
+                continue
+            try:
+                prices = await api.get_daily_prices_stable(s, days)
+            except Exception:
+                prices = None
+            if prices and len(prices) >= min_len:
+                panel[s] = prices
+        if len(panel) >= len(syms):
+            break
+        await asyncio.sleep(4)  # 还有币没拿到：等几秒让限流窗口恢复再重试
+    skipped = len(syms) - len(panel)
     if len(panel) < 5 or "BTC" not in panel:
         return (f"数据源限流，暂时只取到 {len(panel)} 个币（回测需≥5且含BTC）。"
                 f"过一两分钟再试即可。")

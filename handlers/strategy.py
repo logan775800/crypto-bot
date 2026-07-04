@@ -125,8 +125,8 @@ def _mdd(eq):
 async def momentum(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/momentum  动量轮动回测：每周持有过去30天最强的3个币，对比死拿BTC。
     可选参数：/momentum <宇宙N> <回看天> <持有K> <调仓天>，如 /momentum 15 20 3 7"""
-    # 默认参数（宇宙偏小以控制拉数据耗时）
-    N, lookback, hold, rebalance, days = 15, 30, 3, 7, 180
+    # 默认参数（宇宙偏小以控制拉数据耗时、降低被限流概率）
+    N, lookback, hold, rebalance, days = 12, 30, 3, 7, 180
     try:
         a = context.args
         if len(a) >= 1: N = max(6, min(30, int(a[0])))
@@ -145,13 +145,32 @@ async def momentum(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if "BTC" not in syms:
             syms = ["BTC"] + syms[:N - 1]
 
+        # 逐币容错：数据源(CoinGecko免费额度)易触发限流(429)，
+        # 单个币拉失败就跳过，拿到几个算几个，避免整个回测崩掉。
         panel = {}
+        skipped = 0
+        min_len = lookback + rebalance + 5
         for s in syms:
-            prices = await api.get_daily_prices(s, days)
-            if prices and len(prices) >= lookback + rebalance + 5:
+            try:
+                prices = await api.get_daily_prices(s, days)
+            except Exception:
+                prices = None
+            if prices and len(prices) >= min_len:
                 panel[s] = prices
-        if len(panel) < 3 or "BTC" not in panel:
-            await update.message.reply_text("历史数据不足，稍后再试。")
+            else:
+                skipped += 1
+        # BTC 是基准，若被限流漏掉，单独补拉一次
+        if "BTC" not in panel:
+            try:
+                b = await api.get_daily_prices("BTC", days)
+                if b and len(b) >= min_len:
+                    panel["BTC"] = b
+            except Exception:
+                pass
+        if len(panel) < 5 or "BTC" not in panel:
+            await update.message.reply_text(
+                f"数据源限流，暂时只取到 {len(panel)} 个币（回测需≥5且含BTC）。"
+                f"过一两分钟再试即可。")
             return
 
         # 按最短长度对齐（从末尾截取，保证最新日期对齐）
@@ -169,7 +188,8 @@ async def momentum(update: Update, context: ContextTypes.DEFAULT_TYPE):
         alpha = (strat_tot - btc_tot) * 100
         verdict = "跑赢BTC ✅" if alpha > 0 else "跑输BTC ❌"
 
-        L = [f"📈 *动量轮动回测*（近{Lmin}天，{len(panel)}币宇宙）\n"]
+        skip_note = f"（{skipped}个币被限流跳过）" if skipped else ""
+        L = [f"📈 *动量轮动回测*（近{Lmin}天，{len(panel)}币宇宙{skip_note}）\n"]
         L.append("🚀 " + line("策略", eq))
         L.append("🟠 " + line("死拿BTC", btc_eq))
         L.append("⚪ " + line("等权全体", ew))

@@ -40,6 +40,7 @@ def main_menu_kb():
         [InlineKeyboardButton("📊 市场看板", callback_data="dash_refresh")],
         [InlineKeyboardButton("💰 行情查询", callback_data="cat_price"),
          InlineKeyboardButton("📈 技术分析", callback_data="cat_analysis")],
+        [InlineKeyboardButton("📊 策略回测", callback_data="cat_strategy")],
         [InlineKeyboardButton("🔥 OKX专区", callback_data="cat_okx"),
          InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance"),
          InlineKeyboardButton("🟡 Bybit专区", callback_data="cat_bybit")],
@@ -317,6 +318,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await query.edit_message_text("无数据", reply_markup=back_to("sub_info"))
         except Exception:
             await query.edit_message_text("查询失败", reply_markup=back_to("sub_info"))
+
+    # ============ 策略回测 ============
+    elif d == "cat_strategy":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("😴 弱势/横盘扫描", callback_data="do_weak")],
+            [InlineKeyboardButton("📈 动量轮动回测", callback_data="do_momentum")],
+            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+        ])
+        await query.edit_message_text(
+            "📊 *策略回测*\n"
+            "• 弱势/横盘扫描：找最横盘/最弱/相对抗跌的主流币\n"
+            "• 动量轮动回测：只追最强K个币，对比死拿BTC\n\n"
+            "⚠️ 回测≠未来，不构成投资建议",
+            reply_markup=kb, parse_mode="Markdown")
+
+    elif d == "do_weak":
+        await query.edit_message_text("🔎 扫描市值前 50 主流币...")
+        from handlers.strategy import build_weak_text
+        try:
+            await safe_edit(query, await build_weak_text(50),
+                            reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"菜单弱势扫描出错: {e}")
+            await query.edit_message_text("扫描失败", reply_markup=back_to("cat_strategy"))
+
+    elif d == "do_momentum":
+        await query.edit_message_text("⏳ 动量轮动回测中，需逐个拉日线，约 30~60 秒，请稍候…")
+        from handlers.strategy import build_momentum_text
+        try:
+            await safe_edit(query, await build_momentum_text(),
+                            reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"菜单动量回测出错: {e}")
+            await query.edit_message_text("回测失败", reply_markup=back_to("cat_strategy"))
 
     # ============ 技术分析 ============
     elif d == "cat_analysis":

@@ -7,6 +7,7 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 import api
+from handlers.util import safe_reply
 
 # 稳定币 / 包装币 / 质押衍生品：无独立行情，扫描时剔除
 SKIP = {
@@ -62,10 +63,10 @@ async def weak(update: Update, context: ContextTypes.DEFAULT_TYPE):
             L.append(f"  {c['symbol']}: 7d {_pct(c['change_7d'])}  RS {c['rs']:+.1f}%")
         L.append("\n_横盘≠蓄势，弱市『没跌』常是『没人碰』。不构成投资建议_")
 
-        await update.message.reply_text("\n".join(L), parse_mode="Markdown")
+        await safe_reply(update.message, "\n".join(L), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"/weak 出错: {e}")
-        await update.message.reply_text("扫描失败，稍后再试。")
+        logging.error(f"/weak 出错: {type(e).__name__}: {e}")
+        await update.message.reply_text(f"扫描失败（{type(e).__name__}），稍后再试。")
 
 
 # ---------------- /momentum：动量轮动回测 ----------------
@@ -179,7 +180,7 @@ async def momentum(update: Update, context: ContextTypes.DEFAULT_TYPE):
             L.append(f"最近一次调仓选中：{tag}")
         L.append("\n_单一区间成绩可能过拟合，多改参数验证稳健性。不构成投资建议_")
 
-        await update.message.reply_text("\n".join(L), parse_mode="Markdown")
+        await safe_reply(update.message, "\n".join(L), parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"/momentum 出错: {e}")
-        await update.message.reply_text("回测失败，稍后再试。")
+        logging.error(f"/momentum 出错: {type(e).__name__}: {e}")
+        await update.message.reply_text(f"回测失败（{type(e).__name__}），稍后再试。")

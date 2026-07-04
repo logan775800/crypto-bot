@@ -27,9 +27,16 @@ async def _get(path, params):
         if wait > 0:
             await asyncio.sleep(wait)
         async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{BASE}{path}", params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            for attempt in range(3):
+                resp = await client.get(f"{BASE}{path}", params=params)
+                if resp.status_code == 429:  # 触发限流：退避后重试
+                    await asyncio.sleep(3 * (attempt + 1))
+                    continue
+                resp.raise_for_status()
+                data = resp.json()
+                break
+            else:
+                resp.raise_for_status()  # 三次仍 429，抛出交上层处理
         _last_call[0] = time.time()
         _cache[key] = (now, data)
         return data

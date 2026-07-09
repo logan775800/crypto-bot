@@ -1,11 +1,14 @@
 """全交易所合约涨跌幅分级告警。
 
-并发拉取 OKX / 币安 / Bybit 三家的 **永续合约** 24h 行情，计算涨跌幅，
-当 |涨跌幅| 突破台阶（20/30/40%…一直到 400%）时向订阅群推送告警。
-每条告警都标注交易所来源；同一个币在多个所同时命中，会分别成行、各标来源。
+两条触发路径共用本模块的判档去重 + 推送逻辑：
+  • WebSocket 实时（handlers/contract_ws.py，OKX/Bybit）：价格穿过阈值秒级触发。
+  • REST 轮询（本文件 scan_contracts，覆盖三家，含 Binance）：定时兜底 / 安全网。
+两者写同一份 data["contract_tiers"] 分档记录，所以不会重复告警。
 
-订阅模型沿用市场异动告警：在目标群里 /watchcontract 订阅，/unwatchcontract 取消。
-分级去重是「市场属性」（按 交易所+币 记录，全局共享），所有订阅群收到一致的告警。
+当 |涨跌幅| 突破台阶（20/30/40%…到 400%）时向订阅群推送，每条标注交易所来源，
+同一个币在多个所同时命中会分别成行、各标来源。
+
+订阅：/watchcontract 订阅，/unwatchcontract 取消。
 """
 import time
 import logging
@@ -29,7 +32,78 @@ LEV_SUFFIX = ("UP", "DOWN", "BULL", "BEAR")  # 币安杠杆代币，排除
 MAX_LINES = 40                              # 单条消息最多多少行，超出分条发
 
 
-# ---------- 各交易所合约行情抓取（统一返回 [{sym, change, price, turnover}]）----------
+def get_tier(change_abs):
+    """返回 |涨跌幅| 命中的最高台阶；不足 20% 返回 0，超 400% 封顶 400。"""
+    if change_abs < TIERS[0]:
+        return 0
+    tier = TIERS[0]
+    for t in TIERS:
+        if change_abs >= t:
+            tier = t
+        else:
+            break
+    return tier
+
+
+def eval_tier_cross(ex_name, sym, change, now=None):
+    """判断某(交易所,币)的当前涨跌幅是否升到了更高台阶。
+
+    命中返回要告警的台阶(int)并更新 data["contract_tiers"]；否则返回 None。
+    WS 实时与 REST 轮询共用此函数 → 同一套去重，绝不重复。
+    """
+    if now is None:
+        now = time.time()
+    data.setdefault("contract_tiers", {})
+    tiers = data["contract_tiers"]
+    change_abs = abs(change)
+    direction = "up" if change > 0 else "down"
+    key = f"{ex_name}_{sym}"
+
+    # 跌回阈值以下：清记录，下次重新穿越可再报
+    if change_abs < TIERS[0]:
+        tiers.pop(key, None)
+        return None
+
+    rec = tiers.get(key)
+    prev = 0
+    if rec and rec["dir"] == direction and now - rec["ts"] <= TIER_RESET:
+        prev = rec["tier"]
+
+    tier = get_tier(change_abs)
+    if tier > prev:
+        tiers[key] = {"tier": tier, "dir": direction, "ts": now}
+        return tier
+    return None
+
+
+async def push_to_subscribers(bot, alerts):
+    """把一批告警(dict: ex/sym/change/price/tier/direction)推给所有订阅群，每条标来源。"""
+    subs = data.get("contract_watch", [])
+    if not subs or not alerts:
+        return
+    alerts = sorted(alerts, key=lambda a: (-a["tier"], a["ex"], a["sym"]))
+    body = []
+    for a in alerts:
+        emoji = "🚀" if a["direction"] == "up" else "💥"
+        arrow = "涨破" if a["direction"] == "up" else "跌破"
+        body.append(
+            f"{emoji} *{a['ex']}* {escape_md(a['sym'])} {arrow} {a['tier']}%！"
+            f"现 {a['change']:+.2f}% (${a['price']:,.4g})"
+        )
+    chunks = [body[i:i + MAX_LINES] for i in range(0, len(body), MAX_LINES)]
+    for chat_id in subs:
+        for idx, chunk in enumerate(chunks):
+            head = "🚨 *合约异动告警*（全交易所）\n" if idx == 0 else "🚨 *合约异动告警*（续）\n"
+            text = head + "\n".join(chunk)
+            if idx == len(chunks) - 1:
+                text += "\n\n⚠️ 合约杠杆风险高，异动剧烈，不构成投资建议"
+            try:
+                await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+            except Exception as e:
+                logging.error(f"合约告警推送失败 {chat_id}: {e}")
+
+
+# ---------- 各交易所合约行情抓取（REST，统一返回 [{sym, change, price, turnover}]）----------
 async def _okx_swap(client):
     r = await client.get(f"{OKX_BASE}/api/v5/market/tickers", params={"instType": "SWAP"})
     r.raise_for_status()
@@ -105,19 +179,6 @@ async def _bybit_swap(client):
 EXCHANGES = [("OKX", _okx_swap), ("币安", _binance_swap), ("Bybit", _bybit_swap)]
 
 
-def get_tier(change_abs):
-    """返回 |涨跌幅| 命中的最高台阶；不足 20% 返回 0，超 400% 封顶 400。"""
-    if change_abs < TIERS[0]:
-        return 0
-    tier = TIERS[0]
-    for t in TIERS:
-        if change_abs >= t:
-            tier = t
-        else:
-            break
-    return tier
-
-
 # ---------- 订阅命令 ----------
 async def watch_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -132,7 +193,8 @@ async def watch_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 覆盖 OKX / 币安 / Bybit 永续合约\n"
         "• |涨跌幅| 突破 20% / 30% / … / 400% 分级告警\n"
         "• 每条标注交易所来源，多所同时命中都会发\n"
-        "• 每 5 分钟扫描，同币同方向升档才再报\n\n"
+        "• OKX/Bybit 秒级实时(WebSocket)，币安约1分钟兜底\n"
+        "• 同币同方向升档才再报\n\n"
         "取消订阅：/unwatchcontract"
     )
 
@@ -148,13 +210,10 @@ async def unwatch_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("本群还没订阅合约异动告警")
 
 
-# ---------- 后台扫描（job）----------
+# ---------- 后台扫描（REST 轮询，安全网 + 币安主路）----------
 async def scan_contracts(context: ContextTypes.DEFAULT_TYPE):
-    subs = data.get("contract_watch", [])
-    if not subs:
+    if not data.get("contract_watch"):
         return
-
-    # 并发拉三家；任一家失败不影响其它
     try:
         async with httpx.AsyncClient(timeout=12) as client:
             results = await asyncio.gather(
@@ -165,64 +224,21 @@ async def scan_contracts(context: ContextTypes.DEFAULT_TYPE):
         return
 
     now = time.time()
-    data.setdefault("contract_tiers", {})
-    tiers = data["contract_tiers"]
-
     alerts = []
     for (ex_name, _), res in zip(EXCHANGES, results):
         if isinstance(res, Exception):
             logging.warning(f"合约扫描 {ex_name} 失败: {res}")
             continue
         for m in res:
-            sym = m["sym"]
-            change = m["change"]
-            change_abs = abs(change)
-            direction = "up" if change > 0 else "down"
-            key = f"{ex_name}_{sym}"
-
-            # 跌回阈值以下：清记录，下次重新穿越可再报
-            if change_abs < TIERS[0]:
-                tiers.pop(key, None)
-                continue
-
-            rec = tiers.get(key)
-            prev = 0
-            if rec and rec["dir"] == direction and now - rec["ts"] <= TIER_RESET:
-                prev = rec["tier"]
-
-            tier = get_tier(change_abs)
-            if tier > prev:
-                alerts.append({"ex": ex_name, "sym": sym, "change": change,
-                               "price": m["price"], "tier": tier, "direction": direction})
-                tiers[key] = {"tier": tier, "dir": direction, "ts": now}
+            tier = eval_tier_cross(ex_name, m["sym"], m["change"], now)
+            if tier:
+                alerts.append({"ex": ex_name, "sym": m["sym"], "change": m["change"],
+                               "price": m["price"], "tier": tier,
+                               "direction": "up" if m["change"] > 0 else "down"})
 
     # 清理过期记录，避免无限增长
+    tiers = data.get("contract_tiers", {})
     data["contract_tiers"] = {k: v for k, v in tiers.items() if now - v["ts"] < TIER_RESET * 2}
     save_data()
 
-    if not alerts:
-        return
-
-    # 高档在前；同档按交易所、币名排序
-    alerts.sort(key=lambda a: (-a["tier"], a["ex"], a["sym"]))
-    body = []
-    for a in alerts:
-        emoji = "🚀" if a["direction"] == "up" else "💥"
-        arrow = "涨破" if a["direction"] == "up" else "跌破"
-        body.append(
-            f"{emoji} *{a['ex']}* {escape_md(a['sym'])} {arrow} {a['tier']}%！"
-            f"现 {a['change']:+.2f}% (${a['price']:,.4g})"
-        )
-
-    # 分条（Telegram 单条长度有限）
-    chunks = [body[i:i + MAX_LINES] for i in range(0, len(body), MAX_LINES)]
-    for chat_id in subs:
-        for idx, chunk in enumerate(chunks):
-            head = "🚨 *合约异动告警*（全交易所）\n" if idx == 0 else "🚨 *合约异动告警*（续）\n"
-            text = head + "\n".join(chunk)
-            if idx == len(chunks) - 1:
-                text += "\n\n⚠️ 合约杠杆风险高，异动剧烈，不构成投资建议"
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-            except Exception as e:
-                logging.error(f"合约告警推送失败 {chat_id}: {e}")
+    await push_to_subscribers(context.bot, alerts)

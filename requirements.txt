@@ -1,4 +1,5 @@
 python-telegram-bot[job-queue]==21.6
 httpx
+websockets
 matplotlib
 mplfinance

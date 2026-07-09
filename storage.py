@@ -20,7 +20,9 @@ data.setdefault("holdings", {})
 data.setdefault("broadcast_chats", [])  # 订阅了定时播报的群/私聊id列表
 data.setdefault("market_watch", [])     # 订阅市场异动告警的chat_id
 data.setdefault("alerted_coins", {})    # 已告警的币 {symbol: 时间戳}（冷却用）
-data.setdefault("known_coins", [])      # 已知的OKX币种列表（检测新币用）
+data.setdefault("known_coins", [])      # 已知的OKX币种列表（检测新币用，旧版遗留）
+data.setdefault("known_coins_ex", {})   # 各所已知币 {交易所: [币]}（多所新币检测）
+data.setdefault("last_volumes_ex", {})  # 各所上轮成交额 {交易所: {币: 额}}（多所放量检测）
 data.setdefault("coin_tiers", {})       # 分级告警：每个币已告警的台阶
 data.setdefault("user_prefs", {})       # 用户偏好 {chat_id: {follows:[], threshold:20, quiet:[start,end]}}
 data.setdefault("last_surge", {})       # 上轮异动币

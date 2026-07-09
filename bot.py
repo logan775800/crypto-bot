@@ -219,7 +219,7 @@ def main():
     jq.run_repeating(alert.check_alerts, interval=60, first=10)
     jq.run_repeating(indicator_alert.check_ti_alerts, interval=900, first=45)  # 技术指标告警，每15分钟
     jq.run_repeating(market_alert.scan_market, interval=300, first=30)  # 市场异动扫描
-    jq.run_repeating(contract_alert.scan_contracts, interval=180, first=40)  # 全交易所合约异动分级告警，每3分钟
+    jq.run_repeating(contract_alert.scan_contracts, interval=300, first=40)  # 全交易所合约异动分级告警，每5分钟
     jq.run_repeating(news.push_news, interval=3600, first=120)  # 新闻推送
     jq.run_repeating(unlock.check_unlocks, interval=86400, first=180)  # 解锁检查，每天
     jq.run_repeating(backup.auto_backup, interval=86400, first=60)  # 每天自动备份

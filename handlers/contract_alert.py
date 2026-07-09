@@ -132,7 +132,7 @@ async def watch_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• 覆盖 OKX / 币安 / Bybit 永续合约\n"
         "• |涨跌幅| 突破 20% / 30% / … / 400% 分级告警\n"
         "• 每条标注交易所来源，多所同时命中都会发\n"
-        "• 每 3 分钟扫描，同币同方向升档才再报\n\n"
+        "• 每 5 分钟扫描，同币同方向升档才再报\n\n"
         "取消订阅：/unwatchcontract"
     )
 

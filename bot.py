@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -97,6 +97,8 @@ async def post_init(application):
         BotCommand("arbwatch", "💱 套利监控告警"),
         BotCommand("alert", "🔔 价格预警"),
         BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
+        BotCommand("watchpct", "👁 持续波动监控(指定币±%)"),
+        BotCommand("watchpcts", "👁 我的波动监控列表"),
         BotCommand("watchmarket", "🚨 订阅市场异动告警"),
         BotCommand("watchcontract", "📊 订阅全交易所合约异动告警"),
         BotCommand("subnews", "📰 订阅新闻推送"),
@@ -172,6 +174,10 @@ def main():
     app.add_handler(CommandHandler("delalert", alert.del_alert))
     app.add_handler(CommandHandler("rsialert", indicator_alert.rsi_alert))
     app.add_handler(CommandHandler("rsialerts", indicator_alert.rsi_alerts))
+    # 持续波动监控（指定币，涨跌超阈值反复提醒，支持小盘/合约币）
+    app.add_handler(CommandHandler("watchpct", watchpct.watchpct))
+    app.add_handler(CommandHandler("watchpcts", watchpct.watchpcts))
+    app.add_handler(CommandHandler("unwatchpct", watchpct.unwatchpct))
     # 持仓
     app.add_handler(CommandHandler("add", portfolio.add_holding))
     app.add_handler(CommandHandler("buy", portfolio.buy))
@@ -241,6 +247,7 @@ def main():
     jq.run_repeating(arbitrage.scan_arb, interval=300, first=150)  # 套利监控扫描，每5分钟
     jq.run_repeating(whale_track.check_tracked, interval=600, first=200)  # 巨鲸地址追踪，每10分钟
     jq.run_repeating(grid.poll_grids, interval=20, first=25)  # 网格成交轮询+反向补单，每20秒
+    jq.run_repeating(watchpct.check_watchpct, interval=60, first=35)  # 持续波动监控，每60秒
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))

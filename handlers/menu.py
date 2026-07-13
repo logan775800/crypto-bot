@@ -485,8 +485,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "watchpct_start":
         context.user_data["await_watchpct"] = True
         await query.edit_message_text(
-            "👁 *持续波动监控*\n\n请发送「币 百分比」，例如：\n"
-            "`DOGE 5`　`KORU 10`　`BTC 3`\n\n"
+            "👁 *持续波动监控*\n\n请发送「币 百分比 [合约]」，例如：\n"
+            "`DOGE 5`　`KORU 10`　`BTC 3`\n"
+            "`BTC 3 合约`　← 加「合约」二字强制盯**永续合约价**\n\n"
             "该币每从基准涨跌超此百分比就提醒，报后自动以新价继续盯。\n"
             "支持小盘/合约币。取消发 /menu",
             parse_mode="Markdown")

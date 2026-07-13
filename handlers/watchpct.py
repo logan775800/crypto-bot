@@ -19,6 +19,7 @@ from storage import data, save_data
 
 OKX = "https://www.okx.com"
 BN = "https://api.binance.com"
+FAPI = "https://fapi.binance.com"        # 币安 USDT 本位永续合约
 BYBIT = "https://api.bybit.com"
 
 COOLDOWN = 180          # 同一币两次提醒最短间隔秒，防急涨急跌时刷屏
@@ -36,28 +37,60 @@ def fmt(p):
     return f"{p:.8f}"
 
 
-async def resolve_price(symbol):
-    """多所取现价，兼容小盘/合约币。返回 (price, source) 或 (None, None)。"""
+MARKET_ALIASES = {
+    "合约": "swap", "永续": "swap", "swap": "swap", "perp": "swap",
+    "futures": "swap", "future": "swap", "u": "swap", "c": "swap",
+    "现货": "spot", "spot": "spot", "s": "spot",
+}
+
+
+def parse_market(tok):
+    """把第三参数解析成 'auto'/'spot'/'swap'。"""
+    return MARKET_ALIASES.get((tok or "").strip().lower(), "auto")
+
+
+async def _okx(c, inst, label):
+    try:
+        r = await c.get(f"{OKX}/api/v5/market/ticker", params={"instId": inst})
+        d = r.json()
+        if d.get("code") == "0" and d.get("data"):
+            return float(d["data"][0]["last"]), label
+    except Exception:
+        pass
+    return None
+
+
+async def resolve_price(symbol, market="auto"):
+    """多所取价，兼容小盘/合约币。market: auto(现货优先) / spot(只现货) / swap(只永续)。
+    返回 (price, source) 或 (None, None)。"""
     s = symbol.upper()
     async with httpx.AsyncClient(timeout=8) as c:
-        # OKX 现货 → OKX 永续
-        for inst, label in ((f"{s}-USDT", "OKX"), (f"{s}-USDT-SWAP", "OKX永续")):
+        # 各来源探测函数（惰性调用，命中即返回）
+        async def okx_spot():
+            return await _okx(c, f"{s}-USDT", "OKX")
+
+        async def okx_swap():
+            return await _okx(c, f"{s}-USDT-SWAP", "OKX永续")
+
+        async def bn_spot():
             try:
-                r = await c.get(f"{OKX}/api/v5/market/ticker", params={"instId": inst})
-                d = r.json()
-                if d.get("code") == "0" and d.get("data"):
-                    return float(d["data"][0]["last"]), label
+                r = await c.get(f"{BN}/api/v3/ticker/price", params={"symbol": f"{s}USDT"})
+                if r.status_code == 200 and "price" in r.json():
+                    return float(r.json()["price"]), "Binance"
             except Exception:
                 pass
-        # 币安现货
-        try:
-            r = await c.get(f"{BN}/api/v3/ticker/price", params={"symbol": f"{s}USDT"})
-            if r.status_code == 200 and "price" in r.json():
-                return float(r.json()["price"]), "Binance"
-        except Exception:
-            pass
-        # Bybit 现货 → Bybit 永续
-        for cat, label in (("spot", "Bybit"), ("linear", "Bybit永续")):
+            return None
+
+        async def bn_swap():
+            try:
+                r = await c.get(f"{FAPI}/fapi/v1/ticker/price", params={"symbol": f"{s}USDT"})
+                if r.status_code == 200 and "price" in r.json():
+                    return float(r.json()["price"]), "Binance永续"
+            except Exception:
+                pass
+            return None
+
+        async def bybit(cat, label):
             try:
                 r = await c.get(f"{BYBIT}/v5/market/tickers",
                                 params={"category": cat, "symbol": f"{s}USDT"})
@@ -67,18 +100,35 @@ async def resolve_price(symbol):
                     return float(lst[0]["lastPrice"]), label
             except Exception:
                 pass
+            return None
+
+        if market == "swap":
+            chain = [okx_swap, lambda: bybit("linear", "Bybit永续"), bn_swap]
+        elif market == "spot":
+            chain = [okx_spot, bn_spot, lambda: bybit("spot", "Bybit")]
+        else:  # auto：现货优先，回退永续
+            chain = [okx_spot, okx_swap, bn_spot,
+                     lambda: bybit("spot", "Bybit"), lambda: bybit("linear", "Bybit永续")]
+
+        for probe in chain:
+            res = await probe()
+            if res:
+                return res
     return None, None
 
 
 # ---------- 设置逻辑（命令与菜单共用）----------
-async def add_watch(chat_id, symbol, pct, set_by):
-    """新增/更新一个持续波动监控。返回 (是否成功, Markdown说明文本)。"""
+async def add_watch(chat_id, symbol, pct, set_by, market="auto"):
+    """新增/更新一个持续波动监控。market: auto/spot/swap。返回 (成功, Markdown文本)。"""
     symbol = symbol.upper()
     if pct <= 0:
         return False, "百分比要大于 0"
-    price, src = await resolve_price(symbol)
+    price, src = await resolve_price(symbol, market)
     if price is None:
-        return False, f"没查到 {symbol} 的价格。用交易所里的交易对基名试试（如 KORU、RAM、DOGE）"
+        kind = "合约" if market == "swap" else ("现货" if market == "spot" else "")
+        return False, (f"没查到 {symbol} 的{kind}价格。"
+                       + ("该币可能没有对应永续合约。" if market == "swap" else "")
+                       + "用交易所里的交易对基名试试（如 KORU、RAM、DOGE）")
 
     lst = data.setdefault("watchpct", [])
     mine = [w for w in lst if w["chat_id"] == chat_id]
@@ -87,13 +137,14 @@ async def add_watch(chat_id, symbol, pct, set_by):
         return False, f"最多同时盯 {MAX_PER_CHAT} 个币，先 /unwatchpct 取消几个"
     lst[:] = [w for w in lst if not (w["chat_id"] == chat_id and w["symbol"] == symbol)]
     lst.append({
-        "chat_id": chat_id, "symbol": symbol, "pct": pct,
+        "chat_id": chat_id, "symbol": symbol, "pct": pct, "market": market,
         "base": price, "src": src, "last_ts": 0, "set_by": set_by,
     })
     save_data()
     verb = "已更新" if existed else "已开启"
+    mkt_tag = "（合约）" if market == "swap" else ("（现货）" if market == "spot" else "")
     return True, (
-        f"👁 {verb}持续波动监控：*{symbol}* 每涨跌超 *±{pct}%* 提醒\n"
+        f"👁 {verb}持续波动监控：*{symbol}*{mkt_tag} 每涨跌超 *±{pct}%* 提醒\n"
         f"当前基准 ${fmt(price)}（{src}）\n"
         f"报警后自动以新价为基准继续盯（{COOLDOWN//60}分钟冷却）。")
 
@@ -103,8 +154,9 @@ async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 2:
         await update.message.reply_text(
-            "用法：/watchpct 币 百分比\n"
-            "例：/watchpct DOGE 5  （DOGE 每涨跌超 ±5% 提醒，报后以新价继续盯）\n"
+            "用法：/watchpct 币 百分比 [合约]\n"
+            "例：/watchpct DOGE 5      （现货优先，报后以新价继续盯）\n"
+            "例：/watchpct BTC 3 合约  （强制盯永续合约价）\n"
             "支持小盘/合约币（如 KORU、RAM）。取消：/unwatchpct 币")
         return
     symbol = args[0].upper()
@@ -113,8 +165,9 @@ async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("百分比要是数字，例：/watchpct DOGE 5")
         return
+    market = parse_market(args[2]) if len(args) > 2 else "auto"
     ok, msg = await add_watch(update.effective_chat.id, symbol, pct,
-                              update.effective_user.first_name)
+                              update.effective_user.first_name, market)
     tail = f"\n查看 /watchpcts　取消 /unwatchpct {symbol}" if ok else ""
     await update.message.reply_text(msg + tail, parse_mode="Markdown")
 
@@ -155,18 +208,18 @@ async def check_watchpct(context: ContextTypes.DEFAULT_TYPE):
     if not lst:
         return
     now = time.time()
-    # 同一币只取一次价
+    # 同一(币,市场)只取一次价
     prices = {}
-    for sym in {w["symbol"] for w in lst}:
+    for key in {(w["symbol"], w.get("market", "auto")) for w in lst}:
         try:
-            prices[sym], _ = await resolve_price(sym)
+            prices[key], _ = await resolve_price(key[0], key[1])
         except Exception as e:
-            logging.error(f"波动监控取价 {sym} 失败: {e}")
-            prices[sym] = None
+            logging.error(f"波动监控取价 {key} 失败: {e}")
+            prices[key] = None
 
     changed = False
     for w in lst:
-        p = prices.get(w["symbol"])
+        p = prices.get((w["symbol"], w.get("market", "auto")))
         if not p:
             continue
         base = w["base"]
@@ -177,11 +230,12 @@ async def check_watchpct(context: ContextTypes.DEFAULT_TYPE):
         ch = (p - base) / base * 100
         if abs(ch) >= w["pct"] and now - w.get("last_ts", 0) >= COOLDOWN:
             arrow = "📈 涨" if ch > 0 else "📉 跌"
+            mkt_tag = "（合约）" if w.get("market") == "swap" else ("（现货）" if w.get("market") == "spot" else "")
             try:
                 await context.bot.send_message(
                     w["chat_id"],
-                    f"{arrow} *{w['symbol']}* {ch:+.2f}%！\n"
-                    f"${fmt(base)} → ${fmt(p)}（阈值 ±{w['pct']}%）",
+                    f"{arrow} *{w['symbol']}*{mkt_tag} {ch:+.2f}%！\n"
+                    f"${fmt(base)} → ${fmt(p)}（阈值 ±{w['pct']}%，{w.get('src','')}）",
                     parse_mode="Markdown")
             except Exception as e:
                 logging.error(f"波动监控推送失败 {w['chat_id']}: {e}")

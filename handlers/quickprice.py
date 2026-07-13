@@ -85,9 +85,10 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("百分比要是数字，例如 `DOGE 5`（取消发 /menu）",
                                             parse_mode="Markdown")
             return
-        from handlers.watchpct import add_watch
+        from handlers.watchpct import add_watch, parse_market
+        market = parse_market(parts[2]) if len(parts) > 2 else "auto"
         ok, msg = await add_watch(update.effective_chat.id, parts[0].upper(), pct,
-                                  update.effective_user.first_name)
+                                  update.effective_user.first_name, market)
         if ok:
             context.user_data.pop("await_watchpct", None)
         await update.message.reply_text(msg, parse_mode="Markdown")

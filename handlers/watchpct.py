@@ -57,72 +57,60 @@ def norm_symbol(sym):
     return s
 
 
-async def _okx(c, inst, label):
+async def _fetch(c, symbol, source):
+    """从指定来源取一次价，返回 (price, source) 或 None。"""
+    s = symbol.upper()
     try:
-        r = await c.get(f"{OKX}/api/v5/market/ticker", params={"instId": inst})
-        d = r.json()
-        if d.get("code") == "0" and d.get("data"):
-            return float(d["data"][0]["last"]), label
+        if source in ("OKX", "OKX永续"):
+            inst = f"{s}-USDT-SWAP" if source == "OKX永续" else f"{s}-USDT"
+            r = await c.get(f"{OKX}/api/v5/market/ticker", params={"instId": inst})
+            d = r.json()
+            if d.get("code") == "0" and d.get("data"):
+                return float(d["data"][0]["last"]), source
+        elif source == "Binance":
+            r = await c.get(f"{BN}/api/v3/ticker/price", params={"symbol": f"{s}USDT"})
+            if r.status_code == 200 and "price" in r.json():
+                return float(r.json()["price"]), source
+        elif source == "Binance永续":
+            r = await c.get(f"{FAPI}/fapi/v1/ticker/price", params={"symbol": f"{s}USDT"})
+            if r.status_code == 200 and "price" in r.json():
+                return float(r.json()["price"]), source
+        elif source in ("Bybit", "Bybit永续"):
+            cat = "linear" if source == "Bybit永续" else "spot"
+            r = await c.get(f"{BYBIT}/v5/market/tickers",
+                            params={"category": cat, "symbol": f"{s}USDT"})
+            d = r.json()
+            lst = d.get("result", {}).get("list") or []
+            if d.get("retCode") == 0 and lst:
+                return float(lst[0]["lastPrice"]), source
     except Exception:
         pass
     return None
 
 
+# 各模式下的取价优先级（第一个取到就用）
+CHAINS = {
+    "swap": ["OKX永续", "Bybit永续", "Binance永续"],
+    "spot": ["OKX", "Binance", "Bybit"],
+    "auto": ["OKX", "OKX永续", "Binance", "Bybit", "Bybit永续"],
+}
+
+
 async def resolve_price(symbol, market="auto"):
-    """多所取价，兼容小盘/合约币。market: auto(现货优先) / spot(只现货) / swap(只永续)。
-    返回 (price, source) 或 (None, None)。"""
-    s = symbol.upper()
+    """多所取价，兼容小盘/合约币。market: auto/spot/swap。返回 (price, source) 或 (None, None)。"""
     async with httpx.AsyncClient(timeout=8) as c:
-        # 各来源探测函数（惰性调用，命中即返回）
-        async def okx_spot():
-            return await _okx(c, f"{s}-USDT", "OKX")
-
-        async def okx_swap():
-            return await _okx(c, f"{s}-USDT-SWAP", "OKX永续")
-
-        async def bn_spot():
-            try:
-                r = await c.get(f"{BN}/api/v3/ticker/price", params={"symbol": f"{s}USDT"})
-                if r.status_code == 200 and "price" in r.json():
-                    return float(r.json()["price"]), "Binance"
-            except Exception:
-                pass
-            return None
-
-        async def bn_swap():
-            try:
-                r = await c.get(f"{FAPI}/fapi/v1/ticker/price", params={"symbol": f"{s}USDT"})
-                if r.status_code == 200 and "price" in r.json():
-                    return float(r.json()["price"]), "Binance永续"
-            except Exception:
-                pass
-            return None
-
-        async def bybit(cat, label):
-            try:
-                r = await c.get(f"{BYBIT}/v5/market/tickers",
-                                params={"category": cat, "symbol": f"{s}USDT"})
-                d = r.json()
-                lst = d.get("result", {}).get("list") or []
-                if d.get("retCode") == 0 and lst:
-                    return float(lst[0]["lastPrice"]), label
-            except Exception:
-                pass
-            return None
-
-        if market == "swap":
-            chain = [okx_swap, lambda: bybit("linear", "Bybit永续"), bn_swap]
-        elif market == "spot":
-            chain = [okx_spot, bn_spot, lambda: bybit("spot", "Bybit")]
-        else:  # auto：现货优先，回退永续
-            chain = [okx_spot, okx_swap, bn_spot,
-                     lambda: bybit("spot", "Bybit"), lambda: bybit("linear", "Bybit永续")]
-
-        for probe in chain:
-            res = await probe()
+        for src in CHAINS.get(market, CHAINS["auto"]):
+            res = await _fetch(c, symbol, src)
             if res:
                 return res
     return None, None
+
+
+async def fetch_pinned(symbol, source):
+    """从固定来源取价（波动监控轮询用，保证与基准同一交易所）。返回 price 或 None。"""
+    async with httpx.AsyncClient(timeout=8) as c:
+        res = await _fetch(c, symbol, source)
+    return res[0] if res else None
 
 
 # ---------- 设置逻辑（命令与菜单共用）----------
@@ -218,18 +206,22 @@ async def check_watchpct(context: ContextTypes.DEFAULT_TYPE):
     if not lst:
         return
     now = time.time()
-    # 同一(币,市场)只取一次价
+    # 按(币,固定来源)取价：锁定与基准同一交易所，避免跨所比价算歪
     prices = {}
-    for key in {(w["symbol"], w.get("market", "auto")) for w in lst}:
+    for key in {(w["symbol"], w.get("src")) for w in lst}:
+        sym, src = key
         try:
-            prices[key], _ = await resolve_price(key[0], key[1])
+            if src:
+                prices[key] = await fetch_pinned(sym, src)
+            else:                       # 老数据没记来源 → 退回按模式解析
+                prices[key], _ = await resolve_price(sym, "auto")
         except Exception as e:
             logging.error(f"波动监控取价 {key} 失败: {e}")
             prices[key] = None
 
     changed = False
     for w in lst:
-        p = prices.get((w["symbol"], w.get("market", "auto")))
+        p = prices.get((w["symbol"], w.get("src")))
         if not p:
             continue
         base = w["base"]

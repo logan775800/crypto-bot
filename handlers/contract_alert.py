@@ -60,7 +60,7 @@ def eval_tier_cross(ex_name, sym, change, now=None):
     tiers = data["contract_tiers"]
     change_abs = abs(change)
     direction = "up" if change > 0 else "down"
-    key = f"{ex_name}_{sym}"
+    key = sym                    # 只按币去重：同一个币在多所同时异动＝一个事件，只报一次
     rec = tiers.get(key)
 
     # 记录已反向 或 已过期(24h) → 作废，视为无记录
@@ -96,10 +96,10 @@ async def push_to_subscribers(bot, alerts):
     subs = data.get("contract_watch", [])
     if not subs or not alerts:
         return
-    # 同一(交易所,币,方向)去重，保留最高档，杜绝一条消息里同币重复成行
+    # 同一(币,方向)去重（跨交易所也算重复），保留最高档，只留首个交易所来源
     dedup = {}
     for a in alerts:
-        k = (a["ex"], a["sym"], a["direction"])
+        k = (a["sym"], a["direction"])
         if k not in dedup or a["tier"] > dedup[k]["tier"]:
             dedup[k] = a
     alerts = sorted(dedup.values(), key=lambda a: (-a["tier"], a["ex"], a["sym"]))

@@ -204,6 +204,41 @@ _FNG_ZH = {
 }
 
 
+def _fmt_hours(h):
+    """把小时数格式化：1/4/8 → '1h'；不足1小时 → '30分钟'。"""
+    if h >= 1:
+        return f"{h:g}h"
+    return f"{int(round(h * 60))}分钟"
+
+
+async def get_funding_interval(sym):
+    """取合约资金费结算周期(小时)。Bybit fundingInterval(分钟)最准，回退 OKX 时间差。
+    返回 {'hours': float, 'src': str} 或 None。1h 这类高频周期是踩坑重灾区。"""
+    s = sym.upper()
+    async with httpx.AsyncClient(timeout=8) as c:
+        try:
+            r = await c.get("https://api.bybit.com/v5/market/instruments-info",
+                            params={"category": "linear", "symbol": f"{s}USDT"})
+            d = r.json()
+            lst = d.get("result", {}).get("list") or []
+            if lst and lst[0].get("fundingInterval"):
+                return {"hours": int(lst[0]["fundingInterval"]) / 60, "src": "Bybit"}
+        except Exception:
+            pass
+        try:
+            r = await c.get("https://www.okx.com/api/v5/public/funding-rate",
+                            params={"instId": f"{s}-USDT-SWAP"})
+            d = r.json()
+            if d.get("code") == "0" and d.get("data"):
+                row = d["data"][0]
+                ft, nft = row.get("fundingTime"), row.get("nextFundingTime")
+                if ft and nft and int(nft) > int(ft):
+                    return {"hours": (int(nft) - int(ft)) / 3_600_000, "src": "OKX"}
+        except Exception:
+            pass
+    return None
+
+
 # ---------- 信息卡（消息 1） ----------
 async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
     """组装完整信息卡文本。spot/swap 为 quick_price 已取到的行情，避免重复请求。"""
@@ -224,9 +259,9 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
     lines.append(f"来源: {spot_src or swap_src or '—'}")
 
     # 市值 / RSI / 四所买卖聚合 / 合约深度 / 恐惧贪婪 五块并发拉取
-    md_res, rsi_res, flow, oils, fng = await asyncio.gather(
+    md_res, rsi_res, flow, oils, fng, fint = await asyncio.gather(
         get_market_data([sym]), build_rsi_multi(sym), build_flow_block(sym),
-        build_oi_ls(sym), get_fear_greed(),
+        build_oi_ls(sym), get_fear_greed(), get_funding_interval(sym),
         return_exceptions=True)
 
     # 市值/排名/成交量/多周期涨跌 + 24h高低 + ATH + 供应量/FDV（CoinGecko 同一接口）
@@ -261,9 +296,14 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
         lines.append("")
         lines.append(f"RSI: 4h {s4} | 1d {s1}")
 
-    # 资金费率
+    # 资金费率（带结算周期：1h 这类高频 = 持仓成本高，重点提醒）
     if swap_fr is not None:
-        lines.append(f"资金费率: {swap_fr:+.4f}% {swap_src or ''}".rstrip())
+        ivl = ""
+        if isinstance(fint, dict) and fint.get("hours"):
+            h = fint["hours"]
+            warn = " ⚠️高频吸血，持仓成本高" if h < 8 else ""
+            ivl = f"（每{_fmt_hours(h)}结算{warn}）"
+        lines.append(f"资金费率: {swap_fr:+.4f}% {swap_src or ''}".rstrip() + ivl)
 
     # 合约深度：持仓量 OI(24h变化) + 多空比
     if isinstance(oils, dict):

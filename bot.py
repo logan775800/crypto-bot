@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -99,6 +99,7 @@ async def post_init(application):
         BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
         BotCommand("watchpct", "👁 持续波动监控(指定币±%)"),
         BotCommand("watchpcts", "👁 我的波动监控列表"),
+        BotCommand("checklist", "📋 合约交易检查清单"),
         BotCommand("watchmarket", "🚨 订阅市场异动告警"),
         BotCommand("watchcontract", "📊 订阅全交易所合约异动告警"),
         BotCommand("subnews", "📰 订阅新闻推送"),
@@ -178,6 +179,7 @@ def main():
     app.add_handler(CommandHandler("watchpct", watchpct.watchpct))
     app.add_handler(CommandHandler("watchpcts", watchpct.watchpcts))
     app.add_handler(CommandHandler("unwatchpct", watchpct.unwatchpct))
+    app.add_handler(CommandHandler("checklist", checklist.checklist))
     # 持仓
     app.add_handler(CommandHandler("add", portfolio.add_holding))
     app.add_handler(CommandHandler("buy", portfolio.buy))

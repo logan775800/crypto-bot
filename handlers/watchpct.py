@@ -49,6 +49,14 @@ def parse_market(tok):
     return MARKET_ALIASES.get((tok or "").strip().lower(), "auto")
 
 
+def norm_symbol(sym):
+    """规范化币名：用户可能粘贴完整交易对(TUSDT/BTCUSDT)，去掉结尾 USDT 取基名。"""
+    s = (sym or "").upper().strip()
+    if s.endswith("USDT") and len(s) > 4:   # TUSDT→T, BTCUSDT→BTC；'USDT' 本身不动
+        s = s[:-4]
+    return s
+
+
 async def _okx(c, inst, label):
     try:
         r = await c.get(f"{OKX}/api/v5/market/ticker", params={"instId": inst})
@@ -120,7 +128,7 @@ async def resolve_price(symbol, market="auto"):
 # ---------- 设置逻辑（命令与菜单共用）----------
 async def add_watch(chat_id, symbol, pct, set_by, market="auto"):
     """新增/更新一个持续波动监控。market: auto/spot/swap。返回 (成功, Markdown文本)。"""
-    symbol = symbol.upper()
+    symbol = norm_symbol(symbol)
     if pct <= 0:
         return False, "百分比要大于 0"
     price, src = await resolve_price(symbol, market)
@@ -159,7 +167,7 @@ async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "例：/watchpct BTC 3 合约  （强制盯永续合约价）\n"
             "支持小盘/合约币（如 KORU、RAM）。取消：/unwatchpct 币")
         return
-    symbol = args[0].upper()
+    symbol = norm_symbol(args[0])
     try:
         pct = float(args[1])
     except ValueError:
@@ -179,6 +187,8 @@ async def unwatchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("用法：/unwatchpct 币　或　/unwatchpct all 全部取消")
         return
     arg = context.args[0].upper()
+    if arg != "ALL":
+        arg = norm_symbol(arg)
     before = len(lst)
     if arg == "ALL":
         lst[:] = [w for w in lst if w["chat_id"] != chat_id]

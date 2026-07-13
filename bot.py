@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -73,6 +73,9 @@ async def post_init(application):
         BotCommand("movers", "📸 异动快照"),
         BotCommand("weak", "😴 弱势/横盘扫描"),
         BotCommand("momentum", "📈 动量轮动回测"),
+        BotCommand("gridstart", "🔳 启动永续网格(管理员)"),
+        BotCommand("gridstatus", "🔳 网格状态/利润"),
+        BotCommand("gridstop", "🛑 停止网格"),
         BotCommand("analyze", "📈 技术分析"),
         BotCommand("ai", "🤖 AI分析"),
         BotCommand("news", "📰 最新新闻"),
@@ -195,6 +198,10 @@ def main():
     app.add_handler(CommandHandler("movers", movers.movers))
     app.add_handler(CommandHandler("weak", strategy.weak))
     app.add_handler(CommandHandler("momentum", strategy.momentum))
+    # 实盘网格（Bybit 永续，默认模拟盘；仅管理员）
+    app.add_handler(CommandHandler("gridstart", grid.grid_start))
+    app.add_handler(CommandHandler("gridstop", grid.grid_stop))
+    app.add_handler(CommandHandler("gridstatus", grid.grid_status))
     app.add_handler(CommandHandler("news", news.news))
     app.add_handler(CommandHandler("unlock", unlock.unlock))
     app.add_handler(CommandHandler("unlocks", unlock.unlocks))
@@ -233,6 +240,7 @@ def main():
     jq.run_repeating(market.check_gas_alerts, interval=300, first=100)  # Gas阈值提醒，每5分钟
     jq.run_repeating(arbitrage.scan_arb, interval=300, first=150)  # 套利监控扫描，每5分钟
     jq.run_repeating(whale_track.check_tracked, interval=600, first=200)  # 巨鲸地址追踪，每10分钟
+    jq.run_repeating(grid.poll_grids, interval=20, first=25)  # 网格成交轮询+反向补单，每20秒
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))

@@ -112,7 +112,7 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    if " " in text or len(text) > 12 or len(text) < 2:
+    if " " in text or len(text) > 12 or len(text) < 1:
         return
     # 群里只把"像币代码"的消息(纯ASCII字母/数字)当查询；
     # 中文、带标点、普通聊天不触发，避免刷屏
@@ -150,8 +150,9 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 swap_fr = await get_funding_bybit(symbol)
 
         if spot_cg is None and spot_okx is None and spot_bn is None and spot_by is None and not swap_tk:
-            # 群里对太短(<3)的不提示，避免把 ok/hi 之类当查询刷屏；私聊一律提示
-            if is_group(update) and len(text) < 3:
+            # 群里对太短(<3)的不提示，避免把 ok/hi 之类当查询刷屏；
+            # 单字母(如 T/B)无论群聊私聊，查不到就静默，避免把随手打的字母当查询刷屏
+            if (is_group(update) and len(text) < 3) or len(text) < 2:
                 return
             await update.message.reply_text(f"没查到 {symbol}，检查下币名（或试 /price {symbol}）")
             return

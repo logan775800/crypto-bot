@@ -56,6 +56,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 打开菜单即视为放弃未完成的预警设置，避免残留状态误把后续输入当价格/币名
     context.user_data.pop("await_alert", None)
     context.user_data.pop("await_alert_coin", None)
+    context.user_data.pop("await_watchpct", None)
     context.user_data.pop("await_track_addr", None)
     await update.message.reply_text(
         "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
@@ -116,6 +117,28 @@ async def render_my_alerts(query):
     rows.append([InlineKeyboardButton("🔄 刷新", callback_data="my_alerts"),
                  InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")])
     await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+
+
+async def render_my_watchpct(query):
+    """列出当前会话的持续波动监控，每条带取消按钮。"""
+    from storage import data as _ad
+    from handlers.watchpct import fmt
+    chat_id = query.message.chat_id
+    mine = [w for w in _ad.get("watchpct", []) if w["chat_id"] == chat_id]
+    if not mine:
+        await query.edit_message_text(
+            "👁 *我的波动监控*\n\n还没有。点【👁 持续波动监控】添加👇",
+            reply_markup=back_to("cat_alert"), parse_mode="Markdown")
+        return
+    lines = ["👁 *我的波动监控*\n点 ❌ 取消：\n"]
+    rows = []
+    for n, w in enumerate(mine, 1):
+        lines.append(f"{n}. {w['symbol']}  ±{w['pct']}%  基准 ${fmt(w['base'])}（{w.get('src','?')}）")
+        rows.append([InlineKeyboardButton(f"❌ 取消 {w['symbol']}", callback_data=f"delwatchpct:{w['symbol']}")])
+    rows.append([InlineKeyboardButton("🔄 刷新", callback_data="my_watchpct"),
+                 InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")])
+    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+
 
 def _short_addr(a):
     return a[:6] + "..." + a[-4:] if a and len(a) > 12 else a
@@ -390,11 +413,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for i in range(0, len(POPULAR), 5):
             rows.append([InlineKeyboardButton(c, callback_data=f"alertcoin:{c}") for c in POPULAR[i:i+5]])
         rows.append([InlineKeyboardButton("🔍 查其他币", callback_data="askcoin:alertcoin")])
-        rows.append([InlineKeyboardButton("📋 我的预警(查看/取消)", callback_data="my_alerts")])
+        rows.append([InlineKeyboardButton("👁 持续波动监控(±% 反复提醒)", callback_data="watchpct_start")])
+        rows.append([InlineKeyboardButton("📋 我的价格预警", callback_data="my_alerts"),
+                     InlineKeyboardButton("👁 我的波动监控", callback_data="my_watchpct")])
         rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")])
         await query.edit_message_text(
-            "🔔 *价格预警*\n\n先选要提醒的币👇\n"
-            "(选完再选涨破/跌破，最后发个价格即可)",
+            "🔔 *价格预警 / 波动监控*\n\n"
+            "• 选币设**涨破/跌破**或**±5%**提醒(一次性)👇\n"
+            "• 或点【👁 持续波动监控】盯指定币，涨跌超阈值**反复**提醒(支持小盘/合约币)",
             reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
 
     # 查看我的预警列表（每条带删除按钮）
@@ -454,6 +480,30 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"一键百分比预警出错: {e}")
             await query.edit_message_text("设置失败，稍后再试", reply_markup=back_to("cat_alert"))
+
+    # 持续波动监控：引导用户发「币 百分比」，quickprice 接住
+    elif d == "watchpct_start":
+        context.user_data["await_watchpct"] = True
+        await query.edit_message_text(
+            "👁 *持续波动监控*\n\n请发送「币 百分比」，例如：\n"
+            "`DOGE 5`　`KORU 10`　`BTC 3`\n\n"
+            "该币每从基准涨跌超此百分比就提醒，报后自动以新价继续盯。\n"
+            "支持小盘/合约币。取消发 /menu",
+            parse_mode="Markdown")
+
+    # 我的波动监控列表（带取消按钮）
+    elif d == "my_watchpct":
+        await render_my_watchpct(query)
+
+    # 取消某个波动监控
+    elif d.startswith("delwatchpct:"):
+        from storage import data as _ad, save_data as _as
+        sym = d.split(":", 1)[1]
+        chat_id = query.message.chat_id
+        wl = _ad.get("watchpct", [])
+        wl[:] = [w for w in wl if not (w["chat_id"] == chat_id and w["symbol"] == sym)]
+        _as()
+        await render_my_watchpct(query)
 
     # ============ OKX 专区 ============
     elif d == "cat_okx":

@@ -72,6 +72,27 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
         return
 
+    # 引导式：用户点了"持续波动监控"，现在发来的是「币 百分比」
+    if context.user_data.get("await_watchpct"):
+        parts = text.split()
+        if len(parts) < 2:
+            await update.message.reply_text("请发「币 百分比」，例如 `DOGE 5`（取消发 /menu）",
+                                            parse_mode="Markdown")
+            return
+        try:
+            pct = float(parts[1])
+        except ValueError:
+            await update.message.reply_text("百分比要是数字，例如 `DOGE 5`（取消发 /menu）",
+                                            parse_mode="Markdown")
+            return
+        from handlers.watchpct import add_watch
+        ok, msg = await add_watch(update.effective_chat.id, parts[0].upper(), pct,
+                                  update.effective_user.first_name)
+        if ok:
+            context.user_data.pop("await_watchpct", None)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+        return
+
     # 引导式预警：用户点了"查其他币"，现在发来的是"要设预警的币名"
     if context.user_data.get("await_alert_coin"):
         cand = text.upper()

@@ -70,6 +70,34 @@ async def resolve_price(symbol):
     return None, None
 
 
+# ---------- 设置逻辑（命令与菜单共用）----------
+async def add_watch(chat_id, symbol, pct, set_by):
+    """新增/更新一个持续波动监控。返回 (是否成功, Markdown说明文本)。"""
+    symbol = symbol.upper()
+    if pct <= 0:
+        return False, "百分比要大于 0"
+    price, src = await resolve_price(symbol)
+    if price is None:
+        return False, f"没查到 {symbol} 的价格。用交易所里的交易对基名试试（如 KORU、RAM、DOGE）"
+
+    lst = data.setdefault("watchpct", [])
+    mine = [w for w in lst if w["chat_id"] == chat_id]
+    existed = any(w["symbol"] == symbol for w in mine)
+    if not existed and len(mine) >= MAX_PER_CHAT:
+        return False, f"最多同时盯 {MAX_PER_CHAT} 个币，先 /unwatchpct 取消几个"
+    lst[:] = [w for w in lst if not (w["chat_id"] == chat_id and w["symbol"] == symbol)]
+    lst.append({
+        "chat_id": chat_id, "symbol": symbol, "pct": pct,
+        "base": price, "src": src, "last_ts": 0, "set_by": set_by,
+    })
+    save_data()
+    verb = "已更新" if existed else "已开启"
+    return True, (
+        f"👁 {verb}持续波动监控：*{symbol}* 每涨跌超 *±{pct}%* 提醒\n"
+        f"当前基准 ${fmt(price)}（{src}）\n"
+        f"报警后自动以新价为基准继续盯（{COOLDOWN//60}分钟冷却）。")
+
+
 # ---------- 命令 ----------
 async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
@@ -85,38 +113,10 @@ async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("百分比要是数字，例：/watchpct DOGE 5")
         return
-    if pct <= 0:
-        await update.message.reply_text("百分比要大于 0")
-        return
-
-    price, src = await resolve_price(symbol)
-    if price is None:
-        await update.message.reply_text(
-            f"没查到 {symbol} 的价格。用交易所里的交易对基名试试（如 KORU、RAM、DOGE）")
-        return
-
-    chat_id = update.effective_chat.id
-    lst = data.setdefault("watchpct", [])
-    mine = [w for w in lst if w["chat_id"] == chat_id]
-    # 去重：同 (会话,币) 覆盖
-    existed = any(w["symbol"] == symbol for w in mine)
-    if not existed and len(mine) >= MAX_PER_CHAT:
-        await update.message.reply_text(f"最多同时盯 {MAX_PER_CHAT} 个币，先 /unwatchpct 取消几个")
-        return
-    lst[:] = [w for w in lst if not (w["chat_id"] == chat_id and w["symbol"] == symbol)]
-    lst.append({
-        "chat_id": chat_id, "symbol": symbol, "pct": pct,
-        "base": price, "src": src, "last_ts": 0,
-        "set_by": update.effective_user.first_name,
-    })
-    save_data()
-    verb = "已更新" if existed else "已开启"
-    await update.message.reply_text(
-        f"👁 {verb}持续波动监控：*{symbol}* 每涨跌超 *±{pct}%* 提醒\n"
-        f"当前基准 ${fmt(price)}（{src}）\n"
-        f"报警后自动以新价为基准继续盯（{COOLDOWN//60}分钟冷却）。\n"
-        f"查看 /watchpcts　取消 /unwatchpct {symbol}",
-        parse_mode="Markdown")
+    ok, msg = await add_watch(update.effective_chat.id, symbol, pct,
+                              update.effective_user.first_name)
+    tail = f"\n查看 /watchpcts　取消 /unwatchpct {symbol}" if ok else ""
+    await update.message.reply_text(msg + tail, parse_mode="Markdown")
 
 
 async def unwatchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):

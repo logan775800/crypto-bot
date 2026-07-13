@@ -25,6 +25,9 @@ BYBIT_BASE = "https://api.bybit.com"
 
 # 告警台阶：20% 起，每 10% 一档，封顶 400%
 TIERS = list(range(20, 401, 10))
+# 迟滞带（百分点）：涨跌幅须回落到 (最低档-迟滞) 以下才重新武装，
+# 杜绝币在 20% 边界上下抖动被反复当成"首次穿越"而刷屏
+HYSTERESIS = 3
 # 最小 24h 成交额（USDT），滤掉僵尸/微盘合约的噪音；按需调整
 MIN_TURNOVER = 1_000_000
 TIER_RESET = 86400                          # 记录 24h 后过期，允许重新计档
@@ -58,21 +61,33 @@ def eval_tier_cross(ex_name, sym, change, now=None):
     change_abs = abs(change)
     direction = "up" if change > 0 else "down"
     key = f"{ex_name}_{sym}"
+    rec = tiers.get(key)
 
-    # 跌回阈值以下：清记录，下次重新穿越可再报
-    if change_abs < TIERS[0]:
+    # 记录已反向 或 已过期(24h) → 作废，视为无记录
+    if rec and (rec["dir"] != direction or now - rec["ts"] > TIER_RESET):
         tiers.pop(key, None)
+        rec = None
+
+    # 明显回落到迟滞带以下(< 最低档-迟滞) → 解除武装，清记录，之后重新穿越才再报
+    if change_abs < TIERS[0] - HYSTERESIS:
+        if key in tiers:
+            tiers.pop(key, None)
         return None
 
-    rec = tiers.get(key)
-    prev = 0
-    if rec and rec["dir"] == direction and now - rec["ts"] <= TIER_RESET:
-        prev = rec["tier"]
+    # 处于迟滞带或未达最低档(如 17~20%) → 不报；有记录则续命时间戳，别过期
+    if change_abs < TIERS[0]:
+        if rec:
+            rec["ts"] = now
+        return None
 
     tier = get_tier(change_abs)
-    if tier > prev:
+    prev = rec["tier"] if rec else 0
+    if tier > prev:                       # 仅升到更高台阶才报（同档抖动不再重复）
         tiers[key] = {"tier": tier, "dir": direction, "ts": now}
         return tier
+
+    if rec:                               # 同档/回落但仍在高位：续命，不报
+        rec["ts"] = now
     return None
 
 
@@ -81,7 +96,13 @@ async def push_to_subscribers(bot, alerts):
     subs = data.get("contract_watch", [])
     if not subs or not alerts:
         return
-    alerts = sorted(alerts, key=lambda a: (-a["tier"], a["ex"], a["sym"]))
+    # 同一(交易所,币,方向)去重，保留最高档，杜绝一条消息里同币重复成行
+    dedup = {}
+    for a in alerts:
+        k = (a["ex"], a["sym"], a["direction"])
+        if k not in dedup or a["tier"] > dedup[k]["tier"]:
+            dedup[k] = a
+    alerts = sorted(dedup.values(), key=lambda a: (-a["tier"], a["ex"], a["sym"]))
     body = []
     for a in alerts:
         emoji = "🚀" if a["direction"] == "up" else "💥"

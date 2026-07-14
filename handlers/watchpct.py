@@ -22,7 +22,7 @@ BN = "https://api.binance.com"
 FAPI = "https://fapi.binance.com"        # 币安 USDT 本位永续合约
 BYBIT = "https://api.bybit.com"
 
-COOLDOWN = 180          # 同一币两次提醒最短间隔秒，防急涨急跌时刷屏
+COOLDOWN = 60           # 同一币两次提醒最短间隔秒，防急涨急跌时刷屏（配合重设基准）
 MAX_PER_CHAT = 30       # 每个会话最多盯多少个币
 
 
@@ -113,6 +113,34 @@ async def fetch_pinned(symbol, source):
     return res[0] if res else None
 
 
+def on_tick(source, sym, price):
+    """WebSocket 实时 tick 命中检查（同步，供 contract_ws 秒级调用）。
+    source 形如 'OKX永续'/'Bybit永续'，只匹配来源相同的监控。
+    命中即就地更新基准/冷却，返回 [(chat_id, text), ...] 交由调用方即时推送。"""
+    lst = data.get("watchpct")
+    if not lst:
+        return []
+    now = time.time()
+    out = []
+    for w in lst:
+        if w.get("symbol") != sym or w.get("src") != source:
+            continue
+        base = w.get("base", 0)
+        if base <= 0:
+            w["base"] = price
+            continue
+        ch = (price - base) / base * 100
+        if abs(ch) >= w["pct"] and now - w.get("last_ts", 0) >= COOLDOWN:
+            arrow = "📈 涨" if ch > 0 else "📉 跌"
+            mkt_tag = "（合约）" if w.get("market") == "swap" else ("（现货）" if w.get("market") == "spot" else "")
+            out.append((w["chat_id"],
+                        f"{arrow} *{sym}*{mkt_tag} {ch:+.2f}%！\n"
+                        f"${fmt(base)} → ${fmt(price)}（阈值 ±{w['pct']}%，{source} 实时）"))
+            w["base"] = price
+            w["last_ts"] = now
+    return out
+
+
 # ---------- 设置逻辑（命令与菜单共用）----------
 async def add_watch(chat_id, symbol, pct, set_by, market="auto"):
     """新增/更新一个持续波动监控。market: auto/spot/swap。返回 (成功, Markdown文本)。"""
@@ -139,10 +167,12 @@ async def add_watch(chat_id, symbol, pct, set_by, market="auto"):
     save_data()
     verb = "已更新" if existed else "已开启"
     mkt_tag = "（合约）" if market == "swap" else ("（现货）" if market == "spot" else "")
+    # OKX/Bybit 永续走 WebSocket 秒级实时；其余走约1分钟轮询
+    realtime = "⚡ 秒级实时(WebSocket)" if src in ("OKX永续", "Bybit永续") else "约1分钟轮询"
     return True, (
         f"👁 {verb}持续波动监控：*{symbol}*{mkt_tag} 每涨跌超 *±{pct}%* 提醒\n"
         f"当前基准 ${fmt(price)}（{src}）\n"
-        f"报警后自动以新价为基准继续盯（{COOLDOWN//60}分钟冷却）。")
+        f"触发方式：{realtime}，报警后自动以新价为基准继续盯（{COOLDOWN//60}分钟冷却）。")
 
 
 # ---------- 命令 ----------

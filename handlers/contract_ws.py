@@ -17,6 +17,10 @@ import httpx
 
 from storage import data, save_data
 from handlers.contract_alert import MIN_TURNOVER, eval_tier_cross, push_to_subscribers
+from handlers import watchpct
+
+# WS 里 OKX/Bybit 的 tick 都是永续，映射成波动监控里的来源名
+_WS_SRC = {"OKX": "OKX永续", "Bybit": "Bybit永续"}
 
 OKX_WS = "wss://ws.okx.com:8443/ws/v5/public"
 BYBIT_WS = "wss://stream.bybit.com/v5/public/linear"
@@ -30,8 +34,25 @@ _pending = []             # 待推送告警缓冲
 _bot = None
 
 
+async def _send_wp(chat_id, text):
+    try:
+        await _bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        save_data()   # 基准/冷却已在 on_tick 里更新，落盘
+    except Exception as e:
+        logging.error(f"波动监控实时推送失败 {chat_id}: {e}")
+
+
 def _queue(ex, sym, change, price):
-    """有订阅者时才判档入队（与轮询一致：无人订阅不推进台阶）。"""
+    """波动监控实时命中即时推送（不依赖合约订阅）；合约异动分级则需订阅。"""
+    # 1) 持续波动监控：秒级 tick 命中就立刻发（与 /watchcontract 订阅无关）
+    try:
+        hits = watchpct.on_tick(_WS_SRC.get(ex, ex), sym, price)
+        for chat_id, text in hits:
+            asyncio.ensure_future(_send_wp(chat_id, text))
+    except Exception as e:
+        logging.error(f"波动监控实时检查出错: {e}")
+
+    # 2) 合约异动分级告警：有订阅者才判档入队
     if not data.get("contract_watch"):
         return
     tier = eval_tier_cross(ex, sym, change)

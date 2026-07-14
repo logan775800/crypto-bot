@@ -112,61 +112,27 @@ def _eval_candles(rows, days, base, ex, o_idx, c_idx, skip_live, direction):
     return {"sym": base, "ex": ex, "cum": cum, "legs": list(reversed(legs)), "price": last_close}
 
 
-# ---------- 命令入口 ----------
-async def upstreak(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _run_scan(update, context, "up")
-
-
-async def downstreak(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await _run_scan(update, context, "down")
-
-
-async def _run_scan(update, context, direction):
-    days, min_m, ex = DEFAULT_DAYS, DEFAULT_MIN_TURNOVER_M, "all"
-    nums = []
-    for a in context.args:
-        al = a.lower()
-        if al in ("okx", "bybit", "all"):
-            ex = al
-        else:
-            try:
-                nums.append(float(a))
-            except ValueError:
-                pass
-    if len(nums) >= 1:
-        days = int(nums[0])
-    if len(nums) >= 2:
-        min_m = nums[1]
-    cmd = "upstreak" if direction == "up" else "downstreak"
-    if days < 2 or days > 10:
-        await update.message.reply_text(f"天数取 2~10。用法：/{cmd} [天数=3] [成交额百万=5] [okx|bybit|all]")
-        return
-
+# ---------- 扫描 + 组装文本（命令与菜单按钮共用）----------
+async def build_streak_text(direction, ex="all", days=DEFAULT_DAYS, min_m=DEFAULT_MIN_TURNOVER_M):
+    """执行扫描并返回结果 Markdown 文本。网络异常向上抛。"""
     word = "上涨" if direction == "up" else "下跌"
     kline = "收阳" if direction == "up" else "收阴"
     emoji = "📈" if direction == "up" else "📉"
     min_turnover = min_m * 1_000_000
     ex_label = {"okx": "OKX", "bybit": "Bybit", "all": "OKX+Bybit"}[ex]
-    await update.message.reply_text(
-        f"⏳ 扫描 {ex_label} 永续中…（连续 {days} 天日线{kline}，成交额≥{min_m:g}M，约需十几秒）")
 
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            sem = asyncio.Semaphore(CONCURRENCY)
-            tasks, scanned = [], 0
-            if ex in ("okx", "all"):
-                uni = (await _okx_universe(client, min_turnover))[:MAX_SCAN]
-                scanned += len(uni)
-                tasks += [_okx_streak(client, sem, iid, base, days, direction) for iid, base, _ in uni]
-            if ex in ("bybit", "all"):
-                uni = (await _bybit_universe(client, min_turnover))[:MAX_SCAN]
-                scanned += len(uni)
-                tasks += [_bybit_streak(client, sem, sym, base, days, direction) for sym, base, _ in uni]
-            results = await asyncio.gather(*tasks)
-    except Exception as e:
-        logging.error(f"{cmd} 扫描出错: {e}")
-        await update.message.reply_text("扫描失败，稍后再试")
-        return
+    async with httpx.AsyncClient(timeout=15) as client:
+        sem = asyncio.Semaphore(CONCURRENCY)
+        tasks, scanned = [], 0
+        if ex in ("okx", "all"):
+            uni = (await _okx_universe(client, min_turnover))[:MAX_SCAN]
+            scanned += len(uni)
+            tasks += [_okx_streak(client, sem, iid, base, days, direction) for iid, base, _ in uni]
+        if ex in ("bybit", "all"):
+            uni = (await _bybit_universe(client, min_turnover))[:MAX_SCAN]
+            scanned += len(uni)
+            tasks += [_bybit_streak(client, sem, sym, base, days, direction) for sym, base, _ in uni]
+        results = await asyncio.gather(*tasks)
 
     # 按币去重：涨保留累计最高、跌保留累计最低（跌得最狠）
     best = {}
@@ -179,8 +145,7 @@ async def _run_scan(update, context, direction):
     hits = sorted(best.values(), key=lambda r: r["cum"], reverse=(direction == "up"))
 
     if not hits:
-        await update.message.reply_text(f"没有连续 {days} 天都{kline}的合约（扫描 {scanned} 个）")
-        return
+        return f"没有连续 {days} 天都{kline}的合约（扫描 {scanned} 个）"
 
     show_ex = ex == "all"
     lines = [f"{emoji} *连续 {days} 天{word}* · {ex_label}永续 · 日线{kline}（扫描 {scanned} 个）\n"]
@@ -192,4 +157,51 @@ async def _run_scan(update, context, direction):
         lines.append(f"\n…共 {len(hits)} 个，仅显示前 {TOP_SHOW}")
     tail = "连涨≠必涨，注意追高" if direction == "up" else "连跌≠见底，别接飞刀"
     lines.append(f"\n⚠️ {tail}，不构成投资建议")
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+    return "\n".join(lines)
+
+
+def _parse_args(args):
+    days, min_m, ex = DEFAULT_DAYS, DEFAULT_MIN_TURNOVER_M, "all"
+    nums = []
+    for a in args:
+        al = a.lower()
+        if al in ("okx", "bybit", "all"):
+            ex = al
+        else:
+            try:
+                nums.append(float(a))
+            except ValueError:
+                pass
+    if len(nums) >= 1:
+        days = int(nums[0])
+    if len(nums) >= 2:
+        min_m = nums[1]
+    return days, min_m, ex
+
+
+# ---------- 命令入口 ----------
+async def upstreak(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _run_scan(update, context, "up")
+
+
+async def downstreak(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await _run_scan(update, context, "down")
+
+
+async def _run_scan(update, context, direction):
+    days, min_m, ex = _parse_args(context.args)
+    cmd = "upstreak" if direction == "up" else "downstreak"
+    if days < 2 or days > 10:
+        await update.message.reply_text(f"天数取 2~10。用法：/{cmd} [天数=3] [成交额百万=5] [okx|bybit|all]")
+        return
+    kline = "收阳" if direction == "up" else "收阴"
+    ex_label = {"okx": "OKX", "bybit": "Bybit", "all": "OKX+Bybit"}[ex]
+    await update.message.reply_text(
+        f"⏳ 扫描 {ex_label} 永续中…（连续 {days} 天日线{kline}，成交额≥{min_m:g}M，约需十几秒）")
+    try:
+        txt = await build_streak_text(direction, ex, days, min_m)
+    except Exception as e:
+        logging.error(f"{cmd} 扫描出错: {e}")
+        await update.message.reply_text("扫描失败，稍后再试")
+        return
+    await update.message.reply_text(txt, parse_mode="Markdown")

@@ -347,14 +347,40 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("😴 弱势/横盘扫描", callback_data="do_weak")],
             [InlineKeyboardButton("📈 动量轮动回测", callback_data="do_momentum")],
+            [InlineKeyboardButton("📈 连涨·Bybit", callback_data="streak:up:bybit"),
+             InlineKeyboardButton("📉 连跌·Bybit", callback_data="streak:down:bybit")],
+            [InlineKeyboardButton("📈 连涨·全部所", callback_data="streak:up:all"),
+             InlineKeyboardButton("📉 连跌·全部所", callback_data="streak:down:all")],
+            [InlineKeyboardButton("📋 合约交易检查清单", callback_data="show_checklist")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
         await query.edit_message_text(
-            "📊 *策略回测*\n"
+            "📊 *策略回测 / 合约扫描*\n"
             "• 弱势/横盘扫描：找最横盘/最弱/相对抗跌的主流币\n"
-            "• 动量轮动回测：只追最强K个币，对比死拿BTC\n\n"
-            "⚠️ 回测≠未来，不构成投资建议",
+            "• 动量轮动回测：只追最强K个币，对比死拿BTC\n"
+            "• 连涨/连跌：找连续3天日线同向的永续合约（命令可自定义天数：`/upstreak 5 bybit`）\n"
+            "• 检查清单：开仓前必看的合约风控自查\n\n"
+            "⚠️ 回测/扫描≠未来，不构成投资建议",
             reply_markup=kb, parse_mode="Markdown")
+
+    # 连涨/连跌合约扫描（streak:<up|down>:<ex>）
+    elif d.startswith("streak:"):
+        _, direction, exch = d.split(":")
+        word = "连涨" if direction == "up" else "连跌"
+        await query.edit_message_text(
+            f"⏳ 扫描 {exch.upper()} 永续{word}中（连续3天），约需十几秒…")
+        from handlers.streak import build_streak_text
+        try:
+            txt = await build_streak_text(direction, exch, 3, 5)
+            await safe_edit(query, txt, reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"菜单连涨/连跌扫描出错: {e}")
+            await query.edit_message_text("扫描失败，稍后再试", reply_markup=back_to("cat_strategy"))
+
+    # 合约交易检查清单
+    elif d == "show_checklist":
+        from handlers.checklist import CHECKLIST
+        await safe_edit(query, CHECKLIST, reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
 
     elif d == "do_weak":
         await query.edit_message_text("🔎 扫描市值前 50 主流币...")

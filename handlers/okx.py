@@ -258,11 +258,10 @@ async def build_gainers_text(inst_type="SPOT"):
     lines = [f"🚀 *OKX {title} 24h涨幅榜*\n"]
     for i, c in enumerate(g, 1):
         lines.append(f"{i}. {c['sym']}: +{c['change']:.2f}%")
-    if inst_type == "SPOT":
-        l = sorted(coins, key=lambda x: x["change"])[:15]
-        lines.append("\n📉 *跌幅榜*")
-        for i, c in enumerate(l, 1):
-            lines.append(f"{i}. {c['sym']}: {c['change']:.2f}%")
+    l = sorted(coins, key=lambda x: x["change"])[:15]
+    lines.append(f"\n📉 *OKX {title} 24h跌幅榜*")
+    for i, c in enumerate(l, 1):
+        lines.append(f"{i}. {c['sym']}: {c['change']:.2f}%")
     lines.append("\n⚠️ 不构成投资建议")
     return "\n".join(lines)
 

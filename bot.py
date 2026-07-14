@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,6 +27,9 @@ HELP_TEXT = (
     "/gasalert 15 Gas跌破提醒　/arbwatch 0.8 套利监控\n"
     "/track 0x地址 追踪巨鲸地址　/tracked 我的追踪\n"
     "/portfolio 我的持仓（请私聊使用）\n\n"
+    "*🎮 虚拟合约交易*（模拟盘，练手不碰真钱，私聊）\n"
+    "/vopen BTC long 1000 10 开多（1000U保证金10x，入场取现价）\n"
+    "　└ /vclose BTC 平仓　/vpos 持仓+浮盈+爆仓价　/vhistory 胜率历史\n\n"
     "*盯盘 / 合约*\n"
     "/watchpct BTC 2 持续波动监控，涨跌超±2%就提醒（报后自动续盯）\n"
     "　└ 加「合约」盯永续价，如 `/watchpct LAB 2 合约`（OKX/Bybit永续秒级实时）\n"
@@ -122,6 +125,10 @@ async def post_init(application):
         BotCommand("buy", "💼 买入(私聊)"),
         BotCommand("portfolio", "💼 我的持仓(私聊)"),
         BotCommand("ranking", "🏆 盈亏排行(私聊)"),
+        BotCommand("vopen", "🎮 虚拟开仓(模拟合约)"),
+        BotCommand("vpos", "🎮 虚拟持仓/账户"),
+        BotCommand("vclose", "🎮 虚拟平仓"),
+        BotCommand("vhistory", "🎮 虚拟交易胜率/历史"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -201,6 +208,13 @@ def main():
     app.add_handler(CommandHandler("ranking", portfolio.ranking))
     app.add_handler(CommandHandler("holdings", portfolio.holdings_list))
     app.add_handler(CommandHandler("delhold", portfolio.del_holding))
+    # 虚拟合约交易（模拟盘，私聊）
+    app.add_handler(CommandHandler("vopen", vtrade.vopen))
+    app.add_handler(CommandHandler("vclose", vtrade.vclose))
+    app.add_handler(CommandHandler("vpos", vtrade.vpos))
+    app.add_handler(CommandHandler("vtrade", vtrade.vpos))
+    app.add_handler(CommandHandler("vhistory", vtrade.vhistory))
+    app.add_handler(CommandHandler("vreset", vtrade.vreset))
     # 播报（功能1）
     app.add_handler(CommandHandler("subscribe", broadcast.subscribe))
     app.add_handler(CommandHandler("unsubscribe", broadcast.unsubscribe))
@@ -263,6 +277,7 @@ def main():
     jq.run_repeating(whale_track.check_tracked, interval=600, first=200)  # 巨鲸地址追踪，每10分钟
     jq.run_repeating(grid.poll_grids, interval=20, first=25)  # 网格成交轮询+反向补单，每20秒
     jq.run_repeating(watchpct.check_watchpct, interval=60, first=35)  # 持续波动监控，每60秒
+    jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))

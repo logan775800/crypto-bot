@@ -49,7 +49,8 @@ def main_menu_kb():
         [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
          InlineKeyboardButton("🛠 实用工具", callback_data="cat_tools")],
         [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
-         InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
+         InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
+        [InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
     ])
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1114,6 +1115,41 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/ranking` 盈亏排行\n"
             "`/piechart` 持仓饼图",
             reply_markup=back_kb(), parse_mode="Markdown")
+
+    # ============ 虚拟合约交易（模拟盘）============
+    elif d == "cat_vtrade":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💼 我的持仓/账户", callback_data="vpos_refresh")],
+            [InlineKeyboardButton("📜 交易历史/胜率", callback_data="vhist_show")],
+            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+        ])
+        await query.edit_message_text(
+            "🎮 *虚拟合约交易*（模拟盘，用真实行情练手，不碰真钱 🔒私聊）\n\n"
+            "用命令下单：\n"
+            "`/vopen BTC long 1000 10` 开多（1000U 保证金 10x）\n"
+            "`/vopen ETH short 500 20` 开空\n"
+            "`/vclose BTC` 平仓（`/vclose BTC 50` 平一半）\n"
+            "`/vpos` 看持仓+浮盈+爆仓价\n"
+            "`/vhistory` 胜率/历史　`/vreset` 重置账户\n\n"
+            "初始本金 $10,000，含 0.05% 手续费、自动爆仓监控。\n"
+            "⚠️ 模拟盘，不构成投资建议",
+            reply_markup=kb, parse_mode="Markdown")
+
+    elif d == "vpos_refresh":
+        from handlers.vtrade import render_vpos
+        try:
+            await render_vpos(query)
+        except Exception as e:
+            logging.error(f"虚拟持仓刷新出错: {e}")
+            await query.edit_message_text("刷新失败，稍后再试", reply_markup=back_to("cat_vtrade"))
+
+    elif d == "vhist_show":
+        from handlers.vtrade import render_vhist
+        try:
+            await render_vhist(query)
+        except Exception as e:
+            logging.error(f"虚拟历史出错: {e}")
+            await query.edit_message_text("查询失败，稍后再试", reply_markup=back_to("cat_vtrade"))
 
     # ============ 帮助 ============
     elif d == "cat_help":

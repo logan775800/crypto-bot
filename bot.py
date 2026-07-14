@@ -32,6 +32,7 @@ HELP_TEXT = (
     "　└ 加「合约」盯永续价，如 `/watchpct LAB 2 合约`（OKX/Bybit永续秒级实时）\n"
     "　└ /watchpcts 我的监控　/unwatchpct BTC 取消\n"
     "/upstreak 连续N天上涨的合约扫描，如 `/upstreak 3 bybit`\n"
+    "/downstreak 连续N天下跌的合约扫描（抄底参考）\n"
     "/watchcontract 订阅全交易所合约异动告警（±20%起分级）\n"
     "/checklist 合约交易检查清单（开仓前必看，含费率周期/爆仓/止损）\n"
     "　└ 查币名看合约行情会标「资金费结算周期」，1h高频费率会⚠️提醒\n\n"
@@ -109,6 +110,7 @@ async def post_init(application):
         BotCommand("watchpcts", "👁 我的波动监控列表"),
         BotCommand("checklist", "📋 合约交易检查清单"),
         BotCommand("upstreak", "📈 连续N天上涨的合约扫描"),
+        BotCommand("downstreak", "📉 连续N天下跌的合约扫描"),
         BotCommand("watchmarket", "🚨 订阅市场异动告警"),
         BotCommand("watchcontract", "📊 订阅全交易所合约异动告警"),
         BotCommand("subnews", "📰 订阅新闻推送"),
@@ -190,6 +192,7 @@ def main():
     app.add_handler(CommandHandler("unwatchpct", watchpct.unwatchpct))
     app.add_handler(CommandHandler("checklist", checklist.checklist))
     app.add_handler(CommandHandler("upstreak", streak.upstreak))
+    app.add_handler(CommandHandler("downstreak", streak.downstreak))
     # 持仓
     app.add_handler(CommandHandler("add", portfolio.add_holding))
     app.add_handler(CommandHandler("buy", portfolio.buy))

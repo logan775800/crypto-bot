@@ -11,6 +11,7 @@ from telegram.ext import ContextTypes
 from api import get_price, get_prices
 from config import COIN_IDS
 from storage import data, save_data
+from handlers.util import safe_reply
 
 START_BALANCE = 10000.0   # 初始虚拟本金（USDT）
 FEE_RATE = 0.0005         # 单边吃单手续费 0.05%（开+平各扣一次，模拟真实磨损）
@@ -85,11 +86,11 @@ def _pos_line(sym, pos, mark):
 # ============ 开仓 ============
 async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_group(update):
-        await update.message.reply_text("🔒 虚拟交易涉及你的账户，请私聊我使用")
+        await safe_reply(update.message, "🔒 虚拟交易涉及你的账户，请私聊我使用")
         return
     args = context.args
     if len(args) < 4:
-        await update.message.reply_text(
+        await safe_reply(update.message, 
             "📝 *开仓用法*\n"
             "`/vopen 币 方向 保证金 杠杆 [入场价]`\n\n"
             "例：`/vopen BTC long 1000 10`\n"
@@ -101,7 +102,7 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     symbol = args[0].upper()
     if symbol not in COIN_IDS:
-        await update.message.reply_text(f"不支持的币种：{symbol}")
+        await safe_reply(update.message, f"不支持的币种：{symbol}")
         return
     side_raw = args[1].lower()
     if side_raw in ("long", "多", "buy", "l"):
@@ -109,26 +110,26 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif side_raw in ("short", "空", "sell", "s"):
         side = "short"
     else:
-        await update.message.reply_text("方向要填 long/多 或 short/空")
+        await safe_reply(update.message, "方向要填 long/多 或 short/空")
         return
     try:
         margin = float(args[2])
         lev = float(args[3])
     except ValueError:
-        await update.message.reply_text("保证金和杠杆要是数字")
+        await safe_reply(update.message, "保证金和杠杆要是数字")
         return
     if margin <= 0:
-        await update.message.reply_text("保证金要大于 0")
+        await safe_reply(update.message, "保证金要大于 0")
         return
     if not (1 <= lev <= MAX_LEV):
-        await update.message.reply_text(f"杠杆范围 1~{MAX_LEV} 倍")
+        await safe_reply(update.message, f"杠杆范围 1~{MAX_LEV} 倍")
         return
 
     uid = str(update.effective_user.id)
     a = _acct(uid)
     a["chat_id"] = update.effective_chat.id
     if symbol in a["positions"]:
-        await update.message.reply_text(
+        await safe_reply(update.message, 
             f"你已有 {symbol} 的持仓，先 `/vclose {symbol}` 平掉再开", parse_mode="Markdown")
         return
 
@@ -137,10 +138,10 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             entry = float(args[4])
         except ValueError:
-            await update.message.reply_text("入场价要是数字")
+            await safe_reply(update.message, "入场价要是数字")
             return
         if entry <= 0:
-            await update.message.reply_text("入场价要大于 0")
+            await safe_reply(update.message, "入场价要大于 0")
             return
     else:
         try:
@@ -149,7 +150,7 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"vopen 查价出错: {e}")
             r = None
         if not r:
-            await update.message.reply_text("取现价失败，稍后再试，或手动指定入场价")
+            await safe_reply(update.message, "取现价失败，稍后再试，或手动指定入场价")
             return
         entry = r["price"]
 
@@ -157,7 +158,7 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fee = notional * FEE_RATE
     cost = margin + fee
     if cost > a["balance"] + 1e-9:
-        await update.message.reply_text(
+        await safe_reply(update.message, 
             f"💸 余额不足\n可用 ${a['balance']:,.2f}，本单需 ${cost:,.2f}"
             f"（保证金 ${margin:,.2f} + 手续费 ${fee:,.2f}）")
         return
@@ -170,7 +171,7 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     liq = _liq(a["positions"][symbol])
     dir_txt = "做多 📈" if side == "long" else "做空 📉"
-    await update.message.reply_text(
+    await safe_reply(update.message, 
         f"✅ *虚拟开仓*\n"
         f"{symbol} {dir_txt} {lev:g}x\n"
         f"入场价 ${fmt(entry)}\n"
@@ -186,17 +187,17 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============ 平仓 ============
 async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_group(update):
-        await update.message.reply_text("🔒 请私聊使用")
+        await safe_reply(update.message, "🔒 请私聊使用")
         return
     if not context.args:
-        await update.message.reply_text("用法：`/vclose BTC` 全平，`/vclose BTC 50` 平一半", parse_mode="Markdown")
+        await safe_reply(update.message, "用法：`/vclose BTC` 全平，`/vclose BTC 50` 平一半", parse_mode="Markdown")
         return
     symbol = context.args[0].upper()
     uid = str(update.effective_user.id)
     a = _acct(uid)
     pos = a["positions"].get(symbol)
     if not pos:
-        await update.message.reply_text(f"你没有 {symbol} 的虚拟持仓")
+        await safe_reply(update.message, f"你没有 {symbol} 的虚拟持仓")
         return
     # 平仓比例
     pct = 100.0
@@ -204,10 +205,10 @@ async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             pct = float(context.args[1])
         except ValueError:
-            await update.message.reply_text("平仓比例要是数字（1~100）")
+            await safe_reply(update.message, "平仓比例要是数字（1~100）")
             return
         if not (0 < pct <= 100):
-            await update.message.reply_text("平仓比例要在 1~100 之间")
+            await safe_reply(update.message, "平仓比例要在 1~100 之间")
             return
     try:
         r = await get_price(symbol)
@@ -215,7 +216,7 @@ async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"vclose 查价出错: {e}")
         r = None
     if not r:
-        await update.message.reply_text("取现价失败，稍后再试")
+        await safe_reply(update.message, "取现价失败，稍后再试")
         return
     mark = r["price"]
 
@@ -250,7 +251,7 @@ async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     emoji = "🟢" if net >= 0 else "🔴"
     word = "止盈" if net >= 0 else "止损"
-    await update.message.reply_text(
+    await safe_reply(update.message, 
         f"{emoji} *虚拟平仓 {word}* {'(部分)' if pct<100 else ''}\n"
         f"{symbol} {'多' if pos['side']=='long' else '空'} {pos['lev']:g}x\n"
         f"入场 ${fmt(pos['entry'])} → 平仓 ${fmt(mark)}\n"
@@ -263,13 +264,13 @@ async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============ 查持仓 + 账户 ============
 async def vpos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_group(update):
-        await update.message.reply_text("🔒 请私聊使用")
+        await safe_reply(update.message, "🔒 请私聊使用")
         return
     uid = str(update.effective_user.id)
     a = _acct(uid)
     positions = a["positions"]
     if not positions:
-        await update.message.reply_text(
+        await safe_reply(update.message, 
             f"💼 *虚拟合约账户*\n"
             f"可用余额 ${a['balance']:,.2f}（初始 ${START_BALANCE:,.0f}）\n"
             f"当前无持仓。\n\n"
@@ -281,7 +282,7 @@ async def vpos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices = await get_prices(list(positions.keys()))
     except Exception as e:
         logging.error(f"vpos 查价出错: {e}")
-        await update.message.reply_text("查价失败，稍后再试")
+        await safe_reply(update.message, "查价失败，稍后再试")
         return
 
     lines = ["💼 *虚拟合约账户*\n"]
@@ -308,7 +309,7 @@ async def vpos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         InlineKeyboardButton("🔄 刷新", callback_data="vpos_refresh"),
         InlineKeyboardButton("📜 历史", callback_data="vhist_show"),
     ]])
-    await update.message.reply_text("\n".join(lines), reply_markup=kb, parse_mode="Markdown")
+    await safe_reply(update.message, "\n".join(lines), reply_markup=kb, parse_mode="Markdown")
 
 
 # ============ 历史 + 胜率 ============
@@ -340,22 +341,22 @@ def _history_text(a):
 
 async def vhistory(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_group(update):
-        await update.message.reply_text("🔒 请私聊使用")
+        await safe_reply(update.message, "🔒 请私聊使用")
         return
     uid = str(update.effective_user.id)
     a = _acct(uid)
-    await update.message.reply_text(_history_text(a), parse_mode="Markdown")
+    await safe_reply(update.message, _history_text(a), parse_mode="Markdown")
 
 
 # ============ 重置账户 ============
 async def vreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_group(update):
-        await update.message.reply_text("🔒 请私聊使用")
+        await safe_reply(update.message, "🔒 请私聊使用")
         return
     uid = str(update.effective_user.id)
     # 二次确认
     if not context.args or context.args[0] != "confirm":
-        await update.message.reply_text(
+        await safe_reply(update.message, 
             "⚠️ 重置会清空当前所有虚拟持仓和历史，本金回到 "
             f"${START_BALANCE:,.0f}。\n确认请发 `/vreset confirm`", parse_mode="Markdown")
         return
@@ -365,7 +366,7 @@ async def vreset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "chat_id": update.effective_chat.id,
     }
     save_data()
-    await update.message.reply_text(
+    await safe_reply(update.message, 
         f"🔄 已重置虚拟账户，本金 ${START_BALANCE:,.0f}。开仓：`/vopen BTC long 1000 10`",
         parse_mode="Markdown")
 

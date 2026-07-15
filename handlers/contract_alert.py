@@ -33,6 +33,9 @@ MIN_TURNOVER = 1_000_000
 TIER_RESET = 86400                          # 记录 24h 后过期，允许重新计档
 LEV_SUFFIX = ("UP", "DOWN", "BULL", "BEAR")  # 币安杠杆代币，排除
 MAX_LINES = 40                              # 单条消息最多多少行，超出分条发
+# 推送冷却：同一(币,方向,档位)在此秒数内只推一次。台阶记录跨所/跨路径抖动时
+# （如 KORU 深跌被反复当"新穿档"），这是最终兜底，杜绝同一异动每轮重报。
+PUSH_COOLDOWN = 6 * 3600
 
 
 def get_tier(change_abs):
@@ -102,7 +105,26 @@ async def push_to_subscribers(bot, alerts):
         k = (a["sym"], a["direction"])
         if k not in dedup or a["tier"] > dedup[k]["tier"]:
             dedup[k] = a
-    alerts = sorted(dedup.values(), key=lambda a: (-a["tier"], a["ex"], a["sym"]))
+
+    # 推送冷却兜底：同一(币,方向,档位) 6h 内已推过就跳过，杜绝台阶记录抖动导致的刷屏。
+    # 升到更高档位是不同 key，仍会照常推。
+    now = time.time()
+    cooled = data.setdefault("contract_alerted", {})
+    fresh = []
+    for a in dedup.values():
+        ck = f"{a['sym']}:{a['direction']}:{a['tier']}"
+        if now - cooled.get(ck, 0) < PUSH_COOLDOWN:
+            continue
+        cooled[ck] = now
+        fresh.append(a)
+    # 清理过期冷却记录，避免无限增长
+    for k in [k for k, v in cooled.items() if now - v > PUSH_COOLDOWN * 2]:
+        cooled.pop(k, None)
+    if not fresh:
+        save_data()
+        return
+    save_data()
+    alerts = sorted(fresh, key=lambda a: (-a["tier"], a["ex"], a["sym"]))
     body = []
     for a in alerts:
         emoji = "🚀" if a["direction"] == "up" else "💥"

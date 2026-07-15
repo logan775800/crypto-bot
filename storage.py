@@ -43,6 +43,7 @@ data.setdefault("whale_min", {})        # 地址追踪最小美元阈值 {chat_i
 data.setdefault("ti_alerts", [])        # 技术指标告警订阅 [{chat_id,symbol,rsi_state,ma_state}]
 data.setdefault("contract_watch", [])   # 订阅全交易所合约异动告警的chat_id
 data.setdefault("contract_tiers", {})   # 合约分级告警记录 {交易所_币: {tier,dir,ts}}
+data.setdefault("contract_alerted", {}) # 合约告警推送冷却 {币:方向:档位 -> ts}（防同一异动刷屏）
 data.setdefault("grids", {})            # Bybit 永续网格 {chat_id:symbol: {区间/档位/挂单/成交/利润...}}
 data.setdefault("watchpct", [])         # 持续波动监控 [{chat_id,symbol,pct,base,src,last_ts}]
 data.setdefault("vtrade", {})           # 虚拟合约交易 {uid: {balance, positions{sym:{...}}, history[], chat_id}}

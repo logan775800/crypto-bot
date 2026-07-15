@@ -11,18 +11,21 @@
 安全：开仓一律二次确认；平仓强制 reduceOnly 只减不反开；杠杆封顶；密钥缺失/权限不足直接报错不静默。
 ⚠️ 先在模拟盘(testnet)全流程验证，再把 .env 的 BYBIT_TESTNET 改 false 上实盘。
 """
+import time
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from config import ADMIN_CHAT_ID
 from handlers.util import safe_reply, safe_edit
+from storage import data, save_data
 from bybit_trade import BybitClient, BybitError, round_step, _is_testnet
 from decimal import ROUND_DOWN
 
 log = logging.getLogger(__name__)
 
 MAX_LEVERAGE = 75          # 杠杆护栏，超过拒绝（防手滑）
+LIQ_COOLDOWN = 1800        # 爆仓预警同币冷却 30 分钟
 
 
 def _is_admin(chat_id):
@@ -424,3 +427,146 @@ async def rcancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update.message, f"❌ 撤单失败：{e}")
         return
     await safe_reply(update.message, f"✅ 已撤 {symbol} 全部挂单")
+
+
+# ── 改已有仓位的止盈止损 ────────────────────────────────────────────
+async def rtpsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _guard(update):
+        return
+    args = context.args
+    if not args:
+        await safe_reply(update.message,
+            "用法：`/rtpsl BTC tp=68000 sl=60000`\n"
+            "只改一个也行：`/rtpsl BTC sl=61000`；清除填 0：`/rtpsl BTC tp=0`",
+            parse_mode="Markdown")
+        return
+    symbol = _norm(args[0])
+    tp, sl = _parse_kv(args[1:])
+    if tp is None and sl is None:
+        await safe_reply(update.message, "至少要给一个 tp= 或 sl=（清除填 0）")
+        return
+    try:
+        client = _client()
+    except RuntimeError:
+        await safe_reply(update.message, "❌ 未配置 BYBIT API 密钥")
+        return
+    # 有持仓才好设；顺便取精度
+    try:
+        pos = await client.position(symbol)
+        if float(pos.get("size", 0) or 0) <= 0:
+            await safe_reply(update.message, f"{symbol} 当前无持仓，先开仓再设止盈止损")
+            return
+        info = await client.instrument_info(symbol)
+    except Exception as e:
+        log.error(f"rtpsl 预检出错: {e}")
+        await safe_reply(update.message, f"❌ 读取持仓/精度失败：{e}")
+        return
+
+    def _tick(v):
+        if v is None:
+            return None
+        return "0" if str(v) in ("0", "0.0") else round_step(v, info["tickSize"])
+
+    tp_s, sl_s = _tick(tp), _tick(sl)
+    try:
+        await client.set_trading_stop(symbol, tp=tp_s, sl=sl_s)
+    except BybitError as e:
+        await safe_reply(update.message, f"❌ 设置被拒：[{e.ret_code}] {e.ret_msg}")
+        return
+    except Exception as e:
+        log.error(f"rtpsl 设置出错: {e}")
+        await safe_reply(update.message, f"❌ 设置失败：{e}")
+        return
+    parts = []
+    if tp_s is not None:
+        parts.append("清除止盈" if tp_s == "0" else f"止盈 ${_fmt(tp_s)}")
+    if sl_s is not None:
+        parts.append("清除止损" if sl_s == "0" else f"止损 ${_fmt(sl_s)}")
+    await safe_reply(update.message,
+        f"✅ {_env_tag()} {symbol} 已更新：{'，'.join(parts)}", parse_mode="Markdown")
+
+
+# ── 爆仓临近预警：开关 + 后台推送 ────────────────────────────────────
+async def rliqalert(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await _guard(update):
+        return
+    data.setdefault("rtrade_alert", {})
+    arg = context.args[0].lower() if context.args else ""
+    if arg in ("off", "关", "0"):
+        data["rtrade_alert"]["enabled"] = False
+        save_data()
+        await safe_reply(update.message, "🔕 已关闭实盘爆仓预警")
+        return
+    # 默认阈值 8%，可自定义 /rliqalert 5
+    threshold = 8.0
+    if arg:
+        try:
+            threshold = float(arg)
+        except ValueError:
+            await safe_reply(update.message, "用法：`/rliqalert 5`（距爆仓≤5%提醒）或 `/rliqalert off`", parse_mode="Markdown")
+            return
+        if not (0.5 <= threshold <= 50):
+            await safe_reply(update.message, "阈值范围 0.5~50%")
+            return
+    data["rtrade_alert"].update({
+        "enabled": True, "threshold": threshold,
+        "chat_id": update.effective_chat.id,
+    })
+    data["rtrade_alert"].setdefault("cooldown", {})
+    save_data()
+    await safe_reply(update.message,
+        f"🔔 已开启实盘爆仓预警：任一持仓现价距爆仓价 ≤ {threshold:g}% 就通知你\n"
+        f"（每币 30 分钟冷却）。关闭发 /rliqalert off", parse_mode="Markdown")
+
+
+async def check_liq_alerts(context: ContextTypes.DEFAULT_TYPE):
+    """后台 job：实盘持仓逼近爆仓价时推送。未开启/无密钥/无仓位则静默跳过。"""
+    cfg = data.get("rtrade_alert", {})
+    if not cfg.get("enabled") or not cfg.get("chat_id"):
+        return
+    try:
+        client = _client()
+    except RuntimeError:
+        return  # 没配密钥，静默
+    try:
+        positions = await client.positions_all()
+    except Exception as e:
+        log.warning(f"爆仓预警查仓失败: {e}")
+        return
+    if not positions:
+        return
+    threshold = cfg.get("threshold", 8.0)
+    cooldown = cfg.setdefault("cooldown", {})
+    chat_id = cfg["chat_id"]
+    now = time.time()
+    changed = False
+    for p in positions:
+        try:
+            mark = float(p.get("markPrice") or 0)
+            liq = float(p.get("liqPrice") or 0)
+        except (TypeError, ValueError):
+            continue
+        if mark <= 0 or liq <= 0:
+            continue  # 全仓大保证金时 liqPrice 可能为空
+        dist = abs(mark - liq) / mark * 100
+        if dist > threshold:
+            continue
+        sym = p.get("symbol", "?")
+        if now - cooldown.get(sym, 0) < LIQ_COOLDOWN:
+            continue
+        cooldown[sym] = now
+        changed = True
+        side = "多" if p.get("side") == "Buy" else "空"
+        upnl = float(p.get("unrealisedPnl", 0) or 0)
+        try:
+            await context.bot.send_message(
+                chat_id=chat_id,
+                text=(f"⚠️ *爆仓预警* {_env_tag()}\n"
+                      f"{sym} {side} {p.get('leverage','?')}x 距爆仓仅 {dist:.1f}%\n"
+                      f"现价 ${_fmt(mark)}｜爆仓价 ${_fmt(liq)}｜浮盈 {upnl:+,.2f}\n"
+                      f"考虑加保证金 / 减仓 / 挪止损。`/rclose {sym.replace('USDT','')}` 可平"),
+                parse_mode="Markdown")
+        except Exception as e:
+            log.error(f"爆仓预警推送失败: {e}")
+    if changed:
+        save_data()

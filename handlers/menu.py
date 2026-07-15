@@ -1163,6 +1163,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "　限价开仓（保证金1000U·10x·价62000·带止盈止损），弹确认再下\n"
             "`/rclose BTC` 市价全平　`/rclose BTC 50` 平一半　`/rclose BTC 100 63000` 限价平\n"
             "`/rpos` 实盘持仓（入场/爆仓价/浮盈直读交易所）\n"
+            "`/rtpsl BTC tp=68000 sl=61000` 改已有仓位止盈止损（清除填0）\n"
+            "`/rliqalert 5` 爆仓预警：距爆仓≤5%推送（`off`关）\n"
             "`/rbal` 合约余额　`/rorders BTC` 挂单　`/rcancel BTC` 撤单\n\n"
             "⚠️ 平仓强制 reduceOnly 只减不反开；先在模拟盘验证再上实盘\n"
             "（切换：服务器 .env 的 `BYBIT_TESTNET` true/false）",

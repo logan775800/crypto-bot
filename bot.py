@@ -32,7 +32,8 @@ HELP_TEXT = (
     "　└ /vclose BTC 平仓　/vpos 持仓+浮盈+爆仓价　/vhistory 胜率历史\n\n"
     "*🔴 实盘交易*（Bybit永续·管理员·默认模拟盘）\n"
     "/ropen BTC long 1000 10 62000 sl=60000 tp=68000 限价开仓(带止盈损,弹确认)\n"
-    "　└ /rclose BTC 平仓　/rpos 实盘持仓　/rbal 余额　/rorders /rcancel 挂单\n\n"
+    "　└ /rclose BTC 平仓　/rpos 实盘持仓　/rbal 余额　/rorders /rcancel 挂单\n"
+    "　└ /rtpsl BTC tp= sl= 改止盈止损　/rliqalert 5 爆仓预警\n\n"
     "*盯盘 / 合约*\n"
     "/watchpct BTC 2 持续波动监控，涨跌超±2%就提醒（报后自动续盯）\n"
     "　└ 加「合约」盯永续价，如 `/watchpct LAB 2 合约`（OKX/Bybit永续秒级实时）\n"
@@ -229,6 +230,8 @@ def main():
     app.add_handler(CommandHandler("rbal", rtrade.rbal))
     app.add_handler(CommandHandler("rorders", rtrade.rorders))
     app.add_handler(CommandHandler("rcancel", rtrade.rcancel))
+    app.add_handler(CommandHandler("rtpsl", rtrade.rtpsl))
+    app.add_handler(CommandHandler("rliqalert", rtrade.rliqalert))
     # 播报（功能1）
     app.add_handler(CommandHandler("subscribe", broadcast.subscribe))
     app.add_handler(CommandHandler("unsubscribe", broadcast.unsubscribe))
@@ -292,6 +295,7 @@ def main():
     jq.run_repeating(grid.poll_grids, interval=20, first=25)  # 网格成交轮询+反向补单，每20秒
     jq.run_repeating(watchpct.check_watchpct, interval=60, first=35)  # 持续波动监控，每60秒
     jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
+    jq.run_repeating(rtrade.check_liq_alerts, interval=60, first=55)  # 实盘爆仓临近预警，每60秒
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))

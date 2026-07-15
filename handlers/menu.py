@@ -1121,6 +1121,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💼 我的持仓/账户", callback_data="vpos_refresh")],
             [InlineKeyboardButton("📜 交易历史/胜率", callback_data="vhist_show")],
+            [InlineKeyboardButton("🔴 实盘交易(Bybit)", callback_data="cat_rtrade")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
         await query.edit_message_text(
@@ -1150,6 +1151,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"虚拟历史出错: {e}")
             await query.edit_message_text("查询失败，稍后再试", reply_markup=back_to("cat_vtrade"))
+
+    # ---- 实盘交易说明卡（仅文字，下单须手打命令+确认，防误触）----
+    elif d == "cat_rtrade":
+        from bybit_trade import _is_testnet
+        env = "🧪 当前模拟盘(testnet)" if _is_testnet() else "🔴 当前实盘(动真钱)"
+        await query.edit_message_text(
+            "🔴 *Bybit 实盘交易*（管理员·私聊·真金白银）\n"
+            f"{env}\n\n"
+            "`/ropen BTC long 1000 10 62000 sl=60000 tp=68000`\n"
+            "　限价开仓（保证金1000U·10x·价62000·带止盈止损），弹确认再下\n"
+            "`/rclose BTC` 市价全平　`/rclose BTC 50` 平一半　`/rclose BTC 100 63000` 限价平\n"
+            "`/rpos` 实盘持仓（入场/爆仓价/浮盈直读交易所）\n"
+            "`/rbal` 合约余额　`/rorders BTC` 挂单　`/rcancel BTC` 撤单\n\n"
+            "⚠️ 平仓强制 reduceOnly 只减不反开；先在模拟盘验证再上实盘\n"
+            "（切换：服务器 .env 的 `BYBIT_TESTNET` true/false）",
+            reply_markup=back_kb(), parse_mode="Markdown")
+
+    # ---- 实盘开仓二次确认 ----
+    elif d == "roconf":
+        from handlers.rtrade import confirm_open
+        try:
+            await confirm_open(query, context)
+        except Exception as e:
+            logging.error(f"实盘确认下单出错: {e}")
+            await query.edit_message_text(f"❌ 下单异常：{e}")
+    elif d == "rocancel":
+        from handlers.rtrade import cancel_open
+        await cancel_open(query, context)
 
     # ============ 帮助 ============
     elif d == "cat_help":

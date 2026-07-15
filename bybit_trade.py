@@ -135,6 +135,22 @@ class BybitClient:
         lst = r.get("list") or []
         return lst[0] if lst else {}
 
+    async def positions_all(self):
+        """当前所有有持仓的合约（size>0），用于 /rpos 不带币时列全部。"""
+        r = await self._get(
+            "/v5/position/list", {"category": self.category, "settleCoin": "USDT"}
+        )
+        return [p for p in (r.get("list") or []) if float(p.get("size", 0) or 0) > 0]
+
+    async def set_trading_stop(self, symbol, tp=None, sl=None):
+        """给已有仓位设/改止盈止损（全仓量）。tp/sl 传 None 表示不动。"""
+        body = {"category": self.category, "symbol": symbol, "positionIdx": 0}
+        if tp is not None:
+            body["takeProfit"] = str(tp)
+        if sl is not None:
+            body["stopLoss"] = str(sl)
+        return await self._post("/v5/position/trading-stop", body)
+
     async def set_leverage(self, symbol, leverage):
         try:
             return await self._post(
@@ -149,13 +165,35 @@ class BybitClient:
             raise
 
     # ── 私有：订单 ───────────────────────────────────────────────
-    async def place_limit(self, symbol, side, qty, price, link_id=None):
-        """挂限价单。side: 'Buy' / 'Sell'。qty/price 需已按步长取整。返回含 orderId。"""
+    async def place_limit(self, symbol, side, qty, price, link_id=None,
+                          reduce_only=False, tp=None, sl=None):
+        """挂限价单。side: 'Buy' / 'Sell'。qty/price 需已按步长取整。返回含 orderId。
+        reduce_only=True 用于只减仓（平仓单）；tp/sl 为开仓单附带的止盈止损触发价。"""
         body = {
             "category": self.category, "symbol": symbol, "side": side,
             "orderType": "Limit", "qty": str(qty), "price": str(price),
-            "timeInForce": "GTC", "positionIdx": 0, "reduceOnly": False,
+            "timeInForce": "GTC", "positionIdx": 0, "reduceOnly": reduce_only,
         }
+        if tp:
+            body["takeProfit"] = str(tp)
+        if sl:
+            body["stopLoss"] = str(sl)
+        if link_id:
+            body["orderLinkId"] = link_id
+        return await self._post("/v5/order/create", body)
+
+    async def place_market(self, symbol, side, qty, reduce_only=False,
+                           tp=None, sl=None, link_id=None):
+        """市价单。平仓请 reduce_only=True（只减仓，杜绝反向开成新仓）。"""
+        body = {
+            "category": self.category, "symbol": symbol, "side": side,
+            "orderType": "Market", "qty": str(qty),
+            "positionIdx": 0, "reduceOnly": reduce_only,
+        }
+        if tp:
+            body["takeProfit"] = str(tp)
+        if sl:
+            body["stopLoss"] = str(sl)
         if link_id:
             body["orderLinkId"] = link_id
         return await self._post("/v5/order/create", body)

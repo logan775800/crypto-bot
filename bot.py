@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -30,6 +30,9 @@ HELP_TEXT = (
     "*🎮 虚拟合约交易*（模拟盘，练手不碰真钱，私聊）\n"
     "/vopen BTC long 1000 10 开多（1000U保证金10x，入场取现价）\n"
     "　└ /vclose BTC 平仓　/vpos 持仓+浮盈+爆仓价　/vhistory 胜率历史\n\n"
+    "*🔴 实盘交易*（Bybit永续·管理员·默认模拟盘）\n"
+    "/ropen BTC long 1000 10 62000 sl=60000 tp=68000 限价开仓(带止盈损,弹确认)\n"
+    "　└ /rclose BTC 平仓　/rpos 实盘持仓　/rbal 余额　/rorders /rcancel 挂单\n\n"
     "*盯盘 / 合约*\n"
     "/watchpct BTC 2 持续波动监控，涨跌超±2%就提醒（报后自动续盯）\n"
     "　└ 加「合约」盯永续价，如 `/watchpct LAB 2 合约`（OKX/Bybit永续秒级实时）\n"
@@ -129,6 +132,10 @@ async def post_init(application):
         BotCommand("vpos", "🎮 虚拟持仓/账户"),
         BotCommand("vclose", "🎮 虚拟平仓"),
         BotCommand("vhistory", "🎮 虚拟交易胜率/历史"),
+        BotCommand("ropen", "🔴 实盘限价开仓(Bybit)"),
+        BotCommand("rclose", "🔴 实盘平仓(Bybit)"),
+        BotCommand("rpos", "🔴 实盘持仓(Bybit)"),
+        BotCommand("rbal", "🔴 实盘合约余额(Bybit)"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -215,6 +222,13 @@ def main():
     app.add_handler(CommandHandler("vtrade", vtrade.vpos))
     app.add_handler(CommandHandler("vhistory", vtrade.vhistory))
     app.add_handler(CommandHandler("vreset", vtrade.vreset))
+    # Bybit 实盘手动交易（管理员，默认模拟盘）
+    app.add_handler(CommandHandler("ropen", rtrade.ropen))
+    app.add_handler(CommandHandler("rclose", rtrade.rclose))
+    app.add_handler(CommandHandler("rpos", rtrade.rpos))
+    app.add_handler(CommandHandler("rbal", rtrade.rbal))
+    app.add_handler(CommandHandler("rorders", rtrade.rorders))
+    app.add_handler(CommandHandler("rcancel", rtrade.rcancel))
     # 播报（功能1）
     app.add_handler(CommandHandler("subscribe", broadcast.subscribe))
     app.add_handler(CommandHandler("unsubscribe", broadcast.unsubscribe))

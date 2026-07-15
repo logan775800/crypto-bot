@@ -1156,9 +1156,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "cat_rtrade":
         from bybit_trade import _is_testnet
         env = "🧪 当前模拟盘(testnet)" if _is_testnet() else "🔴 当前实盘(动真钱)"
+        rtkb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎛 打开交易台（推荐，点按钮操作）", callback_data="tpanel")],
+            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+        ])
         await query.edit_message_text(
             "🔴 *Bybit 实盘交易*（管理员·私聊·真金白银）\n"
             f"{env}\n\n"
+            "💡 记不住命令就点【🎛 交易台】，开仓/平仓/改止损/预警全是按钮。\n\n"
+            "*或手打命令：*\n"
             "`/ropen BTC long 1000 10 62000 sl=60000 tp=68000`\n"
             "　限价开仓（保证金1000U·10x·价62000·带止盈止损），弹确认再下\n"
             "`/rclose BTC` 市价全平　`/rclose BTC 50` 平一半　`/rclose BTC 100 63000` 限价平\n"
@@ -1168,7 +1174,42 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/rbal` 合约余额　`/rorders BTC` 挂单　`/rcancel BTC` 撤单\n\n"
             "⚠️ 平仓强制 reduceOnly 只减不反开；先在模拟盘验证再上实盘\n"
             "（切换：服务器 .env 的 `BYBIT_TESTNET` true/false）",
-            reply_markup=back_kb(), parse_mode="Markdown")
+            reply_markup=rtkb, parse_mode="Markdown")
+
+    # ---- 交易台 / 引导式开仓 / 一键持仓操作 ----
+    elif d == "tpanel":
+        from handlers import rtrade
+        await rtrade.panel_edit(query, context)
+    elif d == "topen":
+        from handlers import rtrade
+        await rtrade.guided_open_coins(query)
+    elif d == "topother":
+        from handlers import rtrade
+        await rtrade.guided_other(query, context)
+    elif d.startswith("tops:"):
+        from handlers import rtrade
+        await rtrade.guided_dir(query, d.split(":", 1)[1])
+    elif d.startswith("topd:"):
+        from handlers import rtrade
+        _, sym, side = d.split(":")
+        await rtrade.guided_lev(query, sym, side)
+    elif d.startswith("topl:"):
+        from handlers import rtrade
+        _, sym, side, lev = d.split(":")
+        await rtrade.guided_amount(query, context, sym, side, lev)
+    elif d.startswith("tcls:"):
+        from handlers import rtrade
+        _, sym, pct = d.split(":")
+        await rtrade.close_from_btn(query, context, sym, float(pct))
+    elif d.startswith("tsl:"):
+        from handlers import rtrade
+        await rtrade.ask_sl(query, context, d.split(":", 1)[1])
+    elif d == "tliq":
+        from handlers import rtrade
+        await rtrade.liq_menu(query)
+    elif d.startswith("tliqset:"):
+        from handlers import rtrade
+        await rtrade.liq_set(query, context, d.split(":", 1)[1])
 
     # ---- 实盘开仓二次确认 ----
     elif d == "roconf":

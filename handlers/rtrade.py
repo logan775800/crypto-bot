@@ -121,54 +121,7 @@ async def ropen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update.message, f"杠杆范围 1~{MAX_LEVERAGE} 倍")
         return
     tp, sl = _parse_kv(args[5:])
-
-    # 精度：取合约步长，价格按 tickSize、数量按 qtyStep 向下取整
-    try:
-        client = _client()
-    except RuntimeError:
-        await safe_reply(update.message, "❌ 未配置 BYBIT_API_KEY/SECRET，请在服务器 .env 里填好再用")
-        return
-    try:
-        info = await client.instrument_info(symbol)
-    except Exception as e:
-        log.error(f"ropen 取合约信息出错: {e}")
-        await safe_reply(update.message, f"❌ 取 {symbol} 合约信息失败：{e}")
-        return
-
-    price_s = round_step(price, info["tickSize"])
-    notional = margin * lev
-    raw_qty = notional / float(price_s)
-    qty_s = round_step(raw_qty, info["qtyStep"], mode=ROUND_DOWN)
-    if float(qty_s) < float(info["minOrderQty"]):
-        await safe_reply(update.message,
-            f"❌ 数量 {qty_s} 低于最小下单量 {info['minOrderQty']}。加大保证金或杠杆。")
-        return
-    tp_s = round_step(tp, info["tickSize"]) if tp else None
-    sl_s = round_step(sl, info["tickSize"]) if sl else None
-
-    # 暂存待确认订单，弹按钮
-    context.user_data["ro_pending"] = {
-        "symbol": symbol, "side": side, "order_side": order_side,
-        "qty": qty_s, "price": price_s, "lev": lev,
-        "margin": margin, "tp": tp_s, "sl": sl_s,
-    }
-    dir_txt = "做多 📈" if side == "long" else "做空 📉"
-    extra = ""
-    if tp_s:
-        extra += f"\n止盈 ${_fmt(tp_s)}"
-    if sl_s:
-        extra += f"\n止损 ${_fmt(sl_s)}"
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ 确认下单", callback_data="roconf"),
-        InlineKeyboardButton("❌ 取消", callback_data="rocancel"),
-    ]])
-    await safe_reply(update.message,
-        f"⚠️ *确认实盘下单* {_env_tag()}\n"
-        f"{symbol} {dir_txt} {lev:g}x\n"
-        f"限价 ${_fmt(price_s)}｜数量 {qty_s}\n"
-        f"保证金约 ${margin:,.2f}｜名义 ${notional:,.2f}{extra}\n\n"
-        f"确认后挂 GTC 限价单，到价成交。",
-        reply_markup=kb, parse_mode="Markdown")
+    await prepare_open(update.message, context, symbol, side, margin, lev, price, tp, sl)
 
 
 async def confirm_open(query, context):
@@ -344,13 +297,23 @@ async def rpos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = [f"💼 *实盘持仓* {_env_tag()}\n"]
     total = 0.0
+    rows = []
     for p in positions:
         total += float(p.get("unrealisedPnl", 0) or 0)
         lines.append(_pos_line(p))
+        sym = p.get("symbol", "")
+        short = sym.replace("USDT", "")
+        rows.append([
+            InlineKeyboardButton(f"平50% {short}", callback_data=f"tcls:{sym}:50"),
+            InlineKeyboardButton(f"全平 {short}", callback_data=f"tcls:{sym}:100"),
+            InlineKeyboardButton("改止损", callback_data=f"tsl:{sym}"),
+        ])
     e = "🟢" if total >= 0 else "🔴"
     lines.append("─────────")
     lines.append(f"{e} 合计浮盈 {total:+,.2f} USDT")
-    await safe_reply(update.message, "\n".join(lines), parse_mode="Markdown")
+    rows.append([InlineKeyboardButton("🎛 交易台", callback_data="tpanel")])
+    await safe_reply(update.message, "\n".join(lines),
+                     reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
 
 
 # ── 账户余额 ────────────────────────────────────────────────────────
@@ -570,3 +533,300 @@ async def check_liq_alerts(context: ContextTypes.DEFAULT_TYPE):
             log.error(f"爆仓预警推送失败: {e}")
     if changed:
         save_data()
+
+
+# ════════════════════════════════════════════════════════════════════
+#  交易台面板 + 引导式开仓 + 一键持仓操作（点按钮，零记忆）
+# ════════════════════════════════════════════════════════════════════
+POPULAR_PERP = ["BTC", "ETH", "SOL", "BNB", "XRP", "DOGE"]
+LEV_CHOICES = [3, 5, 10, 20, 50]
+
+
+async def prepare_open(message, context, symbol_raw, side, margin, lev, price, tp=None, sl=None):
+    """校验+取精度+暂存待确认，弹确认卡。命令 /ropen 与引导式开仓共用。"""
+    symbol = _norm(symbol_raw)
+    order_side = "Buy" if side == "long" else "Sell"
+    if margin <= 0 or price <= 0:
+        await safe_reply(message, "保证金和价格要大于 0")
+        return
+    if not (1 <= lev <= MAX_LEVERAGE):
+        await safe_reply(message, f"杠杆范围 1~{MAX_LEVERAGE} 倍")
+        return
+    try:
+        client = _client()
+    except RuntimeError:
+        await safe_reply(message, "❌ 未配置 BYBIT API 密钥")
+        return
+    try:
+        info = await client.instrument_info(symbol)
+    except Exception as e:
+        await safe_reply(message, f"❌ 取 {symbol} 合约信息失败：{e}")
+        return
+    price_s = round_step(price, info["tickSize"])
+    notional = margin * lev
+    qty_s = round_step(notional / float(price_s), info["qtyStep"], mode=ROUND_DOWN)
+    if float(qty_s) < float(info["minOrderQty"]):
+        await safe_reply(message, f"❌ 数量 {qty_s} 低于最小下单量 {info['minOrderQty']}，加大保证金或杠杆")
+        return
+    tp_s = round_step(tp, info["tickSize"]) if tp else None
+    sl_s = round_step(sl, info["tickSize"]) if sl else None
+    context.user_data["ro_pending"] = {
+        "symbol": symbol, "side": side, "order_side": order_side,
+        "qty": qty_s, "price": price_s, "lev": lev,
+        "margin": margin, "tp": tp_s, "sl": sl_s,
+    }
+    dir_txt = "做多 📈" if side == "long" else "做空 📉"
+    extra = ""
+    if tp_s:
+        extra += f"\n止盈 ${_fmt(tp_s)}"
+    if sl_s:
+        extra += f"\n止损 ${_fmt(sl_s)}"
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ 确认下单", callback_data="roconf"),
+        InlineKeyboardButton("❌ 取消", callback_data="rocancel"),
+    ]])
+    await safe_reply(message,
+        f"⚠️ *确认实盘下单* {_env_tag()}\n"
+        f"{symbol} {dir_txt} {lev:g}x\n"
+        f"限价 ${_fmt(price_s)}｜数量 {qty_s}\n"
+        f"保证金约 ${margin:,.2f}｜名义 ${notional:,.2f}{extra}\n\n"
+        f"确认后挂 GTC 限价单。",
+        reply_markup=kb, parse_mode="Markdown")
+
+
+async def apply_sl(message, symbol_raw, price):
+    """引导式改止损：从等待输入拿到新止损价后调用。"""
+    symbol = _norm(symbol_raw)
+    try:
+        client = _client()
+    except RuntimeError:
+        await safe_reply(message, "❌ 未配置 BYBIT API 密钥")
+        return
+    try:
+        pos = await client.position(symbol)
+        if float(pos.get("size", 0) or 0) <= 0:
+            await safe_reply(message, f"{symbol} 当前无持仓")
+            return
+        info = await client.instrument_info(symbol)
+        sl_s = round_step(price, info["tickSize"])
+        await client.set_trading_stop(symbol, sl=sl_s)
+    except BybitError as e:
+        await safe_reply(message, f"❌ 设置被拒：[{e.ret_code}] {e.ret_msg}")
+        return
+    except Exception as e:
+        log.error(f"apply_sl 出错: {e}")
+        await safe_reply(message, f"❌ 设置失败：{e}")
+        return
+    await safe_reply(message, f"✅ {_env_tag()} {symbol} 止损已设为 ${_fmt(sl_s)}", parse_mode="Markdown")
+
+
+async def guided_after_coin(message, context, coin):
+    """引导式开仓选了「其他币」并输入币名后：校验是永续再出方向按钮。"""
+    symbol = _norm(coin)
+    try:
+        client = _client()
+        await client.instrument_info(symbol)
+    except RuntimeError:
+        await safe_reply(message, "❌ 未配置 BYBIT API 密钥")
+        return
+    except Exception:
+        await safe_reply(message, f"❌ Bybit 没有 {symbol} 永续，换一个")
+        return
+    short = symbol.replace("USDT", "")
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📈 做多", callback_data=f"topd:{symbol}:long"),
+        InlineKeyboardButton("📉 做空", callback_data=f"topd:{symbol}:short"),
+    ]])
+    await safe_reply(message, f"➕ *{short} 开仓*\n选方向：", reply_markup=kb, parse_mode="Markdown")
+
+
+# ── 面板内容（余额+持仓+按钮），命令与刷新共用 ────────────────────────
+async def _panel_content(client):
+    try:
+        bal = await client.wallet_balance("USDT")
+    except Exception:
+        bal = {}
+    eq = bal.get("totalEquity", "?")
+    avail = bal.get("totalAvailableBalance", "?")
+    try:
+        positions = await client.positions_all()
+    except Exception:
+        positions = []
+    lines = [f"🎛 *实盘交易台* {_env_tag()}", f"权益 {eq}｜可用 {avail} USDT", ""]
+    rows = []
+    if positions:
+        for p in positions:
+            lines.append(_pos_line(p))
+            sym = p.get("symbol", "")
+            short = sym.replace("USDT", "")
+            rows.append([
+                InlineKeyboardButton(f"平50% {short}", callback_data=f"tcls:{sym}:50"),
+                InlineKeyboardButton(f"全平 {short}", callback_data=f"tcls:{sym}:100"),
+                InlineKeyboardButton("改止损", callback_data=f"tsl:{sym}"),
+            ])
+    else:
+        lines.append("_当前无持仓_")
+    rows.append([
+        InlineKeyboardButton("➕ 开仓", callback_data="topen"),
+        InlineKeyboardButton("🔔 爆仓预警", callback_data="tliq"),
+        InlineKeyboardButton("🔄 刷新", callback_data="tpanel"),
+    ])
+    return "\n".join(lines), InlineKeyboardMarkup(rows)
+
+
+async def trade(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/trade 交易台总入口。"""
+    if not await _guard(update):
+        return
+    try:
+        client = _client()
+    except RuntimeError:
+        await safe_reply(update.message, "❌ 未配置 BYBIT API 密钥（先在 .env 配 testnet key）")
+        return
+    text, kb = await _panel_content(client)
+    await safe_reply(update.message, text, reply_markup=kb, parse_mode="Markdown")
+
+
+# ── 以下为按钮回调，由 menu.button_handler 分发 ─────────────────────
+def _btn_admin_ok(query):
+    return _is_admin(query.message.chat_id)
+
+
+async def panel_edit(query, context):
+    if not _btn_admin_ok(query):
+        await query.answer("仅管理员", show_alert=True)
+        return
+    try:
+        client = _client()
+    except RuntimeError:
+        await safe_edit(query, "❌ 未配置 BYBIT API 密钥")
+        return
+    text, kb = await _panel_content(client)
+    await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def guided_open_coins(query):
+    rows = []
+    for i in range(0, len(POPULAR_PERP), 3):
+        rows.append([InlineKeyboardButton(c, callback_data=f"tops:{_norm(c)}")
+                     for c in POPULAR_PERP[i:i+3]])
+    rows.append([InlineKeyboardButton("🔍 其他币", callback_data="topother")])
+    rows.append([InlineKeyboardButton("⬅️ 返回交易台", callback_data="tpanel")])
+    await safe_edit(query, f"➕ *开仓* {_env_tag()}\n选币：",
+                    reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+
+
+async def guided_other(query, context):
+    context.user_data["await_ropen_coin"] = True
+    await safe_edit(query, "🔍 发送要交易的币名，例如 `ARB`、`SUI`（Bybit 永续）。\n取消发 /menu",
+                    parse_mode="Markdown")
+
+
+async def guided_dir(query, symbol):
+    short = symbol.replace("USDT", "")
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📈 做多", callback_data=f"topd:{symbol}:long"),
+         InlineKeyboardButton("📉 做空", callback_data=f"topd:{symbol}:short")],
+        [InlineKeyboardButton("⬅️ 返回", callback_data="topen")],
+    ])
+    await safe_edit(query, f"➕ *{short} 开仓*\n选方向：", reply_markup=kb, parse_mode="Markdown")
+
+
+async def guided_lev(query, symbol, side):
+    dir_txt = "多" if side == "long" else "空"
+    row = [InlineKeyboardButton(f"{l}x", callback_data=f"topl:{symbol}:{side}:{l}")
+           for l in LEV_CHOICES]
+    kb = InlineKeyboardMarkup([row,
+        [InlineKeyboardButton("⬅️ 返回", callback_data=f"tops:{symbol}")]])
+    await safe_edit(query, f"➕ *{symbol.replace('USDT','')} {dir_txt}*\n选杠杆：",
+                    reply_markup=kb, parse_mode="Markdown")
+
+
+async def guided_amount(query, context, symbol, side, lev):
+    context.user_data["await_ropen"] = {"symbol": symbol, "side": side, "lev": float(lev)}
+    dir_txt = "多" if side == "long" else "空"
+    await safe_edit(query,
+        f"➕ *{symbol.replace('USDT','')} {dir_txt} {lev}x* {_env_tag()}\n\n"
+        f"发送「保证金 价格」，例如 `1000 62000`\n"
+        f"想带止盈止损：`1000 62000 sl=60000 tp=68000`\n"
+        f"取消发 /menu",
+        parse_mode="Markdown")
+
+
+async def close_from_btn(query, context, symbol, pct):
+    if not _btn_admin_ok(query):
+        await query.answer("仅管理员", show_alert=True)
+        return
+    try:
+        client = _client()
+    except RuntimeError:
+        await query.answer("未配置密钥", show_alert=True)
+        return
+    try:
+        pos = await client.position(symbol)
+        size = float(pos.get("size", 0) or 0)
+        if size <= 0:
+            await query.answer("已无持仓")
+            await panel_edit(query, context)
+            return
+        info = await client.instrument_info(symbol)
+        close_side = "Sell" if pos.get("side") == "Buy" else "Buy"
+        qty = round_step(size if pct >= 100 else size * pct / 100.0,
+                         info["qtyStep"], mode=ROUND_DOWN)
+        if float(qty) <= 0:
+            await query.answer("数量太小", show_alert=True)
+            return
+        await client.place_market(symbol, close_side, qty, reduce_only=True)
+        await query.answer(f"✅ 已市价平 {pct:g}%")
+    except BybitError as e:
+        await query.answer(f"平仓被拒: {e.ret_msg}"[:190], show_alert=True)
+        return
+    except Exception as e:
+        log.error(f"按钮平仓出错: {e}")
+        await query.answer("平仓失败", show_alert=True)
+        return
+    await panel_edit(query, context)
+
+
+async def ask_sl(query, context, symbol):
+    if not _btn_admin_ok(query):
+        await query.answer("仅管理员", show_alert=True)
+        return
+    context.user_data["await_rsl"] = {"symbol": symbol}
+    await safe_edit(query,
+        f"✏️ 发送 {symbol.replace('USDT','')} 的新止损价（数字），例如 60000。\n"
+        f"设完发 /trade 回交易台；取消发 /menu")
+
+
+async def liq_menu(query):
+    cfg = data.get("rtrade_alert", {})
+    cur = f"当前：≤{cfg['threshold']:g}% 开启中" if cfg.get("enabled") else "当前：未开启"
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("≤5%", callback_data="tliqset:5"),
+         InlineKeyboardButton("≤8%", callback_data="tliqset:8"),
+         InlineKeyboardButton("≤12%", callback_data="tliqset:12")],
+        [InlineKeyboardButton("❌ 关闭", callback_data="tliqset:off")],
+        [InlineKeyboardButton("⬅️ 返回交易台", callback_data="tpanel")],
+    ])
+    await safe_edit(query,
+        f"🔔 *爆仓预警*\n{cur}\n\n选阈值：任一持仓现价距爆仓价 ≤ 此值就推送（每币30分钟冷却）",
+        reply_markup=kb, parse_mode="Markdown")
+
+
+async def liq_set(query, context, val):
+    if not _btn_admin_ok(query):
+        await query.answer("仅管理员", show_alert=True)
+        return
+    data.setdefault("rtrade_alert", {})
+    if val == "off":
+        data["rtrade_alert"]["enabled"] = False
+        await query.answer("已关闭")
+    else:
+        data["rtrade_alert"].update({
+            "enabled": True, "threshold": float(val),
+            "chat_id": query.message.chat_id,
+        })
+        data["rtrade_alert"].setdefault("cooldown", {})
+        await query.answer(f"已开启：≤{val}%")
+    save_data()
+    await liq_menu(query)

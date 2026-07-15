@@ -72,6 +72,51 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
         return
 
+    # 引导式实盘开仓：点按钮选完 币/方向/杠杆 后，发来的是「保证金 价格 [tp= sl=]」
+    ro = context.user_data.get("await_ropen")
+    if ro:
+        parts = text.replace(",", " ").replace("，", " ").split()
+        if len(parts) < 2:
+            await update.message.reply_text("请发「保证金 价格」，例如 `1000 62000`（取消发 /menu）",
+                                            parse_mode="Markdown")
+            return
+        try:
+            margin = float(parts[0]); price = float(parts[1])
+        except ValueError:
+            await update.message.reply_text("保证金和价格要是数字，例如 `1000 62000`",
+                                            parse_mode="Markdown")
+            return
+        from handlers.rtrade import _parse_kv, prepare_open
+        tp, sl = _parse_kv(parts[2:])
+        context.user_data.pop("await_ropen", None)
+        await prepare_open(update.message, context, ro["symbol"], ro["side"],
+                           margin, ro["lev"], price, tp, sl)
+        return
+
+    # 引导式实盘开仓：点了「其他币」，发来的是币名
+    if context.user_data.get("await_ropen_coin"):
+        cand = text.strip()
+        if " " in cand or len(cand) > 12:
+            await update.message.reply_text("请发单个币名，例如 ARB（取消发 /menu）")
+            return
+        context.user_data.pop("await_ropen_coin", None)
+        from handlers.rtrade import guided_after_coin
+        await guided_after_coin(update.message, context, cand.upper())
+        return
+
+    # 引导式改止损：点了持仓的「改止损」，发来的是新止损价
+    rsl = context.user_data.get("await_rsl")
+    if rsl:
+        try:
+            price = float(text.replace(",", "").replace("$", "").replace("，", ""))
+        except ValueError:
+            await update.message.reply_text("请发数字止损价，例如 60000（取消发 /menu）")
+            return
+        context.user_data.pop("await_rsl", None)
+        from handlers.rtrade import apply_sl
+        await apply_sl(update.message, rsl["symbol"], price)
+        return
+
     # 引导式：用户点了"持续波动监控"，现在发来的是「币 百分比」
     if context.user_data.get("await_watchpct"):
         parts = text.split()

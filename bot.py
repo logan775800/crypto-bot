@@ -31,6 +31,7 @@ HELP_TEXT = (
     "/vopen BTC long 1000 10 开多（1000U保证金10x，入场取现价）\n"
     "　└ /vclose BTC 平仓　/vpos 持仓+浮盈+爆仓价　/vhistory 胜率历史\n\n"
     "*🔴 实盘交易*（Bybit永续·管理员·默认模拟盘）\n"
+    "/trade 🎛 交易台——点按钮开仓/平仓/改止损/预警，记不住命令就用它\n"
     "/ropen BTC long 1000 10 62000 sl=60000 tp=68000 限价开仓(带止盈损,弹确认)\n"
     "　└ /rclose BTC 平仓　/rpos 实盘持仓　/rbal 余额　/rorders /rcancel 挂单\n"
     "　└ /rtpsl BTC tp= sl= 改止盈止损　/rliqalert 5 爆仓预警\n\n"
@@ -133,6 +134,7 @@ async def post_init(application):
         BotCommand("vpos", "🎮 虚拟持仓/账户"),
         BotCommand("vclose", "🎮 虚拟平仓"),
         BotCommand("vhistory", "🎮 虚拟交易胜率/历史"),
+        BotCommand("trade", "🎛 实盘交易台(点按钮操作)"),
         BotCommand("ropen", "🔴 实盘限价开仓(Bybit)"),
         BotCommand("rclose", "🔴 实盘平仓(Bybit)"),
         BotCommand("rpos", "🔴 实盘持仓(Bybit)"),
@@ -232,6 +234,7 @@ def main():
     app.add_handler(CommandHandler("rcancel", rtrade.rcancel))
     app.add_handler(CommandHandler("rtpsl", rtrade.rtpsl))
     app.add_handler(CommandHandler("rliqalert", rtrade.rliqalert))
+    app.add_handler(CommandHandler("trade", rtrade.trade))
     # 播报（功能1）
     app.add_handler(CommandHandler("subscribe", broadcast.subscribe))
     app.add_handler(CommandHandler("unsubscribe", broadcast.unsubscribe))

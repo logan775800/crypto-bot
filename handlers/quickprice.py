@@ -59,9 +59,9 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.startswith("/"):
         return
 
-    # AI 助手：用户点了菜单「💬 AI 助手」，现在发来的是要问的问题
-    if context.user_data.get("await_ask"):
-        context.user_data.pop("await_ask", None)
+    # AI 问答会话：私聊点了菜单「💬 AI 助手」进入会话后，每条消息都走 AI（连续对话）
+    # 只在私聊生效；群里用 @机器人 / 回复机器人。退出发 /menu 或点退出按钮。
+    if context.user_data.get("ai_session") and not is_group(update):
         from handlers.chat import handle_ask_text
         await handle_ask_text(update, context, text)
         return

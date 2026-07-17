@@ -60,6 +60,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("await_alert_coin", None)
     context.user_data.pop("await_watchpct", None)
     context.user_data.pop("await_track_addr", None)
+    context.user_data.pop("ai_session", None)   # 打开菜单即退出 AI 问答会话
     await update.message.reply_text(
         "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
         reply_markup=main_menu_kb(), parse_mode="Markdown"
@@ -1177,14 +1178,27 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "（切换：服务器 .env 的 `BYBIT_TESTNET` true/false）",
             reply_markup=rtkb, parse_mode="Markdown")
 
-    # ---- AI 助手：点按钮 → 等用户发问题（quickprice 接住 await_ask）----
+    # ---- AI 助手：点按钮 → 进入 AI 问答会话（连续聊，直到退出）----
     elif d == "ask_start":
-        context.user_data["await_ask"] = True
-        await query.edit_message_text(
-            "💬 *AI 助手*\n\n把你的问题发给我，例如：\n"
-            "`BTC 现在追多风险大不大`\n`给我一套15分钟短线打法`\n`怎么用虚拟合约练手`\n\n"
-            "（我能查实时币价/资金费/涨跌榜/情绪来答；发完这一条即可，想再问就再点一次或直接 `/ask`）",
-            parse_mode="Markdown")
+        if query.message.chat.type in ("group", "supergroup"):
+            # 群里直接 @我 / 回复我就能连续对话，不需要会话开关
+            await query.edit_message_text(
+                "💬 *AI 助手*\n\n群里直接 **@我** 或 **回复我的消息** 就能连续对话，"
+                "能查实时币价/资金费/涨跌榜/情绪来答。\n例：`@我 BTC 做空挂单区间给我拆一下`",
+                reply_markup=back_kb(), parse_mode="Markdown")
+        else:
+            context.user_data["ai_session"] = True
+            kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚪 退出 AI 问答", callback_data="ask_stop")]])
+            await query.edit_message_text(
+                "💬 *已进入 AI 问答*（连续对话）\n\n直接发问题，可以一直追问，我记得上下文。"
+                "需要实时数据我会自己查（币价/合约资金费/涨跌榜/情绪）。\n\n"
+                "例：`做空 BTC 挂单区间给我拆一下`　`那如果改15分钟短线呢`\n\n"
+                "退出：点下方按钮或发 /menu。",
+                reply_markup=kb, parse_mode="Markdown")
+
+    elif d == "ask_stop":
+        context.user_data.pop("ai_session", None)
+        await query.edit_message_text("已退出 AI 问答。发 /menu 打开菜单。", reply_markup=back_kb())
 
     # ---- 交易台 / 引导式开仓 / 一键持仓操作 ----
     elif d == "tpanel":

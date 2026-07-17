@@ -24,8 +24,15 @@ AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "")
 AI_MODEL = os.environ.get("AI_MODEL", "gpt-4o-mini")
 
-# 管理员chat_id（运维告警接收 + 部署审批人）
+# 管理员chat_id（运维告警接收 + 部署审批人）。支持多个：逗号分隔，如 "7774574457,1087968824"
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")
+_admin_list = [s.strip() for s in ADMIN_CHAT_ID.split(",") if s.strip()]
+ADMIN_IDS = set(_admin_list)                       # 所有管理员 id（字符串集合）
+PRIMARY_ADMIN_ID = _admin_list[0] if _admin_list else ""  # 第一个：运维告警默认发给他
+
+def is_admin(uid):
+    """uid 是否管理员。未配置 ADMIN_CHAT_ID 时不限制（方便测试）。"""
+    return (not ADMIN_IDS) or str(uid) in ADMIN_IDS
 
 # Jenkins 部署审批：点"确认"按钮后由机器人远程触发 Jenkins 部署任务
 JENKINS_URL = os.environ.get("JENKINS_URL", "")            # 如 https://logan-jenkins.22889.club

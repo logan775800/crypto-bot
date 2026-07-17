@@ -16,7 +16,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from config import ADMIN_CHAT_ID
+from config import is_admin as _cfg_is_admin
 from handlers.util import safe_reply, safe_edit
 from storage import data, save_data
 from bybit_trade import BybitClient, BybitError, round_step, _is_testnet
@@ -29,7 +29,7 @@ LIQ_COOLDOWN = 1800        # 爆仓预警同币冷却 30 分钟
 
 
 def _is_admin(chat_id):
-    return not ADMIN_CHAT_ID or str(chat_id) == str(ADMIN_CHAT_ID)
+    return _cfg_is_admin(chat_id)
 
 
 def _norm(sym):

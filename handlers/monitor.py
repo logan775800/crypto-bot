@@ -1,19 +1,18 @@
 import logging
 import httpx
 from telegram.ext import ContextTypes
-from config import ADMIN_CHAT_ID
+from config import ADMIN_IDS
 
 # 数据源健康状态（内存记录，检测状态变化）
 _health = {"coingecko": True, "okx": True}
 
 async def notify_admin(context, text):
-    """发告警给管理员"""
-    if not ADMIN_CHAT_ID:
-        return
-    try:
-        await context.bot.send_message(chat_id=int(ADMIN_CHAT_ID), text=text)
-    except Exception as e:
-        logging.error(f"管理员告警发送失败: {e}")
+    """发告警给所有管理员"""
+    for aid in ADMIN_IDS:
+        try:
+            await context.bot.send_message(chat_id=int(aid), text=text)
+        except Exception as e:
+            logging.error(f"管理员告警发送失败 {aid}: {e}")
 
 # 启动告警（post_init后发一次）
 async def startup_notify(context: ContextTypes.DEFAULT_TYPE):

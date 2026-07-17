@@ -229,10 +229,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---- 部署审批：确认/取消（仅管理员）----
     elif d.startswith("jdok:") or d.startswith("jdno:"):
-        from config import ADMIN_CHAT_ID
+        from config import is_admin
         tag = d.split(":", 1)[1]
         uid = query.from_user.id
-        if not ADMIN_CHAT_ID or str(uid) != str(ADMIN_CHAT_ID):
+        if not is_admin(uid):
             await query.answer("只有管理员能操作部署", show_alert=True)
             return
         if d.startswith("jdno:"):

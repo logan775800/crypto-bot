@@ -21,7 +21,7 @@ from telegram import Update
 from telegram.ext import ContextTypes
 
 from storage import data, save_data
-from config import ADMIN_CHAT_ID
+from config import is_admin
 from bybit_trade import BybitClient, BybitError, round_step, _is_testnet
 
 log = logging.getLogger(__name__)
@@ -32,8 +32,8 @@ def _grids():
 
 
 def _is_admin(chat_id):
-    # 未配置 ADMIN_CHAT_ID 时不限制（方便测试）；配置了则只允许管理员
-    return not ADMIN_CHAT_ID or str(chat_id) == str(ADMIN_CHAT_ID)
+    # 未配置 ADMIN_CHAT_ID 时不限制（方便测试）；配置了则只允许管理员（支持多个id）
+    return is_admin(chat_id)
 
 
 def _link_id(gid_seq, gap, side):

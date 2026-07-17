@@ -185,6 +185,10 @@ async def mention_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if update.effective_chat.type not in ("group", "supergroup"):
         return  # 私聊纯文字留给查价；私聊用 /ask
+    # 用户正处在引导式流程中(设监控/预警/开仓等 await_ 态)时别抢——即便他是回复机器人的提示，
+    # 也要让这条走 quickprice 完成流程，否则会被当成 AI 提问，流程收不到输入。
+    if any(k.startswith("await_") for k in context.user_data):
+        return
     text = msg.text
     triggered = False
     # 1) 回复机器人的消息

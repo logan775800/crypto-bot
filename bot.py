@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -43,6 +43,7 @@ HELP_TEXT = (
     "/rstats 30 实盘复盘：胜率/盈亏比/期望值/最大回撤，按币·多空·持仓时长·时段拆解\n"
     "　└ `/rstats 30 ai` 让 AI 从数字里挑出你的行为漏洞（这是唯一能提升胜率的功能）\n"
     "/risk 🛡 风险守护：保证金率/同向集中度/当日亏损熔断/裸奔仓位/BTC破位联动\n"
+    "/risk 0.081 0.0828 0.5% 🧮 反推仓位：这个止损下能开多大（自动读你的真实权益+同向暴露）\n"
     "/brief 🌅 AI 盘前简报：市场结构+资金费极值+**你每个仓的具体风险点**（可订阅每天8:30）\n\n"
     "*盯盘 / 合约*\n"
     "/watchpct BTC 2 持续波动监控，涨跌超±2%就提醒（报后自动续盯）\n"
@@ -286,7 +287,7 @@ async def post_init(application):
         BotCommand("rpos", "🔴 实盘持仓(Bybit)"),
         BotCommand("rbal", "🔴 实盘合约余额(Bybit)"),
         BotCommand("rstats", "📊 实盘复盘成绩单(胜率/期望值)"),
-        BotCommand("risk", "🛡 风险守护(熔断/集中度/裸奔仓)"),
+        BotCommand("risk", "🛡 风险守护｜带参数=按风险反推仓位"),
         BotCommand("brief", "🌅 AI盘前简报(结合你的持仓)"),
         BotCommand("cond", "🎯 条件触发提醒(价格+指标组合)"),
         BotCommand("conds", "🎯 我的条件提醒"),

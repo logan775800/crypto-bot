@@ -315,13 +315,25 @@ def panel_content():
                  InlineKeyboardButton("60%", callback_data="rgset:mmr:60")])
     rows.append([InlineKeyboardButton("🎛 交易台", callback_data="tpanel"),
                  InlineKeyboardButton("📊 复盘", callback_data="rsd:30")])
+    lines.append("\n\n🧮 反推仓位：`/risk 入场 止损 风险%`，例 `/risk 0.081 0.0828 0.5%`")
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 
 
 async def risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/risk 风险守护面板。"""
+    """/risk —— 多态入口：
+      带参数 `/risk 0.081 0.0828 0.5%` → 风险反推仓位（sizing）
+      不带参数 `/risk`                 → 风险守护面板
+    两个都是「风险」语义，合在一个命令下比逼用户记 /risk 和 /size 的区别更顺手。"""
     from handlers.rtrade import _guard
     if not await _guard(update):
+        return
+    if context.args:
+        from handlers import sizing
+        parsed = sizing.parse_args(context.args)
+        if parsed:
+            await sizing.size_cmd(update, context, parsed)
+            return
+        await safe_reply(update.message, sizing.USAGE, parse_mode="Markdown")
         return
     # 面板在哪个会话打开，告警就推到哪个会话
     _cfg().setdefault("chat_id", update.effective_chat.id)

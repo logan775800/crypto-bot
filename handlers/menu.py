@@ -1316,6 +1316,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import fundextreme
         await fundextreme.sub_from_btn(query, context, d.split(":", 1)[1])
 
+    # ---- 仓位计算：换风险档位重算 ----
+    elif d.startswith("sz:"):
+        from handlers import sizing
+        _, sym, entry, stop, risk = d.split(":")
+        await sizing.from_btn(query, context, sym, float(entry), float(stop), float(risk))
+
     # ---- 标注图表：切周期 / AI 解读 ----
     elif d.startswith("ac:"):
         from handlers import annotchart

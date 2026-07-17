@@ -73,6 +73,27 @@ async def chat_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"当前生效的管理员 id: `{', '.join(sorted(ADMIN_IDS)) or '(未配置)'}`",
         parse_mode="Markdown")
 
+async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
+    """全局错误处理：任何 handler 未捕获的异常都记日志 + 私信管理员，
+    避免像以前那样「功能静默失效、只能靠用户截图才发现」。"""
+    import traceback
+    err = context.error
+    logging.error(f"未捕获异常: {err}", exc_info=err)
+    try:
+        where = ""
+        if isinstance(update, Update):
+            u = update.effective_user
+            m = update.effective_message
+            where = (f"\n会话 {update.effective_chat.id if update.effective_chat else '?'}"
+                     f"｜用户 {u.id if u else '?'}"
+                     f"\n消息: {(m.text or '')[:80] if m else ''}")
+        tb = "".join(traceback.format_exception(type(err), err, err.__traceback__))[-600:]
+        from handlers.monitor import notify_admin
+        await notify_admin(context, f"🐞 机器人异常\n{type(err).__name__}: {str(err)[:150]}{where}\n\n{tb}")
+    except Exception as e:
+        logging.error(f"异常上报失败: {e}")
+
+
 async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/version 报告线上真正在跑的版本 + 关键配置状态（排查"部署到底生效没"用）。"""
     from config import VERSION, AI_MODEL, AI_API_KEY, ADMIN_IDS, is_admin
@@ -401,6 +422,7 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^❓ 帮助$"), help_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, quickprice.quick_price))
     app.add_handler(CallbackQueryHandler(menu.button_handler))
+    app.add_error_handler(on_error)   # 未捕获异常 → 日志 + 私信管理员
 
     # 定时任务
     jq = app.job_queue

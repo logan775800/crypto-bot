@@ -18,6 +18,10 @@ services:
       JENKINS_USER: ${JENKINS_USER:-}
       JENKINS_API_TOKEN: ${JENKINS_API_TOKEN:-}
       ETHERSCAN_API_KEY: ${ETHERSCAN_API_KEY:-}
+      # Bybit 实盘台/网格/AI查账户用。缺这三行 → 容器拿不到密钥，功能全部失效
+      BYBIT_API_KEY: ${BYBIT_API_KEY:-}
+      BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
+      BYBIT_TESTNET: ${BYBIT_TESTNET:-true}
       TZ: Asia/Shanghai
     command: >
       bash -c "pip install --no-cache-dir -r requirements.txt && python bot.py"

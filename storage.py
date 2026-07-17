@@ -49,6 +49,61 @@ data.setdefault("watchpct", [])         # 持续波动监控 [{chat_id,symbol,pc
 data.setdefault("vtrade", {})           # 虚拟合约交易 {uid: {balance, positions{sym:{...}}, history[], chat_id}}
 data.setdefault("rtrade_alert", {})     # 实盘爆仓预警 {enabled, threshold, chat_id, cooldown{sym:ts}}
 
+def migrate_chat(old, new):
+    """群升级为超级群时 chat_id 会变（旧 id 从此推送 400），把所有订阅从旧 id 搬到新 id。
+    覆盖各类结构：id列表 / 带chat_id的字典列表 / 以chat_id为键的字典 / 值是chat_id的字段。
+    返回迁移条数。"""
+    old_set = {old, str(old)}
+    moved = 0
+
+    # 1) 纯 id 列表
+    for key in ("broadcast_chats", "market_watch", "news_subs", "unlock_subs",
+                "summary_subs", "analysis_subs", "contract_watch"):
+        lst = data.get(key)
+        if isinstance(lst, list):
+            for i, x in enumerate(lst):
+                if x in old_set:
+                    lst[i] = new
+                    moved += 1
+
+    # 2) 元素是 {chat_id: ...} 的列表
+    for key in ("watchpct", "alerts", "ti_alerts"):
+        for w in data.get(key, []):
+            if isinstance(w, dict) and w.get("chat_id") in old_set:
+                w["chat_id"] = new
+                moved += 1
+
+    # 3) 以 chat_id(字符串) 为键的字典
+    for key in ("gas_subs", "arb_subs", "whale_addr", "whale_min"):
+        d = data.get(key)
+        if isinstance(d, dict):
+            for ov in (str(old), old):
+                if ov in d:
+                    d[str(new)] = d.pop(ov)
+                    moved += 1
+
+    # 4) 值是 chat_id 的：holding_watch {uid: chat_id}
+    hw = data.get("holding_watch", {})
+    for uid, cid in list(hw.items()):
+        if cid in old_set:
+            hw[uid] = new
+            moved += 1
+
+    # 5) 内嵌 chat_id 字段
+    ra = data.get("rtrade_alert", {})
+    if isinstance(ra, dict) and ra.get("chat_id") in old_set:
+        ra["chat_id"] = new
+        moved += 1
+    for acct in data.get("vtrade", {}).values():
+        if isinstance(acct, dict) and acct.get("chat_id") in old_set:
+            acct["chat_id"] = new
+            moved += 1
+
+    if moved:
+        save_data()
+    return moved
+
+
 def save_data():
     # 原子写入：先写临时文件再 os.replace，避免写盘中途被打断（多个定时任务并发保存）
     # 导致 data.json 只写了一半而损坏，下次启动整份数据丢失

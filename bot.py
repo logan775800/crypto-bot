@@ -73,6 +73,59 @@ async def chat_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"当前生效的管理员 id: `{', '.join(sorted(ADMIN_IDS)) or '(未配置)'}`",
         parse_mode="Markdown")
 
+async def on_chat_migrate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """群升级为超级群时 chat_id 会变，旧 id 从此推送 400（订阅静默失效）。
+    这里自动把所有订阅从旧 id 迁到新 id，用户无需重新订阅。"""
+    m = update.message
+    if not m:
+        return
+    if m.migrate_to_chat_id is not None:        # 收到于旧群：chat.id=旧, migrate_to=新
+        old, new = m.chat.id, m.migrate_to_chat_id
+    elif m.migrate_from_chat_id is not None:    # 收到于新超级群：chat.id=新, migrate_from=旧
+        old, new = m.migrate_from_chat_id, m.chat.id
+    else:
+        return
+    from storage import migrate_chat
+    moved = migrate_chat(old, new)
+    logging.info(f"群升级：{old} → {new}，已迁移 {moved} 条订阅")
+    if moved:
+        try:
+            await context.bot.send_message(
+                chat_id=new,
+                text=f"🔄 检测到本群已升级为超级群，已自动迁移 {moved} 项订阅/监控，无需重新设置。")
+        except Exception as e:
+            logging.error(f"群升级迁移通知失败: {e}")
+
+
+async def migrate_chat_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/migratechat <旧chat_id> 手动把旧会话的订阅迁到当前会话。
+    用于补救「群升级发生在机器人加自动迁移之前」导致的旧订阅失效。仅管理员。"""
+    from config import is_admin
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("⛔ 仅管理员可操作")
+        return
+    if not context.args:
+        await update.message.reply_text(
+            "用法：/migratechat <旧chat_id>\n"
+            "在**目标会话里**发送，把旧 id 名下的订阅/监控全部迁到本会话。\n"
+            "群 id 一般是负数，如 -123456789")
+        return
+    try:
+        old = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("旧 chat_id 要是数字（如 -123456789）")
+        return
+    new = update.effective_chat.id
+    if old == new:
+        await update.message.reply_text("旧 id 就是当前会话，无需迁移")
+        return
+    from storage import migrate_chat
+    moved = migrate_chat(old, new)
+    await update.message.reply_text(
+        f"🔄 已把 `{old}` 名下 {moved} 项订阅/监控迁到本会话 `{new}`" if moved
+        else f"没找到 `{old}` 名下的任何订阅（id 是否写对？）", parse_mode="Markdown")
+
+
 async def whois_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/whois <user_id> 把一个 Telegram user_id 解析成名字/用户名（该用户需跟机器人打过交道）。"""
     if update.effective_chat.type in ("group", "supergroup"):
@@ -194,6 +247,7 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("id", chat_id_cmd))
     app.add_handler(CommandHandler("whois", whois_cmd))
+    app.add_handler(CommandHandler("migratechat", migrate_chat_cmd))
     app.add_handler(CommandHandler("menu", menu.menu))
     app.add_handler(CommandHandler("dashboard", dashboard.dashboard))
     # 行情
@@ -277,6 +331,8 @@ def main():
     app.add_handler(CommandHandler("broadcast", broadcast.broadcast_now))
     # 按钮
     app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, welcome.welcome))
+    # 群升级为超级群 → chat_id 变了，自动迁移订阅（否则旧 id 推送 400、订阅静默失效）
+    app.add_handler(MessageHandler(filters.StatusUpdate.MIGRATE, on_chat_migrate))
     app.add_handler(CommandHandler("follow", prefs.follow))
     app.add_handler(CommandHandler("unfollow", prefs.unfollow))
     app.add_handler(CommandHandler("myfollows", prefs.my_follows))

@@ -69,6 +69,31 @@ async def chat_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"本会话 chat_id: `{c.id}`\n类型: {c.type}\n你的 user_id: `{u.id}`",
         parse_mode="Markdown")
 
+async def whois_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/whois <user_id> 把一个 Telegram user_id 解析成名字/用户名（该用户需跟机器人打过交道）。"""
+    if update.effective_chat.type in ("group", "supergroup"):
+        await update.message.reply_text("🔒 请私聊我使用 /whois")
+        return
+    if not context.args:
+        await update.message.reply_text("用法：/whois 7774574457")
+        return
+    try:
+        uid = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("user_id 要是纯数字")
+        return
+    try:
+        c = await context.bot.get_chat(uid)
+        name = " ".join(x for x in (c.first_name, c.last_name) if x) or "（无名字）"
+        uname = f"@{c.username}" if c.username else "（无用户名）"
+        me = "（就是你自己）" if uid == update.effective_user.id else ""
+        await update.message.reply_text(
+            f"👤 user_id {uid} {me}\n名字：{name}\n用户名：{uname}")
+    except Exception as e:
+        await update.message.reply_text(
+            f"查不到这个 id 的资料（多半是该用户从没跟本机器人打过交道，或号已注销）。\n{str(e)[:100]}")
+
+
 async def post_init(application):
     """启动时加载币种 + 设置命令菜单"""
     import logging
@@ -160,6 +185,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("id", chat_id_cmd))
+    app.add_handler(CommandHandler("whois", whois_cmd))
     app.add_handler(CommandHandler("menu", menu.menu))
     app.add_handler(CommandHandler("dashboard", dashboard.dashboard))
     # 行情

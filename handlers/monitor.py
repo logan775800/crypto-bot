@@ -16,7 +16,8 @@ async def notify_admin(context, text):
 
 # 启动告警（post_init后发一次）
 async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
-    await notify_admin(context, "🟢 Bot 已启动/重启\n所有功能已加载，开始运行")
+    from config import VERSION
+    await notify_admin(context, f"🟢 Bot 已启动/重启（版本 {VERSION}）\n所有功能已加载，开始运行")
 
 # 数据源健康检查（定时调用）
 async def health_check(context: ContextTypes.DEFAULT_TYPE):

@@ -73,6 +73,28 @@ async def chat_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"当前生效的管理员 id: `{', '.join(sorted(ADMIN_IDS)) or '(未配置)'}`",
         parse_mode="Markdown")
 
+async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/version 报告线上真正在跑的版本 + 关键配置状态（排查"部署到底生效没"用）。"""
+    from config import VERSION, AI_MODEL, AI_API_KEY, ADMIN_IDS, is_admin
+    ai_ok = "已配置" if AI_API_KEY else "❌未配置"
+    try:
+        from bybit_trade import BYBIT_API_KEY, _is_testnet
+        by = ("🧪模拟盘" if _is_testnet() else "🔴实盘") if BYBIT_API_KEY else "❌未配置"
+    except Exception:
+        by = "❌未配置"
+    me = "✅ 是" if is_admin(update.effective_user.id) else "❌ 否"
+    await update.message.reply_text(
+        f"🤖 *运行状态*\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"📦 版本　　`{VERSION}`\n"
+        f"🧠 AI模型　`{AI_MODEL}`（{ai_ok}）\n"
+        f"💹 Bybit　 {by}\n"
+        f"👤 管理员　{len(ADMIN_IDS) or '未限制'} 人｜你是管理员：{me}\n"
+        f"━━━━━━━━━━━━━━\n"
+        f"_版本对不上就是部署没生效_",
+        parse_mode="Markdown")
+
+
 async def on_chat_migrate(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """群升级为超级群时 chat_id 会变，旧 id 从此推送 400（订阅静默失效）。
     这里自动把所有订阅从旧 id 迁到新 id，用户无需重新订阅。"""
@@ -246,6 +268,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("id", chat_id_cmd))
+    app.add_handler(CommandHandler("version", version_cmd))
     app.add_handler(CommandHandler("whois", whois_cmd))
     app.add_handler(CommandHandler("migratechat", migrate_chat_cmd))
     app.add_handler(CommandHandler("menu", menu.menu))

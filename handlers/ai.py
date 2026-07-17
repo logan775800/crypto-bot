@@ -1,3 +1,4 @@
+import json
 import logging
 import httpx
 from telegram import Update
@@ -38,6 +39,51 @@ async def ask_ai_messages(messages, system=None, temperature=0.7):
         resp.raise_for_status()
         data = resp.json()
         return data["choices"][0]["message"]["content"]
+
+
+async def _chat_completion(msgs, tools=None, temperature=0.7, timeout=70):
+    url = AI_BASE_URL.rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
+    body = {"model": AI_MODEL, "messages": msgs, "temperature": temperature}
+    if tools:
+        body["tools"] = tools
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(url, headers=headers, json=body)
+        resp.raise_for_status()
+        return resp.json()["choices"][0]["message"]
+
+
+async def ask_ai_tools(messages, tools, tool_executor, system=None,
+                       temperature=0.7, max_rounds=4):
+    """带函数调用的多轮对话。tools=OpenAI function schema 列表；
+    tool_executor(name, args)->str 执行工具并返回文本结果。
+    循环：模型请求→若返回 tool_calls 则执行并回填→直到出最终文本或到 max_rounds。
+    不修改传入的 messages。返回最终文本。"""
+    msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
+    for _ in range(max_rounds):
+        m = await _chat_completion(msgs, tools=tools, temperature=temperature)
+        tcs = m.get("tool_calls")
+        if not tcs:
+            return m.get("content") or ""
+        # 回填这一轮的 assistant(tool_calls) + 各工具结果
+        msgs.append({"role": "assistant", "content": m.get("content"), "tool_calls": tcs})
+        for tc in tcs:
+            fn = tc.get("function", {})
+            name = fn.get("name", "")
+            try:
+                args = json.loads(fn.get("arguments") or "{}")
+            except Exception:
+                args = {}
+            try:
+                result = await tool_executor(name, args)
+            except Exception as e:
+                logging.error(f"工具 {name} 执行出错: {e}")
+                result = f"（工具 {name} 出错：{str(e)[:80]}）"
+            msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""),
+                         "content": str(result)[:2500]})
+    # 到达轮次上限：最后不带 tools 强制出文本总结
+    m = await _chat_completion(msgs, tools=None, temperature=temperature)
+    return m.get("content") or "（没能得出结论，换个问法试试）"
 
 
 async def ai_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):

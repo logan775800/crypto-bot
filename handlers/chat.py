@@ -11,25 +11,85 @@ from telegram.ext import ContextTypes, ApplicationHandlerStop
 
 from config import AI_API_KEY, AI_BASE_URL
 from handlers.util import safe_reply, escape_md
-from handlers.ai import ask_ai_messages
+from handlers.ai import ask_ai_messages, ask_ai_tools
 
 log = logging.getLogger(__name__)
 
 MAX_TURNS = 10   # 保留最近 10 轮（20 条）上下文
 
 SYSTEM = (
-    "你是嵌在一个 Telegram 加密行情机器人里的助手，用简体中文、口语化、简洁地回答，别长篇大论。"
-    "用户是做加密杠杆永续合约的交易者（主玩 Bybit/OKX）。"
-    "你能做两类事：(1) 解释这个 bot 的功能和命令怎么用；(2) 聊行情/交易问题，"
-    "给有风控框架、具体但非指令性的看法——聊具体买卖时用「风险温度」而非涨跌预测的口吻，"
-    "并简短带一句「不构成投资建议」。"
-    "你没有实时行情和用户持仓数据，凡涉及当前币价/资金费率/用户持仓这类实时信息，"
-    "就引导用户用对应命令查（如 /price、/fprice、/vpos、/rpos），绝不编造具体数字。\n\n"
-    "这个 bot 的主要命令：/menu 功能菜单，/price 查币价，/dashboard 市场看板，/top 涨跌榜，"
-    "/analyze 技术分析，/ai AI解读，/news 新闻，/watchpct 持续波动监控，/alert 价格预警，"
-    "/checklist 合约风控清单，/vopen 虚拟合约开仓、/vpos 虚拟持仓、/vhistory 胜率，"
-    "/trade 实盘交易台(Bybit，点按钮开平仓)。"
+    "你是嵌在一个 Telegram 加密行情机器人里的智能交易助手，用简体中文回答。"
+    "用户是做加密杠杆永续合约的活跃交易者（主玩 Bybit/OKX）。\n\n"
+    "你可以调用工具查实时数据——别猜、别让用户自己去查。需要当前币价/涨跌、"
+    "合约价与资金费率、涨跌榜、市场情绪时，直接调对应工具拿到数据再作答：\n"
+    "- get_price：某币现货价 + 24h涨跌\n"
+    "- get_contract：某币永续合约价 + 资金费率 + 涨跌\n"
+    "- get_top_movers：24h 涨幅/跌幅榜\n"
+    "- get_fear_greed：恐惧贪婪指数\n\n"
+    "回答要有料、具体、带风控视角：该展开分析就展开（不用硬憋成一句话），但别啰嗦废话。"
+    "聊具体买卖时用「风险温度 / 仓位管理」的口吻而非涨跌预测，可以给出你自己的倾向，"
+    "末尾简短带一句「不构成投资建议」即可（不用每段都加）。"
+    "也能解释这个 bot 的功能和命令怎么用：/menu 菜单，/price 查价，/dashboard 看板，"
+    "/analyze 技术分析，/watchpct 波动监控，/alert 预警，/checklist 合约风控清单，"
+    "/vopen 虚拟合约练手、/vpos 虚拟持仓，/trade 实盘交易台(Bybit,点按钮开平仓)。"
 )
+
+# ── 给 AI 的实时数据工具（只读，安全）───────────────────────────────
+TOOLS = [
+    {"type": "function", "function": {
+        "name": "get_price", "description": "查某个币的现货价格和24小时涨跌幅",
+        "parameters": {"type": "object", "properties": {
+            "symbol": {"type": "string", "description": "币种代号，如 BTC、ETH、SOL"}},
+            "required": ["symbol"]}}},
+    {"type": "function", "function": {
+        "name": "get_contract", "description": "查某个币的永续合约行情：合约价、资金费率、涨跌",
+        "parameters": {"type": "object", "properties": {
+            "symbol": {"type": "string", "description": "币种代号，如 BTC"}},
+            "required": ["symbol"]}}},
+    {"type": "function", "function": {
+        "name": "get_top_movers", "description": "查全市场24小时涨幅榜和跌幅榜(前15)",
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "get_fear_greed", "description": "查加密市场恐惧贪婪指数(0-100)",
+        "parameters": {"type": "object", "properties": {}}}},
+]
+
+
+async def _tool_exec(name, args):
+    """执行工具，返回给模型的文本结果。任何失败都返回说明字符串，不抛出。"""
+    if name == "get_price":
+        from api import get_price
+        sym = str(args.get("symbol", "")).upper()
+        r = await get_price(sym)
+        if not r:
+            return f"{sym}: 查不到该币现货价"
+        return f"{sym} 现货 ${r['price']:,.6g}，24h {r['change']:+.2f}%"
+    if name == "get_contract":
+        sym = str(args.get("symbol", "")).upper()
+        for src in ("okx", "binance", "bybit"):
+            try:
+                if src == "okx":
+                    from handlers.okx import build_fprice_text
+                    return await build_fprice_text(sym)
+                if src == "binance":
+                    from handlers.binance import build_fprice_text_bn
+                    return await build_fprice_text_bn(sym)
+                from handlers.bybit import build_fprice_text_by
+                return await build_fprice_text_by(sym)
+            except Exception:
+                continue
+        return f"{sym}: 三个所都查不到永续合约"
+    if name == "get_top_movers":
+        from api import get_top_movers
+        gainers, losers = await get_top_movers(15)
+        g = "、".join(f"{c['symbol']} {c['change']:+.1f}%" for c in gainers[:15])
+        l = "、".join(f"{c['symbol']} {c['change']:+.1f}%" for c in losers[:15])
+        return f"24h涨幅榜: {g}\n24h跌幅榜: {l}"
+    if name == "get_fear_greed":
+        from api import get_fear_greed
+        fg = await get_fear_greed()
+        return f"恐惧贪婪指数 {fg['value']}/100（{fg['classification']}）"
+    return f"未知工具 {name}"
 
 
 def _history(context):
@@ -50,7 +110,12 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
     except Exception:
         pass
     try:
-        reply = await ask_ai_messages(hist, system=SYSTEM)
+        # 优先带工具调用（能查实时数据）；工具链路异常则降级为纯对话
+        try:
+            reply = await ask_ai_tools(hist, TOOLS, _tool_exec, system=SYSTEM)
+        except Exception as te:
+            log.warning(f"工具对话失败，降级纯对话: {te}")
+            reply = await ask_ai_messages(hist, system=SYSTEM)
     except Exception as e:
         log.error(f"群聊AI出错: {e}")
         # 出错不留脏上下文

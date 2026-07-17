@@ -244,7 +244,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.deploy import trigger_deploy
         ok, msg = await trigger_deploy(tag)
         if ok:
-            await safe_edit(query, f"⏳ 已确认部署 *{tag}*，Jenkins 执行中…\n(部署结果看 Jenkins/服务器日志)", parse_mode="Markdown")
+            await safe_edit(query, f"⏳ 已确认部署 *{tag}*，部署系统执行中…\n(部署结果看服务器日志)", parse_mode="Markdown")
         else:
             # 失败保留按钮，修好后可直接重试，不用重新发通知
             kb = InlineKeyboardMarkup([[

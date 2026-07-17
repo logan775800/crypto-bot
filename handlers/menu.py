@@ -244,14 +244,33 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.deploy import trigger_deploy
         ok, msg = await trigger_deploy(tag)
         if ok:
-            await safe_edit(query, f"⏳ 已确认部署 *{tag}*，部署系统执行中…\n(部署结果看服务器日志)", parse_mode="Markdown")
+            who = query.from_user.first_name or "管理员"
+            await safe_edit(
+                query,
+                f"🚀 *部署已启动*\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"📦 版本　　`{tag}`\n"
+                f"👤 确认人　{escape_md(who)}\n"
+                f"⚙️ 状态　　部署系统执行中…\n"
+                f"⏱ 预计　　约 1~2 分钟\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"_完成后会自动播报「✅ 部署成功」_",
+                parse_mode="Markdown")
         else:
             # 失败保留按钮，修好后可直接重试，不用重新发通知
             kb = InlineKeyboardMarkup([[
                 InlineKeyboardButton(f"🔁 重试部署 {tag}", callback_data=f"jdok:{tag}"),
                 InlineKeyboardButton("❌ 取消", callback_data=f"jdno:{tag}"),
             ]])
-            await safe_edit(query, f"❌ 触发部署失败：{msg}\n修好后点重试。", reply_markup=kb)
+            await safe_edit(
+                query,
+                f"❌ *部署触发失败*\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"📦 版本　`{tag}`\n"
+                f"⚠️ 原因　{escape_md(str(msg))}\n"
+                f"━━━━━━━━━━━━━━\n"
+                f"_修好后点下方重试_",
+                reply_markup=kb, parse_mode="Markdown")
 
     # ---- 查其他币（按来源决定后续动作）----
     elif d.startswith("askcoin:"):

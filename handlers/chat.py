@@ -45,12 +45,29 @@ MAX_TURNS = 10   # 保留最近 10 轮（20 条）上下文
 SYSTEM = (
     "你是嵌在一个 Telegram 加密行情机器人里的智能交易助手，用简体中文回答。"
     "用户是做加密杠杆永续合约的活跃交易者（主玩 Bybit/OKX）。\n\n"
-    "你可以调用工具查实时数据——别猜、别让用户自己去查。需要当前币价/涨跌、"
-    "合约价与资金费率、涨跌榜、市场情绪时，直接调对应工具拿到数据再作答：\n"
-    "- get_price：某币现货价 + 24h涨跌\n"
-    "- get_contract：某币永续合约价 + 资金费率 + 涨跌\n"
-    "- get_top_movers：24h 涨幅/跌幅榜\n"
-    "- get_fear_greed：恐惧贪婪指数\n\n"
+    "你有一整套 Bybit 永续的实时数据工具——**别猜、别口头点评，先取数再下结论**：\n"
+    "- get_klines(币, 周期)：多周期量化（EMA排列/斜率、ATR14+止损距离、RSI、摆动高低点与"
+    "HH-HL/LH-LL 结构、量能倍数、VWAP、前高前低、近8根OHLCV）\n"
+    "- get_oi_history(币, 周期)：OI 历史 + 价格/OI 四象限（谁在推动、是否拥挤）\n"
+    "- get_funding_history(币)：资金费率历史/预测/是否极端 + 基差(永续溢价折价)\n"
+    "- get_orderbook(币)：买卖盘失衡、挂单墙（真卖墙还是诱导）\n"
+    "- get_recent_trades(币)：主动买卖 delta、大单方向（突破有没有承接）\n"
+    "- get_market_context()：BTC/ETH 多周期 + 情绪\n"
+    "- get_liquidations(币)：清算密集/挤压空间\n"
+    "- get_my_account()：用户真实 Bybit 账户（权益/持仓/杠杆/爆仓价，仅管理员）\n"
+    "- get_price / get_contract / get_top_movers / get_fear_greed：快速报价与榜单\n\n"
+    "**分析交易计划时的标准流程**（别偷懒只调一个）：\n"
+    "1) get_market_context() 看 BTC/ETH 风险——BTC 15m/1h 破位时，山寨多头计划要降仓或取消；\n"
+    "2) get_klines 大周期(4h/1h)定方向与结构，再 get_klines 小周期(15m/5m)定执行；\n"
+    "3) get_oi_history + get_funding_history 判断是谁推动、有没有拥挤/挤压风险；\n"
+    "4) 需要精确进场时再 get_orderbook + get_recent_trades 看承接与挂单墙；\n"
+    "5) 涉及仓位大小/该不该减仓，调 get_my_account() 按真实权益算。\n\n"
+    "**给方案时要具体、可执行**：方向与理由、进场区间(挂单还是等回踩/破位确认)、"
+    "止损放在哪(用 ATR 或结构失效位，别拍脑袋)、止盈分段(参考流动性/前高前低)、"
+    "仓位按「单笔风险≈权益0.5%~1%÷止损距离」反推(拿到账户就用真实数字算，"
+    "拿不到就给公式让用户代入)、以及这单的风险温度。\n"
+    "**别做的**：不要输出没有数据支撑的价位；不要只给一句「注意风控」；"
+    "不要在没查 BTC 联动时就给山寨的追多计划。\n\n"
     "⚠️ 关键：需要实时数据时必须主动调工具，绝不要停下来反问「你先给个币种」。"
     "如果问题需要具体币种但用户没点名是哪个币，就**默认按 BTC** 拉数据分析，"
     "开头说明「以 BTC 为例，换币再告诉我」即可，别只抛问题就结束。"
@@ -63,23 +80,73 @@ SYSTEM = (
     "/vopen 虚拟合约练手、/vpos 虚拟持仓，/trade 实盘交易台(Bybit,点按钮开平仓)。"
 )
 
-# ── 给 AI 的实时数据工具（只读，安全）───────────────────────────────
+# ── 给 AI 的数据工具（全部只读）─────────────────────────────────────
+_SYM = {"symbol": {"type": "string", "description": "币种代号，如 BTC、ETH、AKE（自动补USDT）"}}
+_IV = {"type": "string", "description": "周期：5m/15m/30m/1h/4h/1d",
+       "enum": ["5m", "15m", "30m", "1h", "4h", "1d"]}
+
 TOOLS = [
+    # 基础
     {"type": "function", "function": {
-        "name": "get_price", "description": "查某个币的现货价格和24小时涨跌幅",
-        "parameters": {"type": "object", "properties": {
-            "symbol": {"type": "string", "description": "币种代号，如 BTC、ETH、SOL"}},
-            "required": ["symbol"]}}},
+        "name": "get_price", "description": "查某币现货价格和24h涨跌幅（快速报价用）",
+        "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
     {"type": "function", "function": {
-        "name": "get_contract", "description": "查某个币的永续合约行情：合约价、资金费率、涨跌",
-        "parameters": {"type": "object", "properties": {
-            "symbol": {"type": "string", "description": "币种代号，如 BTC"}},
-            "required": ["symbol"]}}},
+        "name": "get_contract", "description": "查某币永续合约概览：合约价、资金费率、涨跌",
+        "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
     {"type": "function", "function": {
-        "name": "get_top_movers", "description": "查全市场24小时涨幅榜和跌幅榜(前15)",
+        "name": "get_top_movers", "description": "全市场24h涨幅榜/跌幅榜(前15)",
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
-        "name": "get_fear_greed", "description": "查加密市场恐惧贪婪指数(0-100)",
+        "name": "get_fear_greed", "description": "加密市场恐惧贪婪指数(0-100)",
+        "parameters": {"type": "object", "properties": {}}}},
+    # 多周期量化分析（Bybit永续）
+    {"type": "function", "function": {
+        "name": "get_klines",
+        "description": ("Bybit永续指定周期的K线量化分析：已在服务端算好 EMA20/50/200与排列、"
+                        "EMA20斜率、ATR14(含1.5×ATR止损距离)、RSI14、摆动高低点与市场结构"
+                        "(HH/HL、LH/LL)、量能倍数、区间VWAP、前高前低，并附最近8根OHLCV。"
+                        "做趋势/结构/止损距离判断时必用。"),
+        "parameters": {"type": "object", "properties": {**_SYM, "interval": _IV},
+                       "required": ["symbol", "interval"]}}},
+    {"type": "function", "function": {
+        "name": "get_oi_history",
+        "description": ("Bybit永续持仓量(OI)历史+同期价格变化，自动给出四象限解读"
+                        "(价涨OI涨=新多进场/价涨OI跌=空头回补/价跌OI涨=新空堆积/价跌OI跌=多头平仓)。"
+                        "判断行情由谁推动、是否拥挤时用。"),
+        "parameters": {"type": "object", "properties": {**_SYM, "interval": _IV},
+                       "required": ["symbol"]}}},
+    {"type": "function", "function": {
+        "name": "get_funding_history",
+        "description": ("Bybit永续资金费率：当前/下一期预测、历史60期均值与区间、正费率占比、"
+                        "是否处于历史极端(挤多/轧空风险)，以及标记价vs指数价的基差(永续溢价/折价)。"),
+        "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
+    {"type": "function", "function": {
+        "name": "get_orderbook",
+        "description": ("Bybit永续L2订单簿(最多200档)：买卖盘总量、失衡百分比、价差、"
+                        "挂单墙(单档>5倍均量)。判断前高是真卖墙还是诱导、该挂单还是追单时用。"),
+        "parameters": {"type": "object", "properties": {
+            **_SYM, "depth": {"type": "integer", "description": "档位数，默认200"}},
+            "required": ["symbol"]}}},
+    {"type": "function", "function": {
+        "name": "get_recent_trades",
+        "description": ("Bybit永续逐笔成交：主动买/主动卖量、净delta、大单(>10×均笔)方向。"
+                        "判断突破是否有主动买盘承接、跌破后有无吸收时用。"),
+        "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
+    {"type": "function", "function": {
+        "name": "get_market_context",
+        "description": ("市场联动：BTC/ETH 的 15m/1h/4h 涨跌与EMA20位置、资金费率，加恐惧贪婪指数。"
+                        "分析山寨币时必须先看这个——BTC破位时山寨多头计划要降仓/取消。"),
+        "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "get_liquidations",
+        "description": "某币近期清算数据(OKX聚合)，用于判断挤压空间与止盈是否该放在流动性密集区前。",
+        "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
+    # 账户只读（仅管理员）
+    {"type": "function", "function": {
+        "name": "get_my_account",
+        "description": ("读取用户的 Bybit 真实账户(只读)：USDT总权益、可用保证金、当前持仓"
+                        "(方向/均价/杠杆/未实现盈亏/爆仓价)。要按真实账户算仓位、单笔风险、"
+                        "是否同向暴露过高、该不该减仓时用。仅管理员可用。"),
         "parameters": {"type": "object", "properties": {}}}},
 ]
 
@@ -118,7 +185,71 @@ async def _tool_exec(name, args):
         from api import get_fear_greed
         fg = await get_fear_greed()
         return f"恐惧贪婪指数 {fg['value']}/100（{fg['classification']}）"
+    # ── 多周期量化分析（Bybit 公开接口 + 服务端算指标）──
+    from handlers import marketdata as md
+    sym = str(args.get("symbol", "")).upper()
+    iv = str(args.get("interval", "15m"))
+    if name == "get_klines":
+        return await md.klines_analysis(sym, iv, args.get("limit"))
+    if name == "get_oi_history":
+        return await md.oi_analysis(sym, iv)
+    if name == "get_funding_history":
+        return await md.funding_analysis(sym)
+    if name == "get_orderbook":
+        return await md.orderbook_analysis(sym, args.get("depth", 200))
+    if name == "get_recent_trades":
+        return await md.trades_analysis(sym, args.get("limit", 500))
+    if name == "get_market_context":
+        return await md.market_context()
+    if name == "get_liquidations":
+        return await md.liquidation_analysis(sym)
     return f"未知工具 {name}"
+
+
+async def _account_snapshot():
+    """只读账户快照：权益 + 持仓（给 AI 算真实仓位/风险用）。"""
+    from handlers.rtrade import _client, _fmt, _env_tag
+    client = _client()
+    out = [f"【真实账户 {_env_tag()}】"]
+    try:
+        bal = await client.wallet_balance("USDT")
+        out.append(f"总权益 {bal.get('totalEquity','?')} USDT｜可用 {bal.get('totalAvailableBalance','?')} USDT"
+                   f"｜未实现盈亏 {bal.get('totalPerpUPL','?')}")
+    except Exception as e:
+        out.append(f"查余额失败：{str(e)[:60]}")
+    try:
+        ps = await client.positions_all()
+        if not ps:
+            out.append("当前无持仓")
+        else:
+            total = 0.0
+            for p in ps:
+                upnl = float(p.get("unrealisedPnl", 0) or 0)
+                total += upnl
+                side = "多" if p.get("side") == "Buy" else "空"
+                out.append(f"{p.get('symbol')} {side} {p.get('leverage')}x｜数量 {p.get('size')}"
+                           f"｜均价 {_fmt(p.get('avgPrice'))}｜标记 {_fmt(p.get('markPrice'))}"
+                           f"｜浮盈 {upnl:+.2f}｜爆仓价 {_fmt(p.get('liqPrice')) if p.get('liqPrice') else '—'}")
+            out.append(f"合计浮盈 {total:+.2f} USDT")
+    except Exception as e:
+        out.append(f"查持仓失败：{str(e)[:60]}")
+    return "\n".join(out)
+
+
+def _make_exec(update, context):
+    """按调用者身份包一层：账户类工具仅管理员可用，其余走公开数据工具。"""
+    async def _exec(name, args):
+        if name == "get_my_account":
+            from config import is_admin
+            uid = update.effective_user.id if update.effective_user else 0
+            if not is_admin(uid):
+                return "（无权限：只有管理员能查询真实账户）"
+            try:
+                return await _account_snapshot()
+            except RuntimeError:
+                return "（未配置 Bybit API 密钥，拿不到账户数据）"
+        return await _tool_exec(name, args)
+    return _exec
 
 
 def _history(context):
@@ -141,7 +272,7 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
     try:
         # 优先带工具调用（能查实时数据）；工具链路异常则降级为纯对话
         try:
-            reply = await ask_ai_tools(hist, TOOLS, _tool_exec, system=SYSTEM)
+            reply = await ask_ai_tools(hist, TOOLS, _make_exec(update, context), system=SYSTEM)
         except Exception as te:
             log.warning(f"工具对话失败，降级纯对话: {te}")
             reply = await ask_ai_messages(hist, system=SYSTEM)

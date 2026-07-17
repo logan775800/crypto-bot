@@ -54,7 +54,7 @@ async def _chat_completion(msgs, tools=None, temperature=0.7, timeout=70):
 
 
 async def ask_ai_tools(messages, tools, tool_executor, system=None,
-                       temperature=0.7, max_rounds=4):
+                       temperature=0.7, max_rounds=7):
     """带函数调用的多轮对话。tools=OpenAI function schema 列表；
     tool_executor(name, args)->str 执行工具并返回文本结果。
     循环：模型请求→若返回 tool_calls 则执行并回填→直到出最终文本或到 max_rounds。
@@ -80,7 +80,7 @@ async def ask_ai_tools(messages, tools, tool_executor, system=None,
                 logging.error(f"工具 {name} 执行出错: {e}")
                 result = f"（工具 {name} 出错：{str(e)[:80]}）"
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""),
-                         "content": str(result)[:2500]})
+                         "content": str(result)[:4000]})
     # 到达轮次上限：最后不带 tools 强制出文本总结
     m = await _chat_completion(msgs, tools=None, temperature=temperature)
     return m.get("content") or "（没能得出结论，换个问法试试）"

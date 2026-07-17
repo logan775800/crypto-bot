@@ -426,8 +426,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ============ 技术分析 ============
     elif d == "cat_analysis":
-        await query.edit_message_text("📈 *技术分析* - 点币种做综合分析：\n(RSI+均线+MACD+布林带)",
-            reply_markup=coin_grid("doanalyze", "menu_main"), parse_mode="Markdown")
+        kb = coin_grid("doanalyze", "menu_main")
+        # 在币种网格上方插一行「标注图表」入口（网格本身按 action 前缀走 doanalyze）
+        rows = list(kb.inline_keyboard)
+        rows.insert(0, [InlineKeyboardButton("📐 标注图表(结构位+止损带画在图上)",
+                                            callback_data="ac_help")])
+        await query.edit_message_text(
+            "📈 *技术分析* - 点币种做综合分析：\n(RSI+均线+MACD+布林带)",
+            reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+
+    elif d == "ac_help":
+        await safe_edit(query,
+            "📐 *标注图表*——把结构位画在图上，不用对着数字脑补\n\n"
+            "`/achart BTC`　默认 1h\n"
+            "`/achart SOL 15m`　周期 5m/15m/30m/1h/4h/1d\n\n"
+            "图上标：🟡EMA20 🔵EMA50 🟣EMA200、⬛摆动高低点(结构失效位=止损该放的地方)、"
+            "🔴前高🟢前低(流动性区=止盈参考)、⚪VWAP、🟠1.5×ATR止损带。\n"
+            "出图后可点【🤖 AI 解读这张图】。",
+            reply_markup=back_to("cat_analysis"), parse_mode="Markdown")
 
     elif d.startswith("doanalyze:"):
         symbol = d.split(":")[1]
@@ -1299,6 +1315,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 只弹 toast 不重渲染——重渲染要重扫全市场，为了一个订阅开关不值得
         from handlers import fundextreme
         await fundextreme.sub_from_btn(query, context, d.split(":", 1)[1])
+
+    # ---- 标注图表：切周期 / AI 解读 ----
+    elif d.startswith("ac:"):
+        from handlers import annotchart
+        _, sym, iv = d.split(":")
+        await annotchart.from_btn(query, context, sym, iv)
+    elif d.startswith("acai:"):
+        from handlers import annotchart
+        _, sym, iv = d.split(":")
+        await annotchart.ai_from_btn(query, context, sym, iv)
 
     # ---- 条件提醒用法卡（条件语法太自由，设置仍走命令）----
     elif d == "cond_help":

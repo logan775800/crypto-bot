@@ -131,76 +131,57 @@ async def unsub_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("你还没订阅")
 
-# 定时推送（job调用）
-async def push_news(context: ContextTypes.DEFAULT_TYPE):
-    _ndata.setdefault("news_subs", [])
-    if not _ndata["news_subs"]:
-        return
-    _ndata.setdefault("pushed_news", [])
+# ===== 持仓币新闻优先 =====
+# 与你有仓的币相关的新闻，比「又一条大盘快讯」重要得多——排最前 + 🔥 标出来。
+# 币名匹配用词边界，否则 ETH 会命中 "ETHEREUM"/"together"、SUI 会命中 "suit"。
+_STOP_SYMS = {"USDT", "USDC", "DAI", "BUSD"}     # 稳定币不值得当持仓关键词
 
+
+async def held_symbols():
+    """当前「我关心的币」= Bybit 实盘持仓 ∪ 虚拟持仓 ∪ 记账持仓。
+    任一来源失败都不影响其它（拿不到就当没有，新闻照推）。"""
+    syms = set()
     try:
-        items = await fetch_news(8)
-        if not items:
-            return
-        # 去重：只推没推过的（用链接判断）
-        pushed = set(_ndata["pushed_news"])
-        new_items = [it for it in items if it["link"] not in pushed]
-        if not new_items:
-            return  # 没有新新闻
-        new_items = new_items[:5]  # 一次最多推5条
-
-        # AI翻译
-        cn_titles = await translate_news(new_items)
-
-        lines = ["📰 *最新加密新闻*\n"]
-        for i, it in enumerate(new_items, 1):
-            title = sanitize_link_text(cn_titles.get(i, it["title"]) if cn_titles else it["title"])
-            lines.append(f"{i}. [{title}]({it['link']})")
-        lines.append("\n📎 来源: Cointelegraph")
-        text = "\n".join(lines)
-
-        for chat_id in _ndata["news_subs"]:
-            try:
-                await context.bot.send_message(chat_id=chat_id, text=text,
-                    parse_mode="Markdown", disable_web_page_preview=True)
-            except Exception as e:
-                logging.error(f"新闻推送失败 {chat_id}: {e}")
-
-        # 记录已推送（保留最近100条链接，避免无限增长）
-        _ndata["pushed_news"].extend(it["link"] for it in new_items)
-        _ndata["pushed_news"] = _ndata["pushed_news"][-100:]
-        _nsave()
+        from handlers.rtrade import _client
+        for p in await _client().positions_all():
+            s = (p.get("symbol") or "").replace("USDT", "")
+            if s:
+                syms.add(s.upper())
+    except Exception as e:      # 没配密钥/接口挂了都走这里，静默
+        logging.debug(f"新闻优先：取实盘持仓跳过（{str(e)[:60]}）")
+    try:
+        for acct in (_ndata.get("vtrade") or {}).values():
+            for s in (acct.get("positions") or {}):
+                syms.add(str(s).replace("USDT", "").upper())
     except Exception as e:
-        logging.error(f"新闻定时推送出错: {e}")
+        logging.debug(f"新闻优先：取虚拟持仓跳过（{e}）")
+    try:
+        for holds in (_ndata.get("holdings") or {}).values():
+            for s in (holds or {}):
+                syms.add(str(s).upper())
+    except Exception as e:
+        logging.debug(f"新闻优先：取记账持仓跳过（{e}）")
+    return {s for s in syms if s and s not in _STOP_SYMS and len(s) >= 2}
 
 
-# ===== 新闻定时推送 =====
-from storage import data as _ndata, save_data as _nsave
+def match_syms(text, syms):
+    """标题/摘要里提到了哪些持仓币。整词匹配，避免 ETH↔ethereum 之外的误伤。"""
+    if not syms or not text:
+        return []
+    up = text.upper()
+    hit = []
+    for s in syms:
+        if re.search(r"(?<![A-Z0-9])" + re.escape(s) + r"(?![A-Z0-9])", up):
+            hit.append(s)
+    return sorted(hit)
 
-async def sub_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    _ndata.setdefault("news_subs", [])
-    if chat_id in _ndata["news_subs"]:
-        await update.message.reply_text("已订阅新闻推送 ✅")
-        return
-    _ndata["news_subs"].append(chat_id)
-    _nsave()
-    await update.message.reply_text(
-        "✅ 已订阅加密新闻推送！\n\n"
-        "• 每小时推送最新新闻到这里\n"
-        "• 中文标题，点开看原文\n\n"
-        "取消用 /unsubnews"
-    )
 
-async def unsub_news(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    _ndata.setdefault("news_subs", [])
-    if chat_id in _ndata["news_subs"]:
-        _ndata["news_subs"].remove(chat_id)
-        _nsave()
-        await update.message.reply_text("已取消新闻推送")
-    else:
-        await update.message.reply_text("你还没订阅")
+def prioritize(items, syms):
+    """命中持仓币的排前面，并挂上 hits 字段。同组内保持原有时间顺序（稳定排序）。"""
+    for it in items:
+        it["hits"] = match_syms(f"{it.get('title','')} {it.get('desc','')}", syms)
+    return sorted(items, key=lambda x: not x["hits"])
+
 
 # 定时推送（job调用）
 async def push_news(context: ContextTypes.DEFAULT_TYPE):
@@ -218,15 +199,24 @@ async def push_news(context: ContextTypes.DEFAULT_TYPE):
         new_items = [it for it in items if it["link"] not in pushed]
         if not new_items:
             return  # 没有新新闻
-        new_items = new_items[:5]  # 一次最多推5条
+
+        # 持仓相关的排前面，再截断——否则正好被截掉的可能就是最该看的那条
+        syms = await held_symbols()
+        new_items = prioritize(new_items, syms)[:5]
 
         # AI翻译
         cn_titles = await translate_news(new_items)
 
-        lines = ["📰 *最新加密新闻*\n"]
+        held = [it for it in new_items if it["hits"]]
+        lines = ["📰 *最新加密新闻*"]
+        if held:
+            lines.append(f"🔥 有 {len(held)} 条与你的持仓相关\n")
+        else:
+            lines.append("")
         for i, it in enumerate(new_items, 1):
             title = sanitize_link_text(cn_titles.get(i, it["title"]) if cn_titles else it["title"])
-            lines.append(f"{i}. [{title}]({it['link']})")
+            tag = f"🔥*{'/'.join(it['hits'])}* " if it["hits"] else ""
+            lines.append(f"{i}. {tag}[{title}]({it['link']})")
         lines.append("\n📎 来源: Cointelegraph")
         text = "\n".join(lines)
 

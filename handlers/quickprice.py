@@ -248,6 +248,7 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = InlineKeyboardMarkup([[
             InlineKeyboardButton("🤖 AI解读", callback_data=f"doai:{symbol}"),
             InlineKeyboardButton("📈 深度分析", callback_data=f"doanalyze:{symbol}"),
+            InlineKeyboardButton("📐 标注图", callback_data=f"ac:{symbol}:1h"),
         ]])
         # 完整信息：信息卡 + 蜡烛图/研判 两条消息（永久全自动推送）
         from handlers.detail import send_full_detail

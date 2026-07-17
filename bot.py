@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -28,6 +28,7 @@ HELP_TEXT = (
     "/cond BTC <60000 rsi15m<30 🎯 条件提醒：价格+指标**同时**满足才叫（/conds 管理）\n"
     "/fex 💵 资金费率极端榜（全市场跨所，按结算周期归一日化，标出1h高频费率）\n"
     "/achart BTC 1h 📐 标注图表：EMA/摆动高低点/前高前低/1.5×ATR止损带**画在图上**\n"
+    "/datacheck BANK 🔎 数据体检：各维度取不取得到、数据截至几点、完整度多少\n"
     "/gasalert 15 Gas跌破提醒　/arbwatch 0.8 套利监控\n"
     "/track 0x地址 追踪巨鲸地址　/tracked 我的追踪\n"
     "/portfolio 我的持仓（请私聊使用）\n\n"
@@ -291,6 +292,7 @@ async def post_init(application):
         BotCommand("conds", "🎯 我的条件提醒"),
         BotCommand("fex", "💵 资金费率极端榜(全市场跨所)"),
         BotCommand("achart", "📐 标注图表(结构位+止损带画在图上)"),
+        BotCommand("datacheck", "🔎 数据体检(时间+完整度)"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -349,6 +351,8 @@ def main():
     app.add_handler(CommandHandler("chartanalyze", chart.analyze_chart))
     # 标注图表：结构位/止损带画在图上（任意周期，Bybit永续）
     app.add_handler(CommandHandler("achart", annotchart.achart))
+    # 数据体检：哪些维度取得到、数据几点的（排查「AI说没数据其实是接口挂了」）
+    app.add_handler(CommandHandler("datacheck", datameta.datacheck))
     app.add_handler(CommandHandler("fear", market.fear))
     app.add_handler(CommandHandler("gas", market.gas))
     app.add_handler(CommandHandler("gasalert", market.set_gas_alert))

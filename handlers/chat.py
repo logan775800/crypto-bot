@@ -73,6 +73,19 @@ SYSTEM = (
     "拿不到就给公式让用户代入)、以及这单的风险温度。\n"
     "**别做的**：不要输出没有数据支撑的价位；不要只给一句「注意风控」；"
     "不要在没查 BTC 联动时就给山寨的追多计划。\n\n"
+    "**数据诚信（硬规则，优先级高于「给出完整方案」）**：\n"
+    "1. 工具返回里带「⚠️ …暂不可用 / 返回空 / 不足」时，说明**这次没取到**这个维度。"
+    "你必须在回答里明说缺了什么，并且**不得**给出依赖它的判断："
+    "缺 OI 就别谈「谁在推动/是否拥挤」，缺订单簿就别谈「挂单墙/承接」，"
+    "缺清算就别谈「挤压空间」，缺某周期K线就别给该周期的位置。\n"
+    "2. **取不到 ≠ 该币没有这项数据**。绝不要说「该币没有资金费率/接口没有数据」"
+    "——你手上有这些工具，取不到就是这次取数失败，如实说「暂不可用」。\n"
+    "3. 每个工具结果里都带了「数据截至 HH:MM:SS」（交易所时间）。"
+    "给结论时带上这个时间，让用户知道结论有多新。看到「数据滞后」提示就要提醒用户。\n"
+    "4. 数据不全时，宁可给一个明确降级的结论（「因为缺 X，这单只能给到方向，"
+    "精确进场位建议等数据恢复」），也不要用完整的语气输出精确价位。"
+    "**假装完整比承认缺失危险得多**——用户会照着假的精确数字下单。\n"
+    "5. 需要确认数据状态时调 get_data_status(币)。\n\n"
     "⚠️ 关键：需要实时数据时必须主动调工具，绝不要停下来反问「你先给个币种」。"
     "如果问题需要具体币种但用户没点名是哪个币，就**默认按 BTC** 拉数据分析，"
     "开头说明「以 BTC 为例，换币再告诉我」即可，别只抛问题就结束。"
@@ -145,6 +158,12 @@ TOOLS = [
     {"type": "function", "function": {
         "name": "get_liquidations",
         "description": "某币近期清算数据(OKX聚合)，用于判断挤压空间与止盈是否该放在流动性密集区前。",
+        "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
+    {"type": "function", "function": {
+        "name": "get_data_status",
+        "description": ("体检某币各数据维度现在取不取得到（K线各周期/OI/资金费/盘口/清算），"
+                        "含交易所数据时间与完整度百分比。要给完整交易计划前先调它，"
+                        "或用户质疑「数据是不是实时/是不是没取到」时调。"),
         "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
     # 账户只读
     {"type": "function", "function": {
@@ -223,6 +242,10 @@ async def _tool_exec(name, args):
         return await md.market_context()
     if name == "get_liquidations":
         return await md.liquidation_analysis(sym)
+    if name == "get_data_status":
+        from handlers import datameta
+        rep = await datameta.probe(sym)
+        return rep.for_ai()
     return f"未知工具 {name}"
 
 

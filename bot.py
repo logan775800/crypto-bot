@@ -62,11 +62,15 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         HELP_TEXT, reply_markup=menu.persistent_kb(), parse_mode="Markdown")
 
 async def chat_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/id 显示当前会话的 chat_id（配置审批群等用）"""
+    """/id 显示当前会话的 chat_id + 你是否被当前运行的机器人识别为管理员（排查部署权限用）"""
+    from config import is_admin, ADMIN_IDS
     c = update.effective_chat
     u = update.effective_user
+    admin = "✅ 是" if is_admin(u.id) else "❌ 否"
     await update.message.reply_text(
-        f"本会话 chat_id: `{c.id}`\n类型: {c.type}\n你的 user_id: `{u.id}`",
+        f"本会话 chat_id: `{c.id}`\n类型: {c.type}\n你的 user_id: `{u.id}`\n"
+        f"是否管理员(能否点部署): {admin}\n"
+        f"当前生效的管理员 id: `{', '.join(sorted(ADMIN_IDS)) or '(未配置)'}`",
         parse_mode="Markdown")
 
 async def whois_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

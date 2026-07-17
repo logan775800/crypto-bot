@@ -55,9 +55,10 @@ git reset --hard "$TARGET"
 DEPLOYED=$(git rev-parse --short HEAD)
 echo "==== 目标 commit: $DEPLOYED ===="
 
-# --force-recreate 保证重建容器、重新加载新代码
+# --build：依赖已固化在镜像层，requirements.txt 没变时命中缓存、几乎不耗时；
+#          变了才重装。--force-recreate 保证重建容器、重新加载新代码。
 SINCE=$(date -u +%Y-%m-%dT%H:%M:%S)
-docker compose up -d --force-recreate
+docker compose up -d --build --force-recreate
 
 echo "==== 健康检查(最多约6分钟) ===="
 ok=0

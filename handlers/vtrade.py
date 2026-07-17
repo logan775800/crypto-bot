@@ -6,9 +6,10 @@
 """
 import time
 import logging
+import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from api import get_price, get_prices
+from api import get_price as _cg_price, get_prices as _cg_prices
 from config import COIN_IDS
 from storage import data, save_data
 from handlers.util import safe_reply
@@ -20,6 +21,55 @@ MAX_LEV = 125             # 杠杆上限
 
 def is_group(update: Update):
     return update.effective_chat.type in ("group", "supergroup")
+
+
+# ── 标记价：优先 Bybit USDT 永续（与真实交易一致），查不到才退回 CoinGecko 现货 ──
+_BYBIT_TICKERS = "https://api.bybit.com/v5/market/tickers"
+
+
+async def get_price(symbol):
+    """单币标记价。返回 {price, change} 或 None。优先 Bybit 永续。"""
+    s = symbol.upper()
+    try:
+        async with httpx.AsyncClient(timeout=8) as c:
+            r = await c.get(_BYBIT_TICKERS, params={"category": "linear", "symbol": f"{s}USDT"})
+            d = r.json()
+        lst = (d.get("result") or {}).get("list") or []
+        if d.get("retCode") == 0 and lst:
+            t = lst[0]
+            return {"price": float(t["lastPrice"]),
+                    "change": float(t.get("price24hPcnt") or 0) * 100}
+    except Exception as e:
+        logging.warning(f"vtrade Bybit 取价失败 {s}: {e}")
+    return await _cg_price(s)          # 该币没有 Bybit 永续 → 退回现货
+
+
+async def get_prices(symbols):
+    """批量标记价 {sym: {price, change}}。一次拉 Bybit 全部永续，缺的再用 CoinGecko 补。"""
+    want = {s.upper() for s in symbols}
+    out = {}
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            r = await c.get(_BYBIT_TICKERS, params={"category": "linear"})
+            d = r.json()
+        if d.get("retCode") == 0:
+            for t in (d.get("result") or {}).get("list") or []:
+                sym = t.get("symbol", "")
+                if not sym.endswith("USDT"):
+                    continue
+                base = sym[:-4]
+                if base in want:
+                    out[base] = {"price": float(t["lastPrice"]),
+                                 "change": float(t.get("price24hPcnt") or 0) * 100}
+    except Exception as e:
+        logging.warning(f"vtrade Bybit 批量取价失败: {e}")
+    missing = [s for s in want if s not in out]
+    if missing:
+        try:
+            out.update(await _cg_prices(missing))
+        except Exception as e:
+            logging.warning(f"vtrade CoinGecko 补价失败: {e}")
+    return out
 
 
 def fmt(p):

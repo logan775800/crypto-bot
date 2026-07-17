@@ -6,6 +6,7 @@
 每个会话保留最近若干轮上下文，做到连续对话。纯对话，不查实时数据（会引导用命令查）。
 """
 import re
+import time
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ApplicationHandlerStop
@@ -40,7 +41,8 @@ async def _send(msg, text):
         except Exception as e2:
             log.error(f"AI回复发送失败: {e2}")
 
-MAX_TURNS = 10   # 保留最近 10 轮（20 条）上下文
+MAX_TURNS = 10        # 保留最近 10 轮（20 条）上下文
+AI_DAILY_LIMIT = 40   # 每人每日 AI 调用上限（管理员不限），防群里刷爆中转站额度
 
 SYSTEM = (
     "你是嵌在一个 Telegram 加密行情机器人里的智能交易助手，用简体中文回答。"
@@ -141,7 +143,13 @@ TOOLS = [
         "name": "get_liquidations",
         "description": "某币近期清算数据(OKX聚合)，用于判断挤压空间与止盈是否该放在流动性密集区前。",
         "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
-    # 账户只读（仅管理员）
+    # 账户只读
+    {"type": "function", "function": {
+        "name": "get_my_virtual_positions",
+        "description": ("读取用户的虚拟合约账户(模拟盘)：余额、当前虚拟持仓(方向/入场/杠杆/"
+                        "保证金/理论爆仓价)、历史胜率与累计盈亏。用户问「我这单该不该平」"
+                        "「我虚拟仓怎么样」时用。任何人可查自己的。"),
+        "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
         "name": "get_my_account",
         "description": ("读取用户的 Bybit 真实账户(只读)：USDT总权益、可用保证金、当前持仓"
@@ -236,18 +244,59 @@ async def _account_snapshot():
     return "\n".join(out)
 
 
+def _virtual_snapshot(uid):
+    """该用户的虚拟合约持仓/账户（给 AI 聊「我这单该不该平」用）。"""
+    from handlers.vtrade import _acct, _pnl, _liq, START_BALANCE
+    a = _acct(str(uid))
+    pos = a.get("positions", {})
+    hist = a.get("history", [])
+    out = [f"【虚拟合约账户】可用余额 ${a.get('balance', 0):,.2f}（初始 ${START_BALANCE:,.0f}）"]
+    if not pos:
+        out.append("当前无虚拟持仓")
+    else:
+        out.append("持仓（浮盈需按当前价算，可再调 get_contract/get_klines 取现价）：")
+        for sym, p in pos.items():
+            out.append(f"{sym} {'多' if p['side']=='long' else '空'} {p['lev']:g}x"
+                       f"｜入场 {p['entry']}｜保证金 ${p['margin']:,.2f}"
+                       f"｜仓位 ${p['margin']*p['lev']:,.2f}｜理论爆仓价 {_liq(p):.8g}")
+    if hist:
+        wins = [h for h in hist if h["pnl"] >= 0]
+        out.append(f"历史 {len(hist)} 笔｜胜率 {len(wins)/len(hist)*100:.0f}%"
+                   f"｜累计盈亏 {sum(h['pnl'] for h in hist):+,.2f}")
+    return "\n".join(out)
+
+
+def _ai_quota_ok(context, uid):
+    """AI 每人每日调用上限，防群里刷爆中转站额度。管理员不限。"""
+    from config import is_admin
+    if is_admin(uid):
+        return True, 0
+    today = time.strftime("%Y-%m-%d")
+    q = context.user_data.get("ai_quota") or {}
+    if q.get("date") != today:
+        q = {"date": today, "count": 0}
+    if q["count"] >= AI_DAILY_LIMIT:
+        context.user_data["ai_quota"] = q
+        return False, q["count"]
+    q["count"] += 1
+    context.user_data["ai_quota"] = q
+    return True, q["count"]
+
+
 def _make_exec(update, context):
-    """按调用者身份包一层：账户类工具仅管理员可用，其余走公开数据工具。"""
+    """按调用者身份包一层：账户类工具需鉴权，其余走公开数据工具。"""
     async def _exec(name, args):
+        uid = update.effective_user.id if update.effective_user else 0
         if name == "get_my_account":
             from config import is_admin
-            uid = update.effective_user.id if update.effective_user else 0
             if not is_admin(uid):
                 return "（无权限：只有管理员能查询真实账户）"
             try:
                 return await _account_snapshot()
             except RuntimeError:
-                return "（未配置 Bybit API 密钥，拿不到账户数据）"
+                return "（未配置 Bybit API 密钥，拿不到真实账户数据；可改用虚拟盘 get_my_virtual_positions）"
+        if name == "get_my_virtual_positions":
+            return _virtual_snapshot(uid)
         return await _tool_exec(name, args)
     return _exec
 
@@ -259,6 +308,13 @@ def _history(context):
 async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str):
     if not AI_API_KEY or not AI_BASE_URL:
         await safe_reply(update.message, "AI 未配置（缺 AI_API_KEY / AI_BASE_URL）")
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    ok, used = _ai_quota_ok(context, uid)
+    if not ok:
+        await safe_reply(update.message,
+            f"🚦 你今天的 AI 提问已达上限（{AI_DAILY_LIMIT} 次），明天恢复。\n"
+            f"（行情类命令 /price /analyze /watchpct 等不受影响）")
         return
     hist = _history(context)
     hist.append({"role": "user", "content": user_text})

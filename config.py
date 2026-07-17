@@ -1,7 +1,7 @@
 import os
 
 # 当前代码版本（每次发布 tag 时同步 bump，/version 用它报告线上到底跑的是哪版）
-VERSION = "v1.0.77"
+VERSION = "v1.0.78"
 
 TOKEN = os.environ["BOT_TOKEN"]
 DATA_FILE = "/app/data.json"

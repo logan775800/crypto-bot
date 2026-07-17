@@ -1,6 +1,9 @@
 services:
   crypto-bot:
-    image: python:3.11-slim
+    # 用本仓库的 Dockerfile 预装依赖(pip 固化在镜像层)，容器启动时不再现装。
+    # requirements.txt 没变时 Docker 层缓存直接命中 → 部署由「几分钟」降到「秒级」。
+    build: .
+    image: crypto-bot:local
     container_name: crypto-bot
     restart: unless-stopped
     working_dir: /app
@@ -23,5 +26,5 @@ services:
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
       BYBIT_TESTNET: ${BYBIT_TESTNET:-true}
       TZ: Asia/Shanghai
-    command: >
-      bash -c "pip install --no-cache-dir -r requirements.txt && python bot.py"
+    # 依赖已在镜像里，直接跑；源码仍由 ./:/app 挂载提供（改代码不必重建镜像）
+    command: python bot.py

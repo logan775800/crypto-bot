@@ -55,10 +55,22 @@ git reset --hard "$TARGET"
 DEPLOYED=$(git rev-parse --short HEAD)
 echo "==== 目标 commit: $DEPLOYED ===="
 
-# --build：依赖已固化在镜像层，requirements.txt 没变时命中缓存、几乎不耗时；
-#          变了才重装。--force-recreate 保证重建容器、重新加载新代码。
+# 依赖已固化在镜像层：requirements.txt 没变时 build 命中缓存、几乎不耗时，变了才重装。
+echo "==== 构建镜像 ===="
+docker compose build || { echo "❌ 镜像构建失败，回滚代码"; git reset --hard "$PREV"; exit 1; }
+
+# 先跑单元测试再动运行中的容器：不过就中止 + 把代码回退回去，线上完全不受影响。
+# 用 docker run（而非 compose run）避免与 container_name 撞名。
+echo "==== 单元测试 ===="
+docker run --rm -v "$PWD":/app -w /app crypto-bot:local python -m pytest -q tests/ || {
+    echo "❌ 单元测试未通过，中止部署（运行中的容器未改动），代码回退到 $PREV"
+    git reset --hard "$PREV"
+    exit 1
+}
+
+# --force-recreate 保证重建容器、重新加载新代码
 SINCE=$(date -u +%Y-%m-%dT%H:%M:%S)
-docker compose up -d --build --force-recreate
+docker compose up -d --force-recreate
 
 echo "==== 健康检查(最多约6分钟) ===="
 ok=0

@@ -73,6 +73,17 @@ async def chat_id_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"当前生效的管理员 id: `{', '.join(sorted(ADMIN_IDS)) or '(未配置)'}`",
         parse_mode="Markdown")
 
+async def prune_job(context: ContextTypes.DEFAULT_TYPE):
+    """每日清理 data.json 里只增不减的冷却/去重记录，避免文件越写越大越慢。"""
+    from storage import prune_data
+    try:
+        removed = prune_data()
+        if removed:
+            logging.info(f"data.json 清理: {removed}")
+    except Exception as e:
+        logging.error(f"data.json 清理失败: {e}")
+
+
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     """全局错误处理：任何 handler 未捕获的异常都记日志 + 私信管理员，
     避免像以前那样「功能静默失效、只能靠用户截图才发现」。"""
@@ -433,6 +444,7 @@ def main():
     jq.run_repeating(news.push_news, interval=3600, first=120)  # 新闻推送
     jq.run_repeating(unlock.check_unlocks, interval=86400, first=180)  # 解锁检查，每天
     jq.run_repeating(backup.auto_backup, interval=86400, first=60)  # 每天自动备份
+    jq.run_repeating(prune_job, interval=86400, first=300)  # 每天清理 data.json 冗余(冷却/去重/历史封顶)
     jq.run_repeating(monitor.health_check, interval=300, first=120)  # 数据源健康检查，每5分钟
     jq.run_repeating(portfolio.check_holding_moves, interval=900, first=90)  # 持仓异动检查，每15分钟
     jq.run_repeating(market.check_gas_alerts, interval=300, first=100)  # Gas阈值提醒，每5分钟

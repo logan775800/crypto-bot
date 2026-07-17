@@ -49,6 +49,68 @@ data.setdefault("watchpct", [])         # 持续波动监控 [{chat_id,symbol,pc
 data.setdefault("vtrade", {})           # 虚拟合约交易 {uid: {balance, positions{sym:{...}}, history[], chat_id}}
 data.setdefault("rtrade_alert", {})     # 实盘爆仓预警 {enabled, threshold, chat_id, cooldown{sym:ts}}
 
+def prune_data(now=None):
+    """治理 data.json 无限增长：清掉过期冷却/去重记录、给历史类列表封顶。
+    每次 save_data 都是全量重写 JSON，文件越大越慢越危险，所以定期修剪。
+    返回 {字段: 清掉的条数}。"""
+    import time as _t
+    now = now or _t.time()
+    removed = {}
+
+    def _drop_old_ts(key, max_age):
+        """{k: 时间戳} 形式的冷却字典。"""
+        d = data.get(key)
+        if not isinstance(d, dict):
+            return
+        old = [k for k, v in d.items() if isinstance(v, (int, float)) and now - v > max_age]
+        for k in old:
+            d.pop(k, None)
+        if old:
+            removed[key] = len(old)
+
+    _drop_old_ts("alerted_coins", 7 * 86400)      # 现货异动告警冷却
+    _drop_old_ts("contract_alerted", 2 * 86400)   # 合约告警推送冷却
+    _drop_old_ts("arb_alerted", 7 * 86400)        # 套利告警冷却
+
+    # 合约分档记录：48h 未更新的丢弃
+    tiers = data.get("contract_tiers")
+    if isinstance(tiers, dict):
+        old = [k for k, v in tiers.items()
+               if isinstance(v, dict) and now - v.get("ts", 0) > 2 * 86400]
+        for k in old:
+            tiers.pop(k, None)
+        if old:
+            removed["contract_tiers"] = len(old)
+
+    # 已推新闻链接去重表：只留最近 500 条
+    for key, cap in (("pushed_news", 500), ("alerted_unlocks", 500)):
+        lst = data.get(key)
+        if isinstance(lst, list) and len(lst) > cap:
+            removed[key] = len(lst) - cap
+            data[key] = lst[-cap:]
+
+    # 虚拟合约历史：每人只留最近 200 笔
+    for uid, acct in (data.get("vtrade") or {}).items():
+        h = acct.get("history") if isinstance(acct, dict) else None
+        if isinstance(h, list) and len(h) > 200:
+            removed[f"vtrade[{uid}].history"] = len(h) - 200
+            acct["history"] = h[-200:]
+
+    # 实盘爆仓预警冷却
+    ra = data.get("rtrade_alert")
+    if isinstance(ra, dict) and isinstance(ra.get("cooldown"), dict):
+        cd = ra["cooldown"]
+        old = [k for k, v in cd.items() if now - v > 2 * 86400]
+        for k in old:
+            cd.pop(k, None)
+        if old:
+            removed["rtrade_alert.cooldown"] = len(old)
+
+    if removed:
+        save_data()
+    return removed
+
+
 def migrate_chat(old, new):
     """群升级为超级群时 chat_id 会变（旧 id 从此推送 400），把所有订阅从旧 id 搬到新 id。
     覆盖各类结构：id列表 / 带chat_id的字典列表 / 以chat_id为键的字典 / 值是chat_id的字段。

@@ -51,11 +51,25 @@ def get_tier(change_abs):
     return tier
 
 
+def _upgrade_rec(rec):
+    """兼容旧格式 {tier,dir,ts} → 新格式 {up:最高档, down:最高档, ts}。
+    旧格式只记单一方向，方向一翻就得整条作废，是之前反复重报的根因。"""
+    if not rec:
+        return {}
+    if "tier" in rec and "dir" in rec:
+        return {rec["dir"]: rec["tier"], "ts": rec.get("ts", 0)}
+    return rec
+
+
 def eval_tier_cross(ex_name, sym, change, now=None):
-    """判断某(交易所,币)的当前涨跌幅是否升到了更高台阶。
+    """判断某币当前涨跌幅是否升到了**该方向上**更高的台阶。
 
     命中返回要告警的台阶(int)并更新 data["contract_tiers"]；否则返回 None。
-    WS 实时与 REST 轮询共用此函数 → 同一套去重，绝不重复。
+    WS 实时与 REST 轮询共用此函数 → 同一套去重。
+
+    记录格式 {sym: {"up": 最高档, "down": 最高档, "ts": 时间}}：
+    **按方向各自记最高档**，所以某个源瞬时报出反向读数时，不会把原方向的记录清掉
+    （旧实现会 pop 整条 → 下一轮又被当成"首次穿档"重报，KORU 那次刷屏就是这么来的）。
     """
     if now is None:
         now = time.time()
@@ -64,33 +78,33 @@ def eval_tier_cross(ex_name, sym, change, now=None):
     change_abs = abs(change)
     direction = "up" if change > 0 else "down"
     key = sym                    # 只按币去重：同一个币在多所同时异动＝一个事件，只报一次
-    rec = tiers.get(key)
+    rec = _upgrade_rec(tiers.get(key))
 
-    # 记录已反向 或 已过期(24h) → 作废，视为无记录
-    if rec and (rec["dir"] != direction or now - rec["ts"] > TIER_RESET):
-        tiers.pop(key, None)
-        rec = None
+    # 过期(24h)：整条作废，允许重新计档
+    if rec and now - rec.get("ts", 0) > TIER_RESET:
+        rec = {}
 
     # 明显回落到迟滞带以下(< 最低档-迟滞) → 解除武装，清记录，之后重新穿越才再报
     if change_abs < TIERS[0] - HYSTERESIS:
-        if key in tiers:
-            tiers.pop(key, None)
+        tiers.pop(key, None)
         return None
 
     # 处于迟滞带或未达最低档(如 17~20%) → 不报；有记录则续命时间戳，别过期
     if change_abs < TIERS[0]:
         if rec:
             rec["ts"] = now
+            tiers[key] = rec
         return None
 
     tier = get_tier(change_abs)
-    prev = rec["tier"] if rec else 0
-    if tier > prev:                       # 仅升到更高台阶才报（同档抖动不再重复）
-        tiers[key] = {"tier": tier, "dir": direction, "ts": now}
+    prev = rec.get(direction, 0)
+    rec["ts"] = now
+    if tier > prev:                       # 仅在该方向升到更高台阶才报（同档/反向抖动不再重复）
+        rec[direction] = tier
+        tiers[key] = rec
         return tier
 
-    if rec:                               # 同档/回落但仍在高位：续命，不报
-        rec["ts"] = now
+    tiers[key] = rec                      # 同档/回落但仍在高位：续命，不报
     return None
 
 

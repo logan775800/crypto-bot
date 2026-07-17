@@ -3,3 +3,4 @@ httpx
 websockets
 matplotlib
 mplfinance
+pytest          # 部署前在镜像里跑单元测试(build→test→deploy)，测试不过不上线

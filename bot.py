@@ -3,7 +3,7 @@ import datetime
 from telegram import Update
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    filters, ContextTypes
+    filters, ContextTypes, PicklePersistence
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
@@ -183,7 +183,11 @@ async def post_init(application):
         logging.error(f"启动合约实时告警失败: {e}")
 
 def main():
-    app = Application.builder().token(TOKEN).post_init(post_init).build()
+    # 持久化：把 user_data/chat_data(等待输入态、AI会话、AI对话上下文)存盘，
+    # 重启/部署也不丢——按钮引导流程(设监控/预警/开仓)不再因重启失效。
+    # 文件放 /app（与 data.json 同为宿主机绑定挂载，force-recreate 不丢）。
+    persistence = PicklePersistence(filepath="/app/ptb_persistence.pickle")
+    app = Application.builder().token(TOKEN).persistence(persistence).post_init(post_init).build()
 
     # 基础
     app.add_handler(CommandHandler("start", start))

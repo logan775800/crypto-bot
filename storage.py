@@ -48,6 +48,8 @@ data.setdefault("grids", {})            # Bybit 永续网格 {chat_id:symbol: {�
 data.setdefault("watchpct", [])         # 持续波动监控 [{chat_id,symbol,pct,base,src,last_ts}]
 data.setdefault("vtrade", {})           # 虚拟合约交易 {uid: {balance, positions{sym:{...}}, history[], chat_id}}
 data.setdefault("rtrade_alert", {})     # 实盘爆仓预警 {enabled, threshold, chat_id, cooldown{sym:ts}}
+data.setdefault("riskguard", {})        # 风险守护 {enabled, chat_id, checks{}, mmr/daily/conc/btc_drop 阈值, cooldown{}, day{date,start,fired}}
+data.setdefault("brief", {})            # AI盘前简报每日推送 {enabled, chat_id}
 
 def prune_data(now=None):
     """治理 data.json 无限增长：清掉过期冷却/去重记录、给历史类列表封顶。
@@ -96,15 +98,17 @@ def prune_data(now=None):
             removed[f"vtrade[{uid}].history"] = len(h) - 200
             acct["history"] = h[-200:]
 
-    # 实盘爆仓预警冷却
-    ra = data.get("rtrade_alert")
-    if isinstance(ra, dict) and isinstance(ra.get("cooldown"), dict):
-        cd = ra["cooldown"]
-        old = [k for k, v in cd.items() if now - v > 2 * 86400]
-        for k in old:
-            cd.pop(k, None)
-        if old:
-            removed["rtrade_alert.cooldown"] = len(old)
+    # 实盘爆仓预警 / 风险守护 冷却
+    for key in ("rtrade_alert", "riskguard"):
+        ra = data.get(key)
+        if isinstance(ra, dict) and isinstance(ra.get("cooldown"), dict):
+            cd = ra["cooldown"]
+            old = [k for k, v in cd.items()
+                   if isinstance(v, (int, float)) and now - v > 2 * 86400]
+            for k in old:
+                cd.pop(k, None)
+            if old:
+                removed[f"{key}.cooldown"] = len(old)
 
     if removed:
         save_data()
@@ -152,10 +156,11 @@ def migrate_chat(old, new):
             moved += 1
 
     # 5) 内嵌 chat_id 字段
-    ra = data.get("rtrade_alert", {})
-    if isinstance(ra, dict) and ra.get("chat_id") in old_set:
-        ra["chat_id"] = new
-        moved += 1
+    for key in ("rtrade_alert", "riskguard", "brief"):
+        ra = data.get(key, {})
+        if isinstance(ra, dict) and ra.get("chat_id") in old_set:
+            ra["chat_id"] = new
+            moved += 1
     for acct in data.get("vtrade", {}).values():
         if isinstance(acct, dict) and acct.get("chat_id") in old_set:
             acct["chat_id"] = new

@@ -57,6 +57,9 @@ SYSTEM = (
     "- get_market_context()：BTC/ETH 多周期 + 情绪\n"
     "- get_liquidations(币)：清算密集/挤压空间\n"
     "- get_my_account()：用户真实 Bybit 账户（权益/持仓/杠杆/爆仓价，仅管理员）\n"
+    "- get_my_trade_stats(天数)：用户真实**历史成绩单**（胜率/盈亏比/期望值/最大回撤/"
+    "按币·多空·持仓时长·时段拆解的盈亏）。问「我最近怎么样」「我亏在哪」「帮我复盘」"
+    "「我这打法行不行」时必调，别凭感觉评价（仅管理员）\n"
     "- get_price / get_contract / get_top_movers / get_fear_greed：快速报价与榜单\n\n"
     "**分析交易计划时的标准流程**（别偷懒只调一个）：\n"
     "1) get_market_context() 看 BTC/ETH 风险——BTC 15m/1h 破位时，山寨多头计划要降仓或取消；\n"
@@ -156,6 +159,15 @@ TOOLS = [
                         "(方向/均价/杠杆/未实现盈亏/爆仓价)。要按真实账户算仓位、单笔风险、"
                         "是否同向暴露过高、该不该减仓时用。仅管理员可用。"),
         "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "get_my_trade_stats",
+        "description": ("读取用户 Bybit 真实账户的**历史成绩单**(只读)：胜率、盈亏比、每笔期望值、"
+                        "最大回撤、连亏、并按币种/多空方向/持仓时长/平仓时段拆解盈亏，含资金费净支出。"
+                        "用户问「我最近怎么样」「我亏在哪」「我是不是在追高」「帮我复盘」，"
+                        "或要评价他的打法/给改进建议时**必须**调这个——别凭感觉说。仅管理员可用。"),
+        "parameters": {"type": "object", "properties": {
+            "days": {"type": "integer",
+                     "description": "回溯天数，默认30。样本太少可放大到90"}}}}},
 ]
 
 
@@ -244,6 +256,17 @@ async def _account_snapshot():
     return "\n".join(out)
 
 
+async def _stats_snapshot(days=30):
+    """真实账户历史成绩单（给 AI 做复盘用）。复用 /rstats 的统计口径，
+    只丢统计结论不丢原始几百笔——省 token，模型也算不准。"""
+    from handlers.rstats import _load, build_ai_digest, MAX_DAYS
+    days = max(1, min(int(days or 30), MAX_DAYS))
+    trades, fund = await _load(days)
+    if not trades:
+        return f"【真实账户成绩单】近{days}天没有已平仓记录（样本为空，别硬下结论）"
+    return "【真实账户成绩单】\n" + build_ai_digest(trades, days, fund)
+
+
 def _virtual_snapshot(uid):
     """该用户的虚拟合约持仓/账户（给 AI 聊「我这单该不该平」用）。"""
     from handlers.vtrade import _acct, _pnl, _liq, START_BALANCE
@@ -295,6 +318,16 @@ def _make_exec(update, context):
                 return await _account_snapshot()
             except RuntimeError:
                 return "（未配置 Bybit API 密钥，拿不到真实账户数据；可改用虚拟盘 get_my_virtual_positions）"
+        if name == "get_my_trade_stats":
+            from config import is_admin
+            if not is_admin(uid):
+                return "（无权限：只有管理员能查询真实账户成绩单）"
+            try:
+                return await _stats_snapshot(int(args.get("days") or 30))
+            except RuntimeError:
+                return "（未配置 Bybit API 密钥，拿不到历史成绩单）"
+            except Exception as e:
+                return f"（拉取成绩单失败：{str(e)[:80]}）"
         if name == "get_my_virtual_positions":
             return _virtual_snapshot(uid)
         return await _tool_exec(name, args)

@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -35,7 +35,11 @@ HELP_TEXT = (
     "/trade 🎛 交易台——点按钮开仓/平仓/改止损/预警，记不住命令就用它\n"
     "/ropen BTC long 1000 10 62000 sl=60000 tp=68000 限价开仓(带止盈损,弹确认)\n"
     "　└ /rclose BTC 平仓　/rpos 实盘持仓　/rbal 余额　/rorders /rcancel 挂单\n"
-    "　└ /rtpsl BTC tp= sl= 改止盈止损　/rliqalert 5 爆仓预警\n\n"
+    "　└ /rtpsl BTC tp= sl= 改止盈止损　/rliqalert 5 爆仓预警\n"
+    "/rstats 30 实盘复盘：胜率/盈亏比/期望值/最大回撤，按币·多空·持仓时长·时段拆解\n"
+    "　└ `/rstats 30 ai` 让 AI 从数字里挑出你的行为漏洞（这是唯一能提升胜率的功能）\n"
+    "/risk 🛡 风险守护：保证金率/同向集中度/当日亏损熔断/裸奔仓位/BTC破位联动\n"
+    "/brief 🌅 AI 盘前简报：市场结构+资金费极值+**你每个仓的具体风险点**（可订阅每天8:30）\n\n"
     "*盯盘 / 合约*\n"
     "/watchpct BTC 2 持续波动监控，涨跌超±2%就提醒（报后自动续盯）\n"
     "　└ 加「合约」盯永续价，如 `/watchpct LAB 2 合约`（OKX/Bybit永续秒级实时）\n"
@@ -277,6 +281,9 @@ async def post_init(application):
         BotCommand("rclose", "🔴 实盘平仓(Bybit)"),
         BotCommand("rpos", "🔴 实盘持仓(Bybit)"),
         BotCommand("rbal", "🔴 实盘合约余额(Bybit)"),
+        BotCommand("rstats", "📊 实盘复盘成绩单(胜率/期望值)"),
+        BotCommand("risk", "🛡 风险守护(熔断/集中度/裸奔仓)"),
+        BotCommand("brief", "🌅 AI盘前简报(结合你的持仓)"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -380,6 +387,10 @@ def main():
     app.add_handler(CommandHandler("rtpsl", rtrade.rtpsl))
     app.add_handler(CommandHandler("rliqalert", rtrade.rliqalert))
     app.add_handler(CommandHandler("trade", rtrade.trade))
+    # 实盘复盘 / 风险守护 / 盘前简报（都读真实账户，管理员+私聊）
+    app.add_handler(CommandHandler("rstats", rstats.rstats))
+    app.add_handler(CommandHandler("risk", riskguard.risk))
+    app.add_handler(CommandHandler("brief", brief.brief))
     # 播报（功能1）
     app.add_handler(CommandHandler("subscribe", broadcast.subscribe))
     app.add_handler(CommandHandler("unsubscribe", broadcast.unsubscribe))
@@ -454,10 +465,12 @@ def main():
     jq.run_repeating(watchpct.check_watchpct, interval=60, first=35)  # 持续波动监控，每60秒
     jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
     jq.run_repeating(rtrade.check_liq_alerts, interval=60, first=55)  # 实盘爆仓临近预警，每60秒
+    jq.run_repeating(riskguard.check_risk, interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))
     jq.run_daily(summary.daily_summary, time=datetime.time(hour=0, minute=0))  # 每日总结，北京8点
+    jq.run_daily(brief.daily_brief, time=datetime.time(hour=0, minute=30))  # AI盘前简报，北京8:30（job时间是UTC）
     jq.run_daily(
         broadcast.daily_broadcast,
         time=datetime.time(hour=BROADCAST_HOUR, minute=BROADCAST_MINUTE)

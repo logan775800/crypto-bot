@@ -1179,6 +1179,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         env = "🧪 当前模拟盘(testnet)" if _is_testnet() else "🔴 当前实盘(动真钱)"
         rtkb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🎛 打开交易台（推荐，点按钮操作）", callback_data="tpanel")],
+            [InlineKeyboardButton("📊 实盘复盘", callback_data="rsd:30"),
+             InlineKeyboardButton("🛡 风险守护", callback_data="rgpanel")],
+            [InlineKeyboardButton("🌅 AI 盘前简报", callback_data="brnow")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
         await query.edit_message_text(
@@ -1193,6 +1196,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "`/rtpsl BTC tp=68000 sl=61000` 改已有仓位止盈止损（清除填0）\n"
             "`/rliqalert 5` 爆仓预警：距爆仓≤5%推送（`off`关）\n"
             "`/rbal` 合约余额　`/rorders BTC` 挂单　`/rcancel BTC` 撤单\n\n"
+            "*📊 复盘 / 风控*\n"
+            "`/rstats 30` 成绩单：胜率·盈亏比·期望值·最大回撤，按币/多空/持仓时长/时段拆\n"
+            "`/rstats 30 ai` AI 从你的数字里挑行为漏洞\n"
+            "`/risk` 风险守护　`/brief` AI 盘前简报\n\n"
             "⚠️ 平仓强制 reduceOnly 只减不反开；先在模拟盘验证再上实盘\n"
             "（切换：服务器 .env 的 `BYBIT_TESTNET` true/false）",
             reply_markup=rtkb, parse_mode="Markdown")
@@ -1253,6 +1260,34 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("tliqset:"):
         from handlers import rtrade
         await rtrade.liq_set(query, context, d.split(":", 1)[1])
+
+    # ---- 实盘复盘 / 风险守护 / 盘前简报 ----
+    elif d.startswith("rsd:"):          # 复盘：切换统计天数
+        from handlers import rstats
+        await rstats.days_from_btn(query, context, int(d.split(":", 1)[1]))
+    elif d.startswith("rsai:"):         # 复盘：AI 诊断
+        from handlers import rstats
+        await rstats.ai_from_btn(query, context, int(d.split(":", 1)[1]))
+    elif d == "rgpanel":
+        from handlers import riskguard
+        text, kb = riskguard.panel_content()
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+    elif d == "rgtog":                  # 风险守护总开关
+        from handlers import riskguard
+        await riskguard.toggle(query, context)
+    elif d.startswith("rgc:"):          # 单项检查开关
+        from handlers import riskguard
+        await riskguard.toggle_check(query, context, d.split(":", 1)[1])
+    elif d.startswith("rgset:"):        # 阈值
+        from handlers import riskguard
+        _, key, val = d.split(":")
+        await riskguard.set_threshold(query, context, key, val)
+    elif d == "brtog":                  # 盘前简报每日推送开关
+        from handlers import brief
+        await brief.toggle(query, context)
+    elif d == "brnow":
+        from handlers import brief
+        await brief.now_from_btn(query, context)
 
     # ---- 实盘开仓二次确认 ----
     elif d == "roconf":

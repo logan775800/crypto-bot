@@ -142,6 +142,38 @@ class BybitClient:
         )
         return [p for p in (r.get("list") or []) if float(p.get("size", 0) or 0) > 0]
 
+    async def closed_pnl(self, start_ms=None, end_ms=None, symbol=None,
+                         limit=100, cursor=None):
+        """已平仓盈亏明细（/v5/position/closed-pnl）——交易所自己的账，别自己算。
+        ⚠️ Bybit 硬限制：startTime~endTime 间隔必须 ≤7 天，更长要调用方切片。
+        翻页用返回的 nextPageCursor。"""
+        p = {"category": self.category, "limit": limit}
+        if symbol:
+            p["symbol"] = symbol
+        if start_ms:
+            p["startTime"] = int(start_ms)
+        if end_ms:
+            p["endTime"] = int(end_ms)
+        if cursor:
+            p["cursor"] = cursor
+        return await self._get("/v5/position/closed-pnl", p)
+
+    async def executions(self, start_ms=None, end_ms=None, symbol=None,
+                         limit=100, cursor=None):
+        """成交明细（/v5/execution/list）。同样 ≤7 天窗口。
+        用途：closed-pnl 不含开仓时间，靠这里的逐笔成交还原「仓是何时开的」；
+        execType=Funding 的记录则是资金费实际扣款。"""
+        p = {"category": self.category, "limit": limit}
+        if symbol:
+            p["symbol"] = symbol
+        if start_ms:
+            p["startTime"] = int(start_ms)
+        if end_ms:
+            p["endTime"] = int(end_ms)
+        if cursor:
+            p["cursor"] = cursor
+        return await self._get("/v5/execution/list", p)
+
     async def set_trading_stop(self, symbol, tp=None, sl=None):
         """给已有仓位设/改止盈止损（全仓量）。tp/sl 传 None 表示不动。"""
         body = {"category": self.category, "symbol": symbol, "positionIdx": 0}

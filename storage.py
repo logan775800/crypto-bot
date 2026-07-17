@@ -50,6 +50,9 @@ data.setdefault("vtrade", {})           # 虚拟合约交易 {uid: {balance, pos
 data.setdefault("rtrade_alert", {})     # 实盘爆仓预警 {enabled, threshold, chat_id, cooldown{sym:ts}}
 data.setdefault("riskguard", {})        # 风险守护 {enabled, chat_id, checks{}, mmr/daily/conc/btc_drop 阈值, cooldown{}, day{date,start,fired}}
 data.setdefault("brief", {})            # AI盘前简报每日推送 {enabled, chat_id}
+data.setdefault("cond_alerts", [])      # 条件触发提醒 [{chat_id,symbol,conds[],last_ts}]
+data.setdefault("fex_subs", {})         # 资金费极值订阅 {chat_id: {threshold}}
+data.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:币:方向 -> ts}
 
 def prune_data(now=None):
     """治理 data.json 无限增长：清掉过期冷却/去重记录、给历史类列表封顶。
@@ -73,6 +76,7 @@ def prune_data(now=None):
     _drop_old_ts("alerted_coins", 7 * 86400)      # 现货异动告警冷却
     _drop_old_ts("contract_alerted", 2 * 86400)   # 合约告警推送冷却
     _drop_old_ts("arb_alerted", 7 * 86400)        # 套利告警冷却
+    _drop_old_ts("fex_alerted", 7 * 86400)        # 资金费极值告警冷却
 
     # 合约分档记录：48h 未更新的丢弃
     tiers = data.get("contract_tiers")
@@ -133,14 +137,14 @@ def migrate_chat(old, new):
                     moved += 1
 
     # 2) 元素是 {chat_id: ...} 的列表
-    for key in ("watchpct", "alerts", "ti_alerts"):
+    for key in ("watchpct", "alerts", "ti_alerts", "cond_alerts"):
         for w in data.get(key, []):
             if isinstance(w, dict) and w.get("chat_id") in old_set:
                 w["chat_id"] = new
                 moved += 1
 
     # 3) 以 chat_id(字符串) 为键的字典
-    for key in ("gas_subs", "arb_subs", "whale_addr", "whale_min"):
+    for key in ("gas_subs", "arb_subs", "whale_addr", "whale_min", "fex_subs"):
         d = data.get(key)
         if isinstance(d, dict):
             for ov in (str(old), old):

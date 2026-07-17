@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -25,6 +25,8 @@ HELP_TEXT = (
     "/ai BTC AI 解读　/news 最新新闻\n"
     "💬 *群里 @我 或回复我* 就能直接对话问问题；私聊用 `/ask 你的问题`（/resetchat 清空记忆）\n"
     "/alert 价格预警（也可在菜单里点着设）\n"
+    "/cond BTC <60000 rsi15m<30 🎯 条件提醒：价格+指标**同时**满足才叫（/conds 管理）\n"
+    "/fex 💵 资金费率极端榜（全市场跨所，按结算周期归一日化，标出1h高频费率）\n"
     "/gasalert 15 Gas跌破提醒　/arbwatch 0.8 套利监控\n"
     "/track 0x地址 追踪巨鲸地址　/tracked 我的追踪\n"
     "/portfolio 我的持仓（请私聊使用）\n\n"
@@ -284,6 +286,9 @@ async def post_init(application):
         BotCommand("rstats", "📊 实盘复盘成绩单(胜率/期望值)"),
         BotCommand("risk", "🛡 风险守护(熔断/集中度/裸奔仓)"),
         BotCommand("brief", "🌅 AI盘前简报(结合你的持仓)"),
+        BotCommand("cond", "🎯 条件触发提醒(价格+指标组合)"),
+        BotCommand("conds", "🎯 我的条件提醒"),
+        BotCommand("fex", "💵 资金费率极端榜(全市场跨所)"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -355,6 +360,13 @@ def main():
     app.add_handler(CommandHandler("delalert", alert.del_alert))
     app.add_handler(CommandHandler("rsialert", indicator_alert.rsi_alert))
     app.add_handler(CommandHandler("rsialerts", indicator_alert.rsi_alerts))
+    # 条件触发提醒（价格+指标组合，全满足才叫）
+    app.add_handler(CommandHandler("cond", condalert.cond))
+    app.add_handler(CommandHandler("conds", condalert.conds))
+    app.add_handler(CommandHandler("delcond", condalert.delcond))
+    # 资金费率极端榜（跨所，按结算周期归一到日化）
+    app.add_handler(CommandHandler("fex", fundextreme.fex))
+    app.add_handler(CommandHandler("fexsub", fundextreme.fexsub))
     # 持续波动监控（指定币，涨跌超阈值反复提醒，支持小盘/合约币）
     app.add_handler(CommandHandler("watchpct", watchpct.watchpct))
     app.add_handler(CommandHandler("watchpcts", watchpct.watchpcts))
@@ -466,6 +478,8 @@ def main():
     jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
     jq.run_repeating(rtrade.check_liq_alerts, interval=60, first=55)  # 实盘爆仓临近预警，每60秒
     jq.run_repeating(riskguard.check_risk, interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒
+    jq.run_repeating(condalert.check_conds, interval=120, first=80)  # 条件触发提醒(价格+指标组合)，每2分钟
+    jq.run_repeating(fundextreme.scan_fex, interval=3600, first=240)  # 资金费极值订阅扫描，每小时
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))

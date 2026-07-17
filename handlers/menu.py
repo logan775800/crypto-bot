@@ -462,6 +462,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             rows.append([InlineKeyboardButton(c, callback_data=f"alertcoin:{c}") for c in POPULAR[i:i+5]])
         rows.append([InlineKeyboardButton("🔍 查其他币", callback_data="askcoin:alertcoin")])
         rows.append([InlineKeyboardButton("👁 持续波动监控(±% 反复提醒)", callback_data="watchpct_start")])
+        rows.append([InlineKeyboardButton("🎯 条件提醒(价格+指标组合)", callback_data="cond_help")])
         rows.append([InlineKeyboardButton("📋 我的价格预警", callback_data="my_alerts"),
                      InlineKeyboardButton("👁 我的波动监控", callback_data="my_watchpct")])
         rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")])
@@ -1023,6 +1024,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("💱 多所比价", callback_data="sub_arb")],
             [InlineKeyboardButton("💱 套利监控", callback_data="cat_arbwatch"),
              InlineKeyboardButton("🐋 巨鲸扫描", callback_data="do_whale")],
+            [InlineKeyboardButton("💵 资金费率极端榜(全市场)", callback_data="fex")],
             [InlineKeyboardButton("🐋 地址追踪", callback_data="cat_track")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
@@ -1288,6 +1290,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "brnow":
         from handlers import brief
         await brief.now_from_btn(query, context)
+
+    # ---- 资金费率极端榜 ----
+    elif d == "fex":
+        from handlers import fundextreme
+        await fundextreme.fex_from_btn(query, context)
+    elif d.startswith("fexsub:"):
+        # 只弹 toast 不重渲染——重渲染要重扫全市场，为了一个订阅开关不值得
+        from handlers import fundextreme
+        await fundextreme.sub_from_btn(query, context, d.split(":", 1)[1])
+
+    # ---- 条件提醒用法卡（条件语法太自由，设置仍走命令）----
+    elif d == "cond_help":
+        from handlers.condalert import USAGE
+        await safe_edit(query, USAGE, reply_markup=back_to("cat_alert"),
+                        parse_mode="Markdown")
 
     # ---- 实盘开仓二次确认 ----
     elif d == "roconf":

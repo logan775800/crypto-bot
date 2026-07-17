@@ -24,6 +24,22 @@ async def ask_ai(prompt: str):
         data = resp.json()
         return data["choices"][0]["message"]["content"]
 
+async def ask_ai_messages(messages, system=None, temperature=0.7):
+    """多轮对话版：messages 是 [{role,content}...]，可选 system。用于群内@对话。"""
+    url = AI_BASE_URL.rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
+    msgs = []
+    if system:
+        msgs.append({"role": "system", "content": system})
+    msgs.extend(messages)
+    body = {"model": AI_MODEL, "messages": msgs, "temperature": temperature}
+    async with httpx.AsyncClient(timeout=60) as client:
+        resp = await client.post(url, headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+        return data["choices"][0]["message"]["content"]
+
+
 async def ai_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not AI_API_KEY or not AI_BASE_URL:
         await update.message.reply_text("AI 功能未配置（缺少密钥或URL）")

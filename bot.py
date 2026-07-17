@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -23,6 +23,7 @@ HELP_TEXT = (
     "/price BTC 查币价（/price BTC cny 看人民币）\n"
     "/top 涨跌榜　/analyze BTC 技术分析\n"
     "/ai BTC AI 解读　/news 最新新闻\n"
+    "💬 *群里 @我 或回复我* 就能直接对话问问题；私聊用 `/ask 你的问题`（/resetchat 清空记忆）\n"
     "/alert 价格预警（也可在菜单里点着设）\n"
     "/gasalert 15 Gas跌破提醒　/arbwatch 0.8 套利监控\n"
     "/track 0x地址 追踪巨鲸地址　/tracked 我的追踪\n"
@@ -83,6 +84,7 @@ async def post_init(application):
     commands = [
         BotCommand("menu", "📋 功能菜单"),
         BotCommand("help", "❓ 使用帮助"),
+        BotCommand("ask", "💬 问我任何问题(AI对话)"),
         BotCommand("dashboard", "📊 市场看板"),
         BotCommand("summary", "📰 每日市场总结"),
         BotCommand("price", "💰 查币价"),
@@ -273,6 +275,10 @@ def main():
     app.add_handler(CommandHandler("unwatchhold", portfolio.unwatch_holdings))
     app.add_handler(CommandHandler("subanalysis", broadcast.sub_analysis))
     app.add_handler(CommandHandler("unsubanalysis", broadcast.unsub_analysis))
+    # 群内 @机器人 / 回复机器人 自由对话（必须在纯文字查价之前，命中即拦截）
+    app.add_handler(CommandHandler("ask", chat.ask))
+    app.add_handler(CommandHandler("resetchat", chat.reset_chat))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat.mention_chat))
     # 底部常驻键盘按钮（必须在纯文字查价之前注册，先匹配先生效）
     app.add_handler(MessageHandler(filters.Regex(r"^📋 菜单$"), menu.menu))
     app.add_handler(MessageHandler(filters.Regex(r"^📊 看板$"), dashboard.dashboard))

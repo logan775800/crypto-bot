@@ -48,6 +48,7 @@ def main_menu_kb():
          InlineKeyboardButton("🔔 订阅推送", callback_data="cat_subs")],
         [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
          InlineKeyboardButton("🛠 实用工具", callback_data="cat_tools")],
+        [InlineKeyboardButton("💬 AI 助手（问我任何问题）", callback_data="ask_start")],
         [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
          InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
         [InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
@@ -1175,6 +1176,15 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "⚠️ 平仓强制 reduceOnly 只减不反开；先在模拟盘验证再上实盘\n"
             "（切换：服务器 .env 的 `BYBIT_TESTNET` true/false）",
             reply_markup=rtkb, parse_mode="Markdown")
+
+    # ---- AI 助手：点按钮 → 等用户发问题（quickprice 接住 await_ask）----
+    elif d == "ask_start":
+        context.user_data["await_ask"] = True
+        await query.edit_message_text(
+            "💬 *AI 助手*\n\n把你的问题发给我，例如：\n"
+            "`BTC 现在追多风险大不大`\n`给我一套15分钟短线打法`\n`怎么用虚拟合约练手`\n\n"
+            "（我能查实时币价/资金费/涨跌榜/情绪来答；发完这一条即可，想再问就再点一次或直接 `/ask`）",
+            parse_mode="Markdown")
 
     # ---- 交易台 / 引导式开仓 / 一键持仓操作 ----
     elif d == "tpanel":

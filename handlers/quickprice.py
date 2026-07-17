@@ -59,6 +59,13 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text.startswith("/"):
         return
 
+    # AI 助手：用户点了菜单「💬 AI 助手」，现在发来的是要问的问题
+    if context.user_data.get("await_ask"):
+        context.user_data.pop("await_ask", None)
+        from handlers.chat import handle_ask_text
+        await handle_ask_text(update, context, text)
+        return
+
     # 地址追踪：用户点了"添加地址"，现在发来的是以太坊地址
     if context.user_data.get("await_track_addr"):
         import re as _re

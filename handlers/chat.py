@@ -5,15 +5,40 @@
   • 任意场景 /ask 你的问题
 每个会话保留最近若干轮上下文，做到连续对话。纯对话，不查实时数据（会引导用命令查）。
 """
+import re
 import logging
 from telegram import Update
 from telegram.ext import ContextTypes, ApplicationHandlerStop
 
 from config import AI_API_KEY, AI_BASE_URL
-from handlers.util import safe_reply, escape_md
+from handlers.util import safe_reply
 from handlers.ai import ask_ai_messages, ask_ai_tools
 
 log = logging.getLogger(__name__)
+
+# AI 输出的是 GitHub 风 markdown(## 标题 / **粗体**)，转成 Telegram 旧版 Markdown（单星号粗体、无标题）
+_HDR = re.compile(r'(?m)^[ \t]{0,3}#{1,6}[ \t]*(.+?)[ \t]*$')
+_BOLD = re.compile(r'\*\*(.+?)\*\*')
+
+
+def _md_to_tg(t):
+    return _BOLD.sub(r'*\1*', _HDR.sub(r'*\1*', t))
+
+
+def _strip_md(t):
+    return _HDR.sub(r'\1', t).replace('**', '').replace('*', '')
+
+
+async def _send(msg, text):
+    """发 AI 回复：不引用原消息(直接发群里)，markdown 渲染失败则降级为去标记纯文本。"""
+    try:
+        await msg.reply_text(_md_to_tg(text), parse_mode="Markdown", do_quote=False)
+    except Exception as e:
+        log.warning(f"AI回复Markdown渲染失败，降级纯文本: {e}")
+        try:
+            await msg.reply_text(_strip_md(text), do_quote=False)
+        except Exception as e2:
+            log.error(f"AI回复发送失败: {e2}")
 
 MAX_TURNS = 10   # 保留最近 10 轮（20 条）上下文
 
@@ -124,7 +149,12 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
         await safe_reply(update.message, f"AI 出错了，稍后再试：{str(e)[:80]}")
         return
     hist.append({"role": "assistant", "content": reply})
-    await safe_reply(update.message, escape_md(reply), parse_mode="Markdown")
+    await _send(update.message, reply)
+
+
+async def handle_ask_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """菜单「💬 AI 助手」按钮点完后，用户发来的问题走这里（quickprice 拦截 await_ask 调用）。"""
+    await _reply(update, context, text)
 
 
 async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):

@@ -91,7 +91,7 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💹 Bybit　 {by}\n"
         f"👤 管理员　{len(ADMIN_IDS) or '未限制'} 人｜你是管理员：{me}\n"
         f"━━━━━━━━━━━━━━\n"
-        f"_版本对不上就是部署没生效_",
+        f"版本对不上就是部署没生效",
         parse_mode="Markdown")
 
 

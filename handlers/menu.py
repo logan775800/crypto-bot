@@ -254,7 +254,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"⚙️ 状态　　部署系统执行中…\n"
                 f"⏱ 预计　　约 1~2 分钟\n"
                 f"━━━━━━━━━━━━━━\n"
-                f"_完成后会自动播报「✅ 部署成功」_",
+                f"完成后会自动播报「✅ 部署成功」",
                 parse_mode="Markdown")
         else:
             # 失败保留按钮，修好后可直接重试，不用重新发通知
@@ -269,7 +269,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📦 版本　`{tag}`\n"
                 f"⚠️ 原因　{escape_md(str(msg))}\n"
                 f"━━━━━━━━━━━━━━\n"
-                f"_修好后点下方重试_",
+                f"修好后点下方重试",
                 reply_markup=kb, parse_mode="Markdown")
 
     # ---- 查其他币（按来源决定后续动作）----

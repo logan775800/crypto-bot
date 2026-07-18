@@ -1316,6 +1316,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import fundextreme
         await fundextreme.sub_from_btn(query, context, d.split(":", 1)[1])
 
+    # ---- 交易计划 ----
+    elif d.startswith("pl:"):
+        from handlers import plan as _plan
+        bits = d.split(":")
+        await _plan.button(query, context, bits[1],
+                           bits[2] if len(bits) > 2 else None)
+
     # ---- 仓位计算：换风险档位重算 ----
     elif d.startswith("sz:"):
         from handlers import sizing

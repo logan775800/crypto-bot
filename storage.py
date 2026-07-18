@@ -51,6 +51,8 @@ data.setdefault("rtrade_alert", {})     # 实盘爆仓预警 {enabled, threshold
 data.setdefault("riskguard", {})        # 风险守护 {enabled, chat_id, checks{}, mmr/daily/conc/btc_drop 阈值, cooldown{}, day{date,start,fired}}
 data.setdefault("brief", {})            # AI盘前简报每日推送 {enabled, chat_id}
 data.setdefault("cond_alerts", [])      # 条件触发提醒 [{chat_id,symbol,conds[],last_ts}]
+data.setdefault("plans", [])            # 交易计划 [{id,chat_id,symbol,side,status,trigger,entry,stop,tps,invalid,...}]
+data.setdefault("plan_seq", 0)          # 计划自增号（按钮 callback_data 要短 id）
 data.setdefault("fex_subs", {})         # 资金费极值订阅 {chat_id: {threshold}}
 data.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:币:方向 -> ts}
 
@@ -137,7 +139,7 @@ def migrate_chat(old, new):
                     moved += 1
 
     # 2) 元素是 {chat_id: ...} 的列表
-    for key in ("watchpct", "alerts", "ti_alerts", "cond_alerts"):
+    for key in ("watchpct", "alerts", "ti_alerts", "cond_alerts", "plans"):
         for w in data.get(key, []):
             if isinstance(w, dict) and w.get("chat_id") in old_set:
                 w["chat_id"] = new

@@ -86,6 +86,72 @@ async def ask_ai_tools(messages, tools, tool_executor, system=None,
     return m.get("content") or "（没能得出结论，换个问法试试）"
 
 
+async def ask_ai_struct(messages, tools, fn_name, system=None, temperature=0.3):
+    """强制模型以**结构化参数**回答（用于交易计划这种必须能被程序读的输出）。
+
+    优先走 OpenAI function-calling 的 tool_choice 强制；中转站若不支持 tool_choice，
+    退回「让它自己调工具」，再退回从正文里抠 JSON。三层兜底是必要的——
+    中转站的兼容性不完全可控，而这条链路挂了用户就拿不到计划。
+    温度默认调低：计划要的是稳定可复现，不是创意。
+    """
+    url = AI_BASE_URL.rstrip("/") + "/chat/completions"
+    headers = {"Authorization": f"Bearer {AI_API_KEY}", "Content-Type": "application/json"}
+    msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
+
+    async def _call(body):
+        async with httpx.AsyncClient(timeout=90) as client:
+            resp = await client.post(url, headers=headers, json=body)
+            resp.raise_for_status()
+            return resp.json()["choices"][0]["message"]
+
+    base = {"model": AI_MODEL, "messages": msgs, "tools": tools,
+            "temperature": temperature}
+    attempts = [
+        dict(base, tool_choice={"type": "function", "function": {"name": fn_name}}),
+        dict(base),                    # 中转站不认 tool_choice 就让它自己选
+    ]
+    last_err = None
+    for body in attempts:
+        try:
+            m = await _call(body)
+        except Exception as e:
+            last_err = e
+            logging.warning(f"结构化调用失败，换方式重试: {str(e)[:120]}")
+            continue
+        for tc in (m.get("tool_calls") or []):
+            if tc.get("function", {}).get("name") == fn_name:
+                try:
+                    return json.loads(tc["function"].get("arguments") or "{}")
+                except json.JSONDecodeError as e:
+                    last_err = e
+                    logging.warning(f"工具参数不是合法 JSON: {e}")
+        # 没走工具：试着从正文里抠 JSON（有些中转站会把 JSON 写在 content 里）
+        got = _json_from_text(m.get("content") or "")
+        if got:
+            return got
+        last_err = last_err or RuntimeError("模型没有调用工具也没给出 JSON")
+    raise RuntimeError(f"AI 未能给出结构化结果：{str(last_err)[:120]}")
+
+
+def _json_from_text(text):
+    """从正文里抠出第一个 JSON 对象（```json 围栏或裸对象）。抠不到返回 None。"""
+    if not text:
+        return None
+    t = text.strip()
+    if "```" in t:
+        import re as _re
+        m = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", t, _re.S)
+        if m:
+            t = m.group(1)
+    i, j = t.find("{"), t.rfind("}")
+    if i < 0 or j <= i:
+        return None
+    try:
+        return json.loads(t[i:j + 1])
+    except json.JSONDecodeError:
+        return None
+
+
 async def ai_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not AI_API_KEY or not AI_BASE_URL:
         await update.message.reply_text("AI 功能未配置（缺少密钥或URL）")

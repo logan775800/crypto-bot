@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -29,6 +29,9 @@ HELP_TEXT = (
     "/fex 💵 资金费率极端榜（全市场跨所，按结算周期归一日化，标出1h高频费率）\n"
     "/achart BTC 1h 📐 标注图表：EMA/摆动高低点/前高前低/1.5×ATR止损带**画在图上**\n"
     "/datacheck BANK 🔎 数据体检：各维度取不取得到、数据截至几点、完整度多少\n"
+    "/plan BANK short 📋 交易计划：触发/入场/止损/分段止盈/**失效条件**，一屏能执行\n"
+    "　└ 后台按5m收盘盯着：触发、止盈触及、**计划失效**、过期都会主动推给你\n"
+    "　└ /plans 我的计划　/replan p3 重新校验（旧计划别硬做）\n"
     "/gasalert 15 Gas跌破提醒　/arbwatch 0.8 套利监控\n"
     "/track 0x地址 追踪巨鲸地址　/tracked 我的追踪\n"
     "/portfolio 我的持仓（请私聊使用）\n\n"
@@ -294,6 +297,8 @@ async def post_init(application):
         BotCommand("fex", "💵 资金费率极端榜(全市场跨所)"),
         BotCommand("achart", "📐 标注图表(结构位+止损带画在图上)"),
         BotCommand("datacheck", "🔎 数据体检(时间+完整度)"),
+        BotCommand("plan", "📋 生成交易计划(会自动失效)"),
+        BotCommand("plans", "📋 我的交易计划"),
     ]
     try:
         await application.bot.set_my_commands(commands)
@@ -354,6 +359,11 @@ def main():
     app.add_handler(CommandHandler("achart", annotchart.achart))
     # 数据体检：哪些维度取得到、数据几点的（排查「AI说没数据其实是接口挂了」）
     app.add_handler(CommandHandler("datacheck", datameta.datacheck))
+    # 交易计划：一屏能执行 + 会自己失效
+    app.add_handler(CommandHandler("plan", plan.plan_cmd))
+    app.add_handler(CommandHandler("plans", plan.plans_cmd))
+    app.add_handler(CommandHandler("replan", plan.replan_cmd))
+    app.add_handler(CommandHandler("delplan", plan.delplan_cmd))
     app.add_handler(CommandHandler("fear", market.fear))
     app.add_handler(CommandHandler("gas", market.gas))
     app.add_handler(CommandHandler("gasalert", market.set_gas_alert))
@@ -488,6 +498,7 @@ def main():
     jq.run_repeating(rtrade.check_liq_alerts, interval=60, first=55)  # 实盘爆仓临近预警，每60秒
     jq.run_repeating(riskguard.check_risk, interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒
     jq.run_repeating(condalert.check_conds, interval=120, first=80)  # 条件触发提醒(价格+指标组合)，每2分钟
+    jq.run_repeating(plan.check_plans, interval=120, first=95)  # 交易计划生命周期(触发/止盈/失效/过期)，每2分钟
     jq.run_repeating(fundextreme.scan_fex, interval=3600, first=240)  # 资金费极值订阅扫描，每小时
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）

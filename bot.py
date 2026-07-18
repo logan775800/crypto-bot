@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -43,6 +43,7 @@ HELP_TEXT = (
     "/ropen BTC long 1000 10 62000 sl=60000 tp=68000 限价开仓(带止盈损,弹确认)\n"
     "　└ /rclose BTC 平仓　/rpos 实盘持仓　/rbal 余额　/rorders /rcancel 挂单\n"
     "　└ /rtpsl BTC tp= sl= 改止盈止损　/rliqalert 5 爆仓预警\n"
+    "/cockpit 🚗 持仓驾驶舱：每个仓的趋势状态/距爆仓/有无止损/资金费/建议动作+账户红色风险\n"
     "/rstats 30 实盘复盘：胜率/盈亏比/期望值/最大回撤，按币·多空·持仓时长·时段拆解\n"
     "　└ `/rstats 30 ai` 让 AI 从数字里挑出你的行为漏洞（这是唯一能提升胜率的功能）\n"
     "/risk 🛡 风险守护：保证金率/同向集中度/当日亏损熔断/裸奔仓位/BTC破位联动\n"
@@ -289,6 +290,7 @@ async def post_init(application):
         BotCommand("rclose", "🔴 实盘平仓(Bybit)"),
         BotCommand("rpos", "🔴 实盘持仓(Bybit)"),
         BotCommand("rbal", "🔴 实盘合约余额(Bybit)"),
+        BotCommand("cockpit", "🚗 持仓驾驶舱(逐仓状态+建议)"),
         BotCommand("rstats", "📊 实盘复盘成绩单(胜率/期望值)"),
         BotCommand("risk", "🛡 风险守护｜带参数=按风险反推仓位"),
         BotCommand("brief", "🌅 AI盘前简报(结合你的持仓)"),
@@ -418,6 +420,7 @@ def main():
     app.add_handler(CommandHandler("rtpsl", rtrade.rtpsl))
     app.add_handler(CommandHandler("rliqalert", rtrade.rliqalert))
     app.add_handler(CommandHandler("trade", rtrade.trade))
+    app.add_handler(CommandHandler("cockpit", cockpit.cockpit))  # 持仓驾驶舱
     # 实盘复盘 / 风险守护 / 盘前简报（都读真实账户，管理员+私聊）
     app.add_handler(CommandHandler("rstats", rstats.rstats))
     app.add_handler(CommandHandler("risk", riskguard.risk))

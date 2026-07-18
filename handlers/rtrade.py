@@ -672,9 +672,13 @@ async def _panel_content(client):
         InlineKeyboardButton("🔄 刷新", callback_data="tpanel"),
     ])
     rows.append([
+        InlineKeyboardButton("🚗 驾驶舱", callback_data="ckpt"),
         InlineKeyboardButton("📊 复盘", callback_data="rsd:30"),
         InlineKeyboardButton("🛡 风险守护", callback_data="rgpanel"),
+    ])
+    rows.append([
         InlineKeyboardButton("🌅 盘前简报", callback_data="brnow"),
+        InlineKeyboardButton("📋 交易计划", callback_data="pl:list"),
     ])
     return "\n".join(lines), InlineKeyboardMarkup(rows)
 

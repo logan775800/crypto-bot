@@ -1320,8 +1320,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("pl:"):
         from handlers import plan as _plan
         bits = d.split(":")
+        # action 之后可能不止一段（如 pl:filll:p3:10），整体传给 button 自己拆
         await _plan.button(query, context, bits[1],
-                           bits[2] if len(bits) > 2 else None)
+                           ":".join(bits[2:]) if len(bits) > 2 else None)
 
     # ---- 仓位计算：换风险档位重算 ----
     elif d.startswith("sz:"):

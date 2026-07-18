@@ -11,6 +11,7 @@ import pytest
 
 from handlers.plan import (
     evaluate, _from_ai, card, STATUS, LIVE, rr, _clean_tps, MIN_TP_GAP_PCT,
+    prefill_params,
 )
 
 
@@ -346,6 +347,50 @@ class TestCleanTps:
 
     def test_empty(self):
         assert _clean_tps(None, "short", 1, 2, 3, 1.5) == []
+
+
+class TestPrefill:
+    """计划 → 预填下单参数。这条路径最终会真下单，参数错=真金白银错，钉死。"""
+
+    def test_uses_entry_midpoint(self):
+        fp = prefill_params(_plan(entry=[0.0806, 0.0812]), 10000, 10)
+        assert fp["entry"] == pytest.approx(0.0809)
+
+    def test_margin_is_notional_over_leverage(self):
+        # 风险 0.5%、权益 10000 → 风险 50U；入场中值 0.0809 止损 0.0828
+        p = _plan(entry=[0.0806, 0.0812], stop=0.0828)
+        f10 = prefill_params(p, 10000, 10)
+        f20 = prefill_params(p, 10000, 20)
+        # 名义不随杠杆变，保证金 = 名义/杠杆
+        assert f10["notional"] == pytest.approx(f20["notional"])
+        assert f10["margin"] == pytest.approx(f10["notional"] / 10)
+        assert f20["margin"] == pytest.approx(f10["margin"] / 2)
+
+    def test_risk_is_half_percent_of_equity(self):
+        # 名义 × 止损距离 == 权益 × 0.5%
+        p = _plan(entry=[0.0806, 0.0812], stop=0.0828)
+        fp = prefill_params(p, 10000, 10)
+        mid = 0.0809
+        dist_pct = abs(0.0828 - mid) / mid * 100
+        assert fp["notional"] * dist_pct / 100 == pytest.approx(10000 * 0.5 / 100)
+
+    def test_carries_plan_stop_and_first_tp(self):
+        fp = prefill_params(_plan(stop=0.0828,
+                                  tps=[{"price": 0.0783}, {"price": 0.0755}]),
+                            10000, 10)
+        assert fp["sl"] == 0.0828
+        assert fp["tp"] == 0.0783        # TP1，不是最后一个
+
+    def test_side_and_symbol_passthrough(self):
+        fp = prefill_params(_plan(side="short"), 10000, 10)
+        assert fp["side"] == "short" and fp["symbol"] == "BANK"
+
+    def test_no_equity_returns_none(self):
+        assert prefill_params(_plan(), 0, 10) is None
+        assert prefill_params(_plan(), None, 10) is None
+
+    def test_zero_leverage_returns_none(self):
+        assert prefill_params(_plan(), 10000, 0) is None
 
 
 class TestCard:

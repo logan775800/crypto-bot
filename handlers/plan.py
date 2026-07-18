@@ -164,6 +164,9 @@ def kb(p):
             InlineKeyboardButton("🧮 生成下单参数", callback_data=f"pl:size:{pid}"),
         ])
         rows.append([
+            InlineKeyboardButton("⚡ 预填到交易台开仓", callback_data=f"pl:fill:{pid}"),
+        ])
+        rows.append([
             InlineKeyboardButton("📐 看图", callback_data=f"pl:chart:{pid}"),
             InlineKeyboardButton("🔄 刷新校验", callback_data=f"pl:refresh:{pid}"),
         ])
@@ -647,7 +650,59 @@ async def delplan_cmd(update, context):
 
 
 # ── 按钮 ───────────────────────────────────────────────────────────
+def prefill_params(p, equity, lev, risk=0.5):
+    """计划 + 权益 + 杠杆 → 下单参数（入场中值/保证金/tp1/sl）。纯函数，方便测。
+    返回 None 表示算不出（无权益/入场=止损）。"""
+    from handlers import sizing
+    lo, hi = min(p["entry"]), max(p["entry"])
+    entry = (lo + hi) / 2
+    if not equity or lev <= 0:
+        return None
+    s = sizing.plan_size(equity, entry, p["stop"], risk)
+    if not s:
+        return None
+    tp1 = (p.get("tps") or [{}])[0].get("price")
+    return {"symbol": p["symbol"].replace("USDT", ""), "side": p["side"],
+            "entry": entry, "margin": s["notional"] / lev, "lev": lev,
+            "tp": tp1, "sl": p["stop"], "notional": s["notional"]}
+
+
+async def _fill_lev(query, context, raw):
+    """计划 → 预填的 /ropen 确认卡（复用 prepare_open，最终还要点「确认下单」）。
+    raw 是 "p3:10" 形式，末段是杠杆。"""
+    from handlers.rtrade import _btn_admin_ok, prepare_open
+    from handlers import sizing
+    if not _btn_admin_ok(query):
+        await query.answer("仅管理员", show_alert=True)
+        return
+    pid2, _, lev_s = (raw or "").rpartition(":")
+    p = get(pid2)
+    if not p:
+        await query.answer("计划不存在", show_alert=True)
+        return
+    try:
+        lev = int(lev_s)
+    except ValueError:
+        await query.answer("杠杆无效", show_alert=True)
+        return
+    equity, _pos = await sizing._account(query)
+    if not equity:
+        await query.answer("拿不到账户权益（未配 Bybit 密钥？）", show_alert=True)
+        return
+    fp = prefill_params(p, equity, lev)
+    if not fp:
+        await query.answer("计划的入场/止损算不出仓位", show_alert=True)
+        return
+    await query.answer("已按计划预填，请在确认卡二次确认")
+    # prepare_open 会再算精度、弹 roconf 确认卡——不会直接下单，人还要点一次
+    await prepare_open(query.message, context, fp["symbol"], fp["side"],
+                       fp["margin"], fp["lev"], fp["entry"], tp=fp["tp"], sl=fp["sl"])
+
+
 async def button(query, context, action, pid=None):
+    # filll 的 pid 是复合的（"p3:10"，末段是杠杆），它自己解析，跳过下面的通用查找
+    if action == "filll":
+        return await _fill_lev(query, context, pid)
     p = get(pid) if pid else None
     if pid and not p:
         await query.answer("计划不存在（可能已删除）", show_alert=True)
@@ -716,6 +771,22 @@ async def button(query, context, action, pid=None):
             sizing.build_text(s, exp, p["symbol"].replace("USDT", ""), _env_tag())
             + f"\n\n_按计划 `{p['id']}` 的入场中值 {md.f(entry)} 和止损 {md.f(p['stop'])} 算_",
             reply_markup=sizing._kb(entry, p["stop"], p["symbol"].replace("USDT", "")),
+            parse_mode="Markdown")
+
+    elif action == "fill":
+        # 预填开仓：先选杠杆（决定保证金占用），再落到已有的实盘确认卡
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from handlers.rtrade import _btn_admin_ok
+        if not _btn_admin_ok(query):
+            await query.answer("仅管理员", show_alert=True)
+            return
+        row = [InlineKeyboardButton(f"{l}x", callback_data=f"pl:filll:{pid}:{l}")
+               for l in (3, 5, 10, 20)]
+        await safe_edit(query,
+            card(p) + f"\n\n⚡ *预填开仓*：按计划的入场中值挂限价、止损用计划止损、"
+                      f"止盈用 TP1，风险 0.5% 反推仓位。\n先选杠杆（只影响保证金占用）：",
+            reply_markup=InlineKeyboardMarkup([row,
+                [InlineKeyboardButton("⬅️ 返回计划", callback_data=f"pl:show:{pid}")]]),
             parse_mode="Markdown")
 
     elif action == "chart":

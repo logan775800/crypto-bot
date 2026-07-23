@@ -474,7 +474,10 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
         # 出错不留脏上下文
         if hist and hist[-1]["role"] == "user":
             hist.pop()
-        await safe_reply(update.message, f"AI 出错了，稍后再试：{str(e)[:80]}")
+        detail = str(e)[:160]
+        tip = "\n（模型都不可用：管理员可用 `/aimodel test` 探活、`/aimodel <名字>` 切换）" \
+            if "模型" in detail or "model" in detail.lower() else ""
+        await safe_reply(update.message, f"AI 出错了，稍后再试：{detail}{tip}")
         return
     # 图片只在本轮上传：历史里换回纯文本占位，否则往后每轮都要重传几百KB base64
     if images:

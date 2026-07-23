@@ -55,6 +55,7 @@ data.setdefault("plans", [])            # 交易计划 [{id,chat_id,symbol,side,
 data.setdefault("plan_seq", 0)          # 计划自增号（按钮 callback_data 要短 id）
 data.setdefault("fex_subs", {})         # 资金费极值订阅 {chat_id: {threshold}}
 data.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:币:方向 -> ts}
+data.setdefault("ai_model_override", "")  # /aimodel 手动指定的AI模型（空=自动降级）
 
 def prune_data(now=None):
     """治理 data.json 无限增长：清掉过期冷却/去重记录、给历史类列表封顶。

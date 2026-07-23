@@ -1,7 +1,7 @@
 import os
 
 # 当前代码版本（每次发布 tag 时同步 bump，/version 用它报告线上到底跑的是哪版）
-VERSION = "v1.0.88"
+VERSION = "v1.0.89"
 
 TOKEN = os.environ["BOT_TOKEN"]
 DATA_FILE = "/app/data.json"
@@ -26,6 +26,16 @@ BROADCAST_COINS = ["BTC", "ETH", "BNB", "SOL"]
 AI_API_KEY = os.environ.get("AI_API_KEY", "")
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "")
 AI_MODEL = os.environ.get("AI_MODEL", "gpt-4o-mini")
+# 中转站的渠道会不定期下线（模型仍在 /v1/models 列表里，但分组下没账号 → 404
+# model_not_found），主模型一挂整个 AI 就哑了。这里给一串备用模型自动顶上。
+# 逗号分隔，可用 AI_FALLBACK_MODELS 覆盖。默认值是 2026-07-23 实测「文本+视觉+
+# 工具调用」三项全通的模型。
+AI_FALLBACK_MODELS = [
+    m.strip() for m in os.environ.get(
+        "AI_FALLBACK_MODELS",
+        "gpt-5.6-terra,gpt-5.6-sol,gpt-5.5,gpt-5.4,gpt-5.6-luna-openai-compact,gpt-5.4-mini"
+    ).split(",") if m.strip()
+]
 
 # 管理员chat_id（运维告警接收 + 部署审批人）。支持多个：逗号分隔，如 "7774574457,1087968824"
 ADMIN_CHAT_ID = os.environ.get("ADMIN_CHAT_ID", "")

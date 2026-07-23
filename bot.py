@@ -128,11 +128,15 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         by = "❌未配置"
     me = "✅ 是" if is_admin(update.effective_user.id) else "❌ 否"
+    # 显示**实际在用**的模型：.env 那个可能已被中转站下线、运行时自动降级到备用了
+    from handlers.ai import current_model
+    cur = current_model()
+    model_line = f"`{cur}`" + (f"（.env 是 `{AI_MODEL}`，已自动降级）" if cur != AI_MODEL else "")
     await update.message.reply_text(
         f"🤖 *运行状态*\n"
         f"━━━━━━━━━━━━━━\n"
         f"📦 版本　　`{VERSION}`\n"
-        f"🧠 AI模型　`{AI_MODEL}`（{ai_ok}）\n"
+        f"🧠 AI模型　{model_line}（{ai_ok}）\n"
         f"💹 Bybit　 {by}\n"
         f"👤 管理员　{len(ADMIN_IDS) or '未限制'} 人｜你是管理员：{me}\n"
         f"━━━━━━━━━━━━━━\n"
@@ -336,6 +340,7 @@ def main():
     app.add_handler(CommandHandler("info", price.info))
     app.add_handler(CommandHandler("analyze", analysis.analyze))
     app.add_handler(CommandHandler("ai", ai.ai_analyze))
+    app.add_handler(CommandHandler("aimodel", ai.aimodel))   # 管理员切换/探活 AI 模型
     app.add_handler(CommandHandler("arb", arbitrage.arb))
     app.add_handler(CommandHandler("whale", whale.whale))
     app.add_handler(CommandHandler("track", whale_track.track))

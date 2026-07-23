@@ -479,6 +479,9 @@ def main():
     # 图片消息（截图看盘/持仓截图）→ 走 AI 视觉。同样放 -1 组，没触发就空跑。
     app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE,
                                    chat.photo_chat), group=-1)
+    # 非图片附件（JSON/CSV/日志）→ 服务端解析+缓存，AI 用 file_* 工具按需查
+    app.add_handler(MessageHandler(filters.Document.ALL & ~filters.Document.IMAGE,
+                                   chat.doc_chat), group=-1)
     # 底部常驻键盘按钮（必须在纯文字查价之前注册，先匹配先生效）
     app.add_handler(MessageHandler(filters.Regex(r"^📋 菜单$"), menu.menu))
     app.add_handler(MessageHandler(filters.Regex(r"^📊 看板$"), dashboard.dashboard))

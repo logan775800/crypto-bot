@@ -158,6 +158,13 @@ SYSTEM = (
     "如果问题需要具体币种但用户没点名是哪个币，就**默认按 BTC** 拉数据分析，"
     "开头说明「以 BTC 为例，换币再告诉我」即可，别只抛问题就结束。"
     "如果是全市场层面的问题（谁涨得猛、现在情绪如何），就调 get_top_movers / get_fear_greed。\n\n"
+    "**你能读用户上传的文件**（JSON/CSV/JSONL/文本/日志）。文件留在服务端，你用"
+    "file_info（先看这个：字段结构+记录数+样例）、file_fields、file_head、"
+    "file_get（按路径取）、file_search（搜关键字）、file_stats（字段统计）按需取数。"
+    "**绝不要因为文件大就说读不了**——几十万条也能分析，只是要靠 file_stats 这类"
+    "聚合工具而不是逐条看。要下「整体/总共/平均/最多」这类结论时必须用 file_stats，"
+    "别拿 file_head 的前几条硬推整体。用户说「我传的文件/这个json/这份数据」时，"
+    "直接调 file_info，别反问「请把内容粘贴过来」。\n\n"
     "**你能看图**：用户常发截图（K线截图、持仓/委托截图、别的群或频道的页面截图）。"
     "先把图里的关键信息读出来（币种、方向、杠杆、入场价、浮盈、时间周期、页面是什么），"
     "再用工具取**实时**数据核对——截图上的价格通常已经过时，"
@@ -172,6 +179,16 @@ SYSTEM = (
 )
 
 # ── 给 AI 的数据工具（全部只读）─────────────────────────────────────
+def _docfile_tools():
+    """文件查询工具。docfile 出问题也不能让整个 TOOLS 定义崩掉。"""
+    try:
+        from handlers.docfile import TOOLS as _T
+        return _T
+    except Exception as e:      # pragma: no cover
+        log.error(f"加载文件工具失败: {e}")
+        return []
+
+
 _SYM = {"symbol": {"type": "string", "description": "币种代号，如 BTC、ETH、AKE（自动补USDT）"}}
 _IV = {"type": "string", "description": "周期：5m/15m/30m/1h/4h/1d",
        "enum": ["5m", "15m", "30m", "1h", "4h", "1d"]}
@@ -238,6 +255,8 @@ TOOLS = [
                         "含交易所数据时间与完整度百分比。要给完整交易计划前先调它，"
                         "或用户质疑「数据是不是实时/是不是没取到」时调。"),
         "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
+    # 用户上传的文件（file_info/file_fields/file_head/file_get/file_search/file_stats）
+    *_docfile_tools(),
     # 账户只读
     {"type": "function", "function": {
         "name": "get_my_virtual_positions",
@@ -406,6 +425,10 @@ def _make_exec(update, context):
     """按调用者身份包一层：账户类工具需鉴权，其余走公开数据工具。"""
     async def _exec(name, args):
         uid = update.effective_user.id if update.effective_user else 0
+        # 文件工具按会话取缓存的上传文件（同群共享，谁传的谁都能问）
+        from handlers import docfile
+        if name in docfile.TOOL_NAMES:
+            return docfile.run_tool(update.effective_chat.id, name, args)
         if name == "get_my_account":
             from config import is_admin
             if not is_admin(uid):
@@ -581,4 +604,73 @@ async def photo_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         raise ApplicationHandlerStop
     await _reply(update, context, caption or "看看这张图，告诉我这是什么、有什么关键信息。",
                  images=[url])
+    raise ApplicationHandlerStop
+
+
+async def doc_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """收到非图片附件（JSON/CSV/文本/日志）：下载→解析→缓存，再让 AI 用文件工具分析。
+
+    文件不进上下文，只把结构摘要给模型，剩下的靠 file_* 工具按需查——
+    1.3MB 的 result.json 直接塞进去会超窗口，而且模型逐条算也不准。
+    """
+    from handlers import docfile
+    msg = update.message
+    if not msg or not msg.document:
+        return
+    if any(k.startswith("await_") for k in context.user_data):
+        return
+    doc = msg.document
+    caption = (msg.caption or "").strip()
+    chat_type = update.effective_chat.type
+    if chat_type == "private":
+        triggered = True
+    else:
+        triggered = False
+        rt = msg.reply_to_message
+        if rt and rt.from_user and rt.from_user.id == context.bot.id:
+            triggered = True
+        uname = context.bot.username
+        if uname and ("@" + uname) in caption:
+            triggered = True
+            caption = caption.replace("@" + uname, "").strip()
+
+    if not docfile.is_supported(doc):
+        if triggered:
+            await safe_reply(msg, f"这个格式我还读不了（{doc.mime_type or doc.file_name}）。"
+                                  f"目前支持 JSON / JSONL / CSV / TSV / TXT / LOG / MD / YAML。")
+            raise ApplicationHandlerStop
+        return
+    if (doc.file_size or 0) > docfile.MAX_FILE_BYTES:
+        if triggered:
+            await safe_reply(msg, f"文件 {doc.file_size/1048576:.1f}MB，超过 Telegram "
+                                  f"给机器人的 20MB 下载上限，我拿不到。麻烦拆分或先筛一遍再传。")
+            raise ApplicationHandlerStop
+        return
+
+    try:
+        f = await context.bot.get_file(doc.file_id)
+        raw = bytes(await f.download_as_bytearray())
+    except Exception as e:
+        log.warning(f"下载文件失败: {e}")
+        if triggered:
+            await safe_reply(msg, f"文件没下载下来：{str(e)[:80]}")
+            raise ApplicationHandlerStop
+        return
+
+    text, enc = docfile.decode(raw)
+    entry = docfile.put(update.effective_chat.id, doc.file_name or "file",
+                        len(raw), text, enc)
+    log.info(f"已缓存文件 {entry['name']} {len(raw)}B kind={entry['kind']} enc={enc}")
+
+    # 群里没点名：静静收好，等他 @ 提问时文件工具就能用了
+    if not triggered:
+        return
+
+    hint = ("这是一个解析失败/非结构化的文本文件" if entry["kind"] == "text"
+            else f"已解析为 {entry['kind']}")
+    await _reply(update, context,
+                 (caption or "分析一下我刚传的这个文件。") +
+                 f"\n（系统提示：用户上传了文件 {entry['name']}，"
+                 f"{len(raw)/1024:,.0f}KB，{hint}。用 file_info 等工具去读，"
+                 f"不要让用户粘贴内容。）")
     raise ApplicationHandlerStop

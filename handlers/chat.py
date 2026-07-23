@@ -2,10 +2,12 @@
 
 触发：
   • 群里 @机器人 或 回复机器人的任意消息 → 自由对话（自动阻止后续当币名查价）
+  • 群里/私聊发图片（截图看盘、持仓截图）→ 走视觉，让 AI 直接看图
   • 任意场景 /ask 你的问题
 每个会话保留最近若干轮上下文，做到连续对话。纯对话，不查实时数据（会引导用命令查）。
 """
 import re
+import base64
 import time
 import logging
 from telegram import Update
@@ -43,6 +45,72 @@ async def _send(msg, text):
 
 MAX_TURNS = 10        # 保留最近 10 轮（20 条）上下文
 AI_DAILY_LIMIT = 40   # 每人每日 AI 调用上限（管理员不限），防群里刷爆中转站额度
+
+MAX_IMG_BYTES = 4 * 1024 * 1024   # 单图上限：base64 后约 5.3MB，再大中转站容易 413
+PHOTO_TTL = 300                   # 「先发图、后 @提问」的图片保留秒数
+
+
+# ── 视觉：把 Telegram 图片取成 data URI 喂给中转站 ────────────────────
+def _pick_photo(msg):
+    """从消息里挑一张能用的图，返回 (file_id, mime)。没有则 (None, None)。
+
+    photo 是 Telegram 压缩过的多尺寸列表，挑不超限的最大张；
+    document 覆盖「以文件方式发送」的原图截图（更清晰，看K线/持仓数字更准）。
+    """
+    if not msg:
+        return None, None
+    if msg.photo:
+        for ps in sorted(msg.photo, key=lambda p: p.file_size or 0, reverse=True):
+            if (ps.file_size or 0) <= MAX_IMG_BYTES:
+                return ps.file_id, "image/jpeg"
+        return msg.photo[0].file_id, "image/jpeg"   # 全都超限就退到最小那张
+    doc = msg.document
+    if doc and (doc.mime_type or "").startswith("image/") \
+            and (doc.file_size or 0) <= MAX_IMG_BYTES:
+        return doc.file_id, doc.mime_type
+    return None, None
+
+
+async def _fetch_image(context, file_id, mime):
+    """下载并转 data URI。失败返回 None（宁可退化成纯文字回答，也别整条报错）。"""
+    try:
+        f = await context.bot.get_file(file_id)
+        data = bytes(await f.download_as_bytearray())
+    except Exception as e:
+        log.warning(f"下载图片失败: {e}")
+        return None
+    if len(data) > MAX_IMG_BYTES:
+        log.warning(f"图片过大({len(data)}B)，跳过")
+        return None
+    return f"data:{mime};base64," + base64.b64encode(data).decode()
+
+
+def _remember_photo(context, uid, file_id, mime):
+    """群里常见「先甩图，下一条才 @机器人提问」——把图暂存，供紧接着的提问引用。"""
+    cache = context.chat_data.setdefault("recent_photo", {})
+    cache[str(uid)] = {"file_id": file_id, "mime": mime, "ts": time.time()}
+
+
+def _recall_photo(context, uid):
+    cache = context.chat_data.get("recent_photo") or {}
+    ent = cache.get(str(uid))
+    if not ent or time.time() - ent["ts"] > PHOTO_TTL:
+        return None, None
+    return ent["file_id"], ent["mime"]
+
+
+async def _images_for(update, context, msg):
+    """给这条提问找配图：本条自带 > 回复的那条 > 同人近 5 分钟内发过的。"""
+    uid = update.effective_user.id if update.effective_user else 0
+    fid, mime = _pick_photo(msg)
+    if not fid:
+        fid, mime = _pick_photo(msg.reply_to_message if msg else None)
+    if not fid:
+        fid, mime = _recall_photo(context, uid)
+    if not fid:
+        return []
+    url = await _fetch_image(context, fid, mime)
+    return [url] if url else []
 
 SYSTEM = (
     "你是嵌在一个 Telegram 加密行情机器人里的智能交易助手，用简体中文回答。"
@@ -90,6 +158,11 @@ SYSTEM = (
     "如果问题需要具体币种但用户没点名是哪个币，就**默认按 BTC** 拉数据分析，"
     "开头说明「以 BTC 为例，换币再告诉我」即可，别只抛问题就结束。"
     "如果是全市场层面的问题（谁涨得猛、现在情绪如何），就调 get_top_movers / get_fear_greed。\n\n"
+    "**你能看图**：用户常发截图（K线截图、持仓/委托截图、别的群或频道的页面截图）。"
+    "先把图里的关键信息读出来（币种、方向、杠杆、入场价、浮盈、时间周期、页面是什么），"
+    "再用工具取**实时**数据核对——截图上的价格通常已经过时，"
+    "不要拿截图里的旧价格当现价下结论，要说明「截图时 X，现在 Y」。"
+    "图看不清或缺关键信息（比如没显示币种/周期）就直说缺什么，别猜。\n\n"
     "回答要有料、具体、带风控视角：该展开分析就展开（不用硬憋成一句话），但别啰嗦废话。"
     "聊具体买卖时用「风险温度 / 仓位管理」的口吻而非涨跌预测，可以给出你自己的倾向，"
     "末尾简短带一句「不构成投资建议」即可（不用每段都加）。"
@@ -361,7 +434,8 @@ def _history(context):
     return context.chat_data.setdefault("chat_hist", [])
 
 
-async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str):
+async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: str,
+                 images=None):
     if not AI_API_KEY or not AI_BASE_URL:
         await safe_reply(update.message, "AI 未配置（缺 AI_API_KEY / AI_BASE_URL）")
         return
@@ -373,7 +447,14 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
             f"（行情类命令 /price /analyze /watchpct 等不受影响）")
         return
     hist = _history(context)
-    hist.append({"role": "user", "content": user_text})
+    if images:
+        # OpenAI 视觉格式：content 是 [文本, 图片...] 数组
+        user_msg = {"role": "user", "content":
+                    [{"type": "text", "text": user_text}] +
+                    [{"type": "image_url", "image_url": {"url": u}} for u in images]}
+    else:
+        user_msg = {"role": "user", "content": user_text}
+    hist.append(user_msg)
     # 只保留最近 MAX_TURNS 轮，防止上下文无限增长
     if len(hist) > MAX_TURNS * 2:
         del hist[: len(hist) - MAX_TURNS * 2]
@@ -395,6 +476,9 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
             hist.pop()
         await safe_reply(update.message, f"AI 出错了，稍后再试：{str(e)[:80]}")
         return
+    # 图片只在本轮上传：历史里换回纯文本占位，否则往后每轮都要重传几百KB base64
+    if images:
+        user_msg["content"] = user_text + "\n（用户此轮附了一张图片，见上文你的解读）"
     hist.append({"role": "assistant", "content": reply})
     await _send(update.message, reply)
 
@@ -447,6 +531,51 @@ async def mention_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if not text:
         text = "你好"
-    await _reply(update, context, text)
+    # 纯文字提问也可能是在问刚发的那张图（回复图片 / 先甩图再 @提问）
+    images = await _images_for(update, context, msg)
+    if images and not text.strip():
+        text = "看看这张图"
+    await _reply(update, context, text, images=images)
     # 已处理，阻止后续 quick_price 再把它当币名查价
+    raise ApplicationHandlerStop
+
+
+async def photo_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """收到图片：私聊直接看图；群里需 @机器人 或 回复机器人（和文字对话同规则）。
+
+    群里没触发的图也会暂存 PHOTO_TTL 秒——用户常常先甩图、下一条才 @机器人提问。
+    """
+    msg = update.message
+    if not msg:
+        return
+    # 引导式流程（设监控/开仓等 await_ 态）进行中时不抢，避免打断流程
+    if any(k.startswith("await_") for k in context.user_data):
+        return
+    fid, mime = _pick_photo(msg)
+    if not fid:
+        return
+    uid = update.effective_user.id if update.effective_user else 0
+    _remember_photo(context, uid, fid, mime)
+
+    caption = (msg.caption or "").strip()
+    if update.effective_chat.type == "private":
+        triggered = True
+    else:
+        triggered = False
+        rt = msg.reply_to_message
+        if rt and rt.from_user and rt.from_user.id == context.bot.id:
+            triggered = True
+        uname = context.bot.username
+        if uname and ("@" + uname) in caption:
+            triggered = True
+            caption = caption.replace("@" + uname, "").strip()
+    if not triggered:
+        return   # 群里没点名，安静收着，别刷屏
+
+    url = await _fetch_image(context, fid, mime)
+    if not url:
+        await safe_reply(msg, "这张图我没取到（可能太大或下载失败），换张小一点的再发一次？")
+        raise ApplicationHandlerStop
+    await _reply(update, context, caption or "看看这张图，告诉我这是什么、有什么关键信息。",
+                 images=[url])
     raise ApplicationHandlerStop

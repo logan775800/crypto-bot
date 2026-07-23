@@ -471,6 +471,9 @@ def main():
     # 放到独立高优先组(-1)：没@到就空跑放行给下面的查价；@到了才 ApplicationHandlerStop 拦截。
     # 不能和查价同组，否则同组只跑第一个匹配 handler，会把所有文字"吃掉"导致查价失效。
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat.mention_chat), group=-1)
+    # 图片消息（截图看盘/持仓截图）→ 走 AI 视觉。同样放 -1 组，没触发就空跑。
+    app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE,
+                                   chat.photo_chat), group=-1)
     # 底部常驻键盘按钮（必须在纯文字查价之前注册，先匹配先生效）
     app.add_handler(MessageHandler(filters.Regex(r"^📋 菜单$"), menu.menu))
     app.add_handler(MessageHandler(filters.Regex(r"^📊 看板$"), dashboard.dashboard))

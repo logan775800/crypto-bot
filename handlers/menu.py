@@ -227,6 +227,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
             reply_markup=main_menu_kb(), parse_mode="Markdown")
 
+    # ---- 急涨急跌面板（订阅/调阈值/看榜，全按钮）----
+    elif d.startswith("pump:"):
+        from handlers import pumpalert
+        await pumpalert.on_button(query, context)
+
     # ---- 部署审批：确认/取消（仅管理员）----
     elif d.startswith("jdok:") or d.startswith("jdno:"):
         from config import is_admin
@@ -787,7 +792,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sm = status("summary_subs")
         bc = status("broadcast_chats")
         an = status("analysis_subs")
+        pp = "✅" if str(chat_id) in (_sd.get("pump_watch") or {}) else "⬜"
         kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"{pp} ⚡急涨急跌(15m,可调阈值)", callback_data="pump:panel")],
             [InlineKeyboardButton(f"{m} 市场异动告警", callback_data="tog_market")],
             [InlineKeyboardButton(f"{nw} 新闻推送", callback_data="tog_news")],
             [InlineKeyboardButton(f"{ul} 解锁提醒", callback_data="tog_unlock")],

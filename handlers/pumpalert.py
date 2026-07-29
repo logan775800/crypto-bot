@@ -18,10 +18,10 @@
 import time
 import logging
 import httpx
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from storage import data, save_data
-from handlers.util import escape_md
+from handlers.util import escape_md, safe_edit
 
 BYBIT_BASE = "https://api.bybit.com"
 
@@ -34,6 +34,7 @@ STATE_TTL = WINDOW * 2    # 单币告警记录 30 分钟没更新就作废，允
 HIST_MARGIN = 240         # 历史多留 4 分钟，保证窗口边界两侧都有采样点
 MAX_LINES = 40            # 单条消息最多行数，超出分条发
 PCT_MIN, PCT_MAX = 3.0, 200.0   # 用户可设阈值范围
+PRESETS = [3, 5, 8, 10, 15, 20]   # 面板上的阈值快捷档
 
 log = logging.getLogger(__name__)
 
@@ -250,6 +251,135 @@ async def _push(bot, chat_id, hits, pct):
             await bot.send_message(chat_id=int(chat_id), text=text, parse_mode="Markdown")
         except Exception as e:
             log.error(f"急涨急跌推送失败 {chat_id}: {e}")
+
+
+# ---------- 按钮面板（不用记命令）----------
+def _panel(chat_id):
+    """返回 (文本, 键盘)。展示订阅状态 + 阈值快捷档 + 涨跌榜/开关按钮。"""
+    sub = (data.get("pump_watch") or {}).get(str(chat_id))
+    if sub:
+        pct = float(sub.get("pct", DEFAULT_PCT))
+        status = f"✅ *已订阅*　告警线：涨跌 ≥ *{pct:g}%*"
+    else:
+        pct = None
+        status = "⬜️ *未订阅*　点下面任一阈值即可开启"
+
+    text = (
+        "⚡ *Bybit 急涨急跌监控*\n"
+        "━━━━━━━━━━━━━━\n"
+        f"{status}\n\n"
+        "• 监控全部 U 本位永续（~500个）\n"
+        "• 15 分钟内涨跌到阈值就推送，涨🚀跌💥都报\n"
+        "• 已滤掉 24h 成交额 < 300万U 的微盘\n"
+        "━━━━━━━━━━━━━━\n"
+        "选阈值（越小越灵敏、告警越多）："
+    )
+
+    # 阈值档按钮：当前档打勾
+    row = []
+    rows = []
+    for p in PRESETS:
+        mark = "✅" if (pct is not None and abs(pct - p) < 0.01) else ""
+        row.append(InlineKeyboardButton(f"{mark}{p}%", callback_data=f"pump:set:{p}"))
+        if len(row) == 3:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+
+    rows.append([InlineKeyboardButton("📊 看涨跌榜", callback_data="pump:top"),
+                 InlineKeyboardButton("🔄 刷新", callback_data="pump:panel")])
+    if sub:
+        rows.append([InlineKeyboardButton("🔕 取消订阅", callback_data="pump:off")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def pump_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/pump —— 打开按钮面板（订阅/调阈值/看榜，全点按钮）。"""
+    text, kb = _panel(update.effective_chat.id)
+    await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+def _leaderboard_text(chat_id):
+    """涨跌榜文本（面板里点「看涨跌榜」用，复用 pumptop 的算法）。"""
+    watch = data.get("pump_watch") or {}
+    sub = watch.get(str(chat_id))
+    pct = float(sub.get("pct", DEFAULT_PCT)) if sub else DEFAULT_PCT
+    if not _price_hist:
+        if not watch:
+            return "📭 还没人订阅，后台监控没在跑。先在面板点个阈值开启，等约15分钟再看。"
+        return "⏳ 监控刚启动，还没拉到第一轮行情，几十秒后再看。"
+    now = time.time()
+    ranked = []
+    for sym, h in _price_hist.items():
+        r = _change_and_span(h, now)
+        if r is not None:
+            ranked.append((sym, r[0], r[1], h[-1][1]))
+    if not ranked:
+        return "⏳ 历史还在攒（不足2个采样点），稍等。"
+    max_span = max(r[2] for r in ranked)
+    ups = sorted([r for r in ranked if r[1] > 0], key=lambda x: -x[1])[:6]
+    downs = sorted([r for r in ranked if r[1] < 0], key=lambda x: x[1])[:6]
+    lines = [f"📊 *15m 滚动涨跌榜*（监控 {len(ranked)} 个）"]
+    if max_span < WINDOW - 60:
+        lines.append(f"⏳ 热身中：当前最长仅 ~{max_span/60:.0f} 分钟")
+
+    def fmt(r):
+        sym, ch, span, price = r
+        tag = "" if span >= WINDOW - 60 else f" [{span/60:.0f}m]"
+        hit = " 🔔" if abs(ch) >= pct else ""
+        return f"  {escape_md(sym)} {ch:+.1f}%{tag}（${price:,.4g}）{hit}"
+
+    lines.append("\n🚀 *涨幅前列*")
+    lines += [fmt(r) for r in ups] or ["  （暂无）"]
+    lines.append("\n💥 *跌幅前列*")
+    lines += [fmt(r) for r in downs] or ["  （暂无）"]
+    top = max((abs(r[1]) for r in ranked), default=0)
+    if top < pct:
+        lines.append(f"\n此刻最大波动 {top:.1f}%，还没到 {pct:g}% 线——没推送是正常的")
+    return "\n".join(lines)
+
+
+async def on_button(query, context):
+    """处理 pump: 开头的回调。由 menu.button_handler 转发进来。"""
+    d = query.data
+    chat_id = query.message.chat.id
+
+    if d == "pump:panel":
+        text, kb = _panel(chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if d == "pump:off":
+        cid = str(chat_id)
+        (data.get("pump_watch") or {}).pop(cid, None)
+        (data.get("pump_alerted") or {}).pop(cid, None)
+        save_data()
+        await query.answer("已取消订阅")
+        text, kb = _panel(chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if d == "pump:top":
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ 返回", callback_data="pump:panel"),
+            InlineKeyboardButton("🔄 刷新榜", callback_data="pump:top")]])
+        await safe_edit(query, _leaderboard_text(chat_id), reply_markup=kb,
+                        parse_mode="Markdown")
+        return
+
+    if d.startswith("pump:set:"):
+        try:
+            pct = float(d.split(":")[2])
+        except (ValueError, IndexError):
+            await query.answer("参数错误")
+            return
+        data.setdefault("pump_watch", {})[str(chat_id)] = {"pct": pct}
+        save_data()
+        await query.answer(f"已设为 ≥{pct:g}%，开始监控")
+        text, kb = _panel(chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+        return
 
 
 # ---------- 订阅命令 ----------

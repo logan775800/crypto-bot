@@ -278,6 +278,94 @@ def test_pumptop_marks_crossed_threshold(monkeypatch):
     assert "🔔" in sent[0] and "还没到" not in sent[0]
 
 
+# ── 按钮面板 ────────────────────────────────────────────────────
+class _FakeQuery:
+    def __init__(self, d, cid=555):
+        self.data = d
+        self.message = type("M", (), {"chat": type("C", (), {"id": cid})()})()
+        self.edited = None
+        self.toast = None
+
+    async def answer(self, text=None, **kw):
+        self.toast = text
+
+    async def edit_message_text(self, text, **kw):
+        self.edited = text
+
+
+def _patch_edit(monkeypatch):
+    async def fake(q, text, **kw):
+        q.edited = text
+    monkeypatch.setattr(P, "safe_edit", fake)
+
+
+def test_panel_unsubscribed_then_subscribed(monkeypatch):
+    from storage import data
+    monkeypatch.setattr("storage.save_data", lambda: None)
+    data["pump_watch"] = {}
+    txt, kb = P._panel(555)
+    assert "未订阅" in txt
+    # 每个预设都有按钮
+    btns = [b.text for row in kb.inline_keyboard for b in row]
+    assert any("15%" in b for b in btns)
+
+    data["pump_watch"] = {"555": {"pct": 15.0}}
+    txt, kb = P._panel(555)
+    assert "已订阅" in txt and "15%" in txt
+    btns = [b.text for row in kb.inline_keyboard for b in row]
+    assert any(b == "✅15%" for b in btns)          # 当前档打勾
+    assert any("取消订阅" in b for b in btns)
+
+
+def test_button_set_threshold(monkeypatch):
+    import asyncio
+    from storage import data
+    monkeypatch.setattr("storage.save_data", lambda: None)
+    _patch_edit(monkeypatch)
+    data["pump_watch"] = {}
+    q = _FakeQuery("pump:set:8")
+    asyncio.run(P.on_button(q, None))
+    assert data["pump_watch"]["555"]["pct"] == 8.0
+    assert "8" in (q.toast or "")
+    assert "已订阅" in q.edited
+
+
+def test_button_off(monkeypatch):
+    import asyncio
+    from storage import data
+    monkeypatch.setattr("storage.save_data", lambda: None)
+    _patch_edit(monkeypatch)
+    data["pump_watch"] = {"555": {"pct": 15.0}}
+    data["pump_alerted"] = {"555": {"X": {}}}
+    q = _FakeQuery("pump:off")
+    asyncio.run(P.on_button(q, None))
+    assert "555" not in data["pump_watch"]
+    assert "未订阅" in q.edited
+
+
+def test_button_top_shows_leaderboard(monkeypatch):
+    import asyncio
+    from storage import data
+    monkeypatch.setattr("storage.save_data", lambda: None)
+    _patch_edit(monkeypatch)
+    data["pump_watch"] = {"555": {"pct": 15.0}}
+    now = 2_000_000.0
+    monkeypatch.setattr(P.time, "time", lambda: now)
+    for i in range(16):
+        P._price_hist.setdefault("BANK", []).append([now - 900 + i * 60, 1.0 + 0.09 * i / 15])
+    q = _FakeQuery("pump:top")
+    asyncio.run(P.on_button(q, None))
+    assert "BANK" in q.edited and "涨跌榜" in q.edited
+
+
+def test_button_bad_param_no_crash(monkeypatch):
+    import asyncio
+    _patch_edit(monkeypatch)
+    q = _FakeQuery("pump:set:abc")
+    asyncio.run(P.on_button(q, None))    # 不抛异常即可
+    assert q.edited is None              # 坏参数不改面板
+
+
 def test_no_subscribers_skips_fetch(monkeypatch):
     import asyncio
     from storage import data

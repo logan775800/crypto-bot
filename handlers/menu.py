@@ -232,6 +232,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import pumpalert
         await pumpalert.on_button(query, context)
 
+    # ---- 合约异动告警面板（订阅/最低档/看榜，全按钮）----
+    elif d.startswith("ctr:"):
+        from handlers import contract_alert
+        await contract_alert.on_button(query, context)
+
     # ---- 部署审批：确认/取消（仅管理员）----
     elif d.startswith("jdok:") or d.startswith("jdno:"):
         from config import is_admin
@@ -793,8 +798,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bc = status("broadcast_chats")
         an = status("analysis_subs")
         pp = "✅" if str(chat_id) in (_sd.get("pump_watch") or {}) else "⬜"
+        _cw = _sd.get("contract_watch", [])
+        cp = "✅" if (chat_id in _cw or str(chat_id) in [str(s) for s in _cw]) else "⬜"
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton(f"{pp} ⚡急涨急跌(15m,可调阈值)", callback_data="pump:panel")],
+            [InlineKeyboardButton(f"{cp} 📊合约异动(24h±20%起,可调档)", callback_data="ctr:panel")],
             [InlineKeyboardButton(f"{m} 市场异动告警", callback_data="tog_market")],
             [InlineKeyboardButton(f"{nw} 新闻推送", callback_data="tog_news")],
             [InlineKeyboardButton(f"{ul} 解锁提醒", callback_data="tog_unlock")],

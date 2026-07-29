@@ -55,7 +55,7 @@ HELP_TEXT = (
     "　└ /watchpcts 我的监控　/unwatchpct BTC 取消\n"
     "/upstreak 连续N天上涨的合约扫描，如 `/upstreak 3 bybit`\n"
     "/downstreak 连续N天下跌的合约扫描（抄底参考）\n"
-    "/watchcontract 订阅全交易所合约异动告警（±20%起分级）\n"
+    "/contract 合约异动告警【按钮面板】——订阅/调最低档/看榜，全点按钮（24h ±20%起）\n"
     "/pump 急涨急跌监控【按钮面板】——订阅/调阈值/看榜全点按钮，不用记命令\n"
     "　└ /watchpump 20 命令式订阅｜/pumptop 看当前15m滚动涨跌榜\n"
     "/checklist 合约交易检查清单（开仓前必看，含费率周期/爆仓/止损）\n"
@@ -277,7 +277,7 @@ async def post_init(application):
         BotCommand("upstreak", "📈 连续N天上涨的合约扫描"),
         BotCommand("downstreak", "📉 连续N天下跌的合约扫描"),
         BotCommand("watchmarket", "🚨 订阅市场异动告警"),
-        BotCommand("watchcontract", "📊 订阅全交易所合约异动告警"),
+        BotCommand("contract", "📊 合约异动告警面板(按钮:订阅/档位/榜)"),
         BotCommand("pump", "⚡ 急涨急跌监控面板(按钮:订阅/阈值/榜)"),
         BotCommand("subnews", "📰 订阅新闻推送"),
         BotCommand("subunlock", "🔓 订阅解锁提醒"),
@@ -448,6 +448,7 @@ def main():
     app.add_handler(CommandHandler("myalert", prefs.my_alert))
     app.add_handler(CommandHandler("quiet", prefs.set_quiet))
     app.add_handler(CommandHandler("watchmarket", market_alert.watch_market))
+    app.add_handler(CommandHandler("contract", contract_alert.contract_panel))   # 合约告警按钮面板
     app.add_handler(CommandHandler("watchcontract", contract_alert.watch_contract))
     app.add_handler(CommandHandler("unwatchcontract", contract_alert.unwatch_contract))
     app.add_handler(CommandHandler("pump", pumpalert.pump_panel))            # 15m急涨急跌按钮面板

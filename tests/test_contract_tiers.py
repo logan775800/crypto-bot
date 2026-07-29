@@ -55,3 +55,80 @@ def test_old_record_format_is_upgraded():
     import time
     ca.data["contract_tiers"]["OLD"] = {"tier": 90, "dir": "down", "ts": time.time()}
     assert ca.eval_tier_cross("OKX", "OLD", -94.5) is None    # 同档，仍应去重
+
+
+# ── 每群最低档过滤 + 按钮面板 ──────────────────────────────────────
+def test_min_tier_default_and_custom():
+    ca.data["contract_min_tier"] = {}
+    assert ca._min_tier(555) == 20                     # 默认全收
+    ca.data["contract_min_tier"] = {"555": 50}
+    assert ca._min_tier(555) == 50
+
+
+def test_push_filters_by_per_chat_min_tier():
+    """同一批告警，不同群按各自最低档收到不同内容——不能因过滤丢了该收的。"""
+    import asyncio
+    ca.data["contract_watch"] = [100, 200]
+    ca.data["contract_min_tier"] = {"100": 20, "200": 50}
+    ca.data["contract_alerted"] = {}
+    sent = {}
+
+    class Bot:
+        async def send_message(self, chat_id, text, **kw):
+            sent.setdefault(chat_id, []).append(text)
+
+    alerts = [
+        {"ex": "OKX", "sym": "AAA", "change": 22, "price": 1, "tier": 20, "direction": "up"},
+        {"ex": "币安", "sym": "BBB", "change": 55, "price": 2, "tier": 50, "direction": "up"},
+    ]
+    asyncio.run(ca.push_to_subscribers(Bot(), alerts))
+    txt100 = "".join(sent.get(100, []))
+    txt200 = "".join(sent.get(200, []))
+    assert "AAA" in txt100 and "BBB" in txt100          # 全收
+    assert "AAA" not in txt200 and "BBB" in txt200      # 只要≥50%
+    # 清理，避免污染别的用例
+    ca.data["contract_watch"] = []
+    ca.data["contract_min_tier"] = {}
+    ca.data["contract_alerted"] = {}
+
+
+class _FakeQuery:
+    def __init__(self, d, cid=555):
+        self.data = d
+        self.message = type("M", (), {"chat": type("C", (), {"id": cid})()})()
+        self.edited = None
+        self.toast = None
+
+    async def answer(self, text=None, **kw):
+        self.toast = text
+
+    async def edit_message_text(self, text, **kw):
+        self.edited = text
+
+
+def test_panel_tier_button_subscribes_and_sets(monkeypatch):
+    import asyncio
+    async def fake_edit(q, text, **kw):
+        q.edited = text
+    monkeypatch.setattr(ca, "safe_edit", fake_edit)
+    ca.data["contract_watch"] = []
+    ca.data["contract_min_tier"] = {}
+    q = _FakeQuery("ctr:tier:30")
+    asyncio.run(ca.on_button(q, None))
+    assert 555 in ca.data["contract_watch"]            # 选档即订阅
+    assert ca.data["contract_min_tier"]["555"] == 30
+    assert "已订阅" in q.edited
+    ca.data["contract_watch"] = []
+    ca.data["contract_min_tier"] = {}
+
+
+def test_panel_off_unsubscribes(monkeypatch):
+    import asyncio
+    async def fake_edit(q, text, **kw):
+        q.edited = text
+    monkeypatch.setattr(ca, "safe_edit", fake_edit)
+    ca.data["contract_watch"] = [555]
+    q = _FakeQuery("ctr:off")
+    asyncio.run(ca.on_button(q, None))
+    assert 555 not in ca.data["contract_watch"] and "555" not in [str(s) for s in ca.data["contract_watch"]]
+    assert "未订阅" in q.edited

@@ -14,10 +14,10 @@ import time
 import logging
 import asyncio
 import httpx
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from storage import data, save_data
-from handlers.util import escape_md
+from handlers.util import escape_md, safe_edit
 
 OKX_BASE = "https://www.okx.com"
 FAPI = "https://fapi.binance.com"          # 币安 USDT 本位合约
@@ -139,16 +139,15 @@ async def push_to_subscribers(bot, alerts):
         return
     save_data()
     alerts = sorted(fresh, key=lambda a: (-a["tier"], a["ex"], a["sym"]))
-    body = []
-    for a in alerts:
-        emoji = "🚀" if a["direction"] == "up" else "💥"
-        arrow = "涨破" if a["direction"] == "up" else "跌破"
-        body.append(
-            f"{emoji} *{a['ex']}* {escape_md(a['sym'])} {arrow} {a['tier']}%！"
-            f"现 {a['change']:+.2f}% (${a['price']:,.4g})"
-        )
-    chunks = [body[i:i + MAX_LINES] for i in range(0, len(body), MAX_LINES)]
+    # 按群的「最低告警档」各自过滤：有人只想看 ≥30%/≥50% 的大动作，少刷屏。
+    # 默认 MIN_ALERT_TIER(=20)，即全收。
     for chat_id in subs:
+        mt = _min_tier(chat_id)
+        chat_alerts = [a for a in alerts if a["tier"] >= mt]
+        if not chat_alerts:
+            continue
+        body = [_render_alert(a) for a in chat_alerts]
+        chunks = [body[i:i + MAX_LINES] for i in range(0, len(body), MAX_LINES)]
         for idx, chunk in enumerate(chunks):
             head = "🚨 *合约异动告警*（全交易所）\n" if idx == 0 else "🚨 *合约异动告警*（续）\n"
             text = head + "\n".join(chunk)
@@ -158,6 +157,23 @@ async def push_to_subscribers(bot, alerts):
                 await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
             except Exception as e:
                 logging.error(f"合约告警推送失败 {chat_id}: {e}")
+
+
+def _render_alert(a):
+    emoji = "🚀" if a["direction"] == "up" else "💥"
+    arrow = "涨破" if a["direction"] == "up" else "跌破"
+    return (f"{emoji} *{a['ex']}* {escape_md(a['sym'])} {arrow} {a['tier']}%！"
+            f"现 {a['change']:+.2f}% (${a['price']:,.4g})")
+
+
+MIN_ALERT_TIER = 20        # 默认最低告警档（全收）
+MIN_TIER_PRESETS = [20, 30, 50, 100]
+
+
+def _min_tier(chat_id):
+    """该群的最低告警档；没设过就返回默认 20（全收）。contract_watch 仍是纯列表，
+    最低档单独存 data['contract_min_tier'] = {chat_id: tier}，零迁移。"""
+    return int((data.get("contract_min_tier") or {}).get(str(chat_id), MIN_ALERT_TIER))
 
 
 # ---------- 各交易所合约行情抓取（REST，统一返回 [{sym, change, price, turnover}]）----------
@@ -265,6 +281,145 @@ async def unwatch_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("已取消合约异动告警")
     else:
         await update.message.reply_text("本群还没订阅合约异动告警")
+
+
+# ---------- 按钮面板（不用记命令）----------
+def _is_sub(chat_id):
+    subs = data.get("contract_watch", [])
+    return chat_id in subs or str(chat_id) in [str(s) for s in subs]
+
+
+def _panel(chat_id):
+    """返回 (文本, 键盘)：订阅状态 + 最低档选择 + 看榜/取消。"""
+    subbed = _is_sub(chat_id)
+    mt = _min_tier(chat_id)
+    if subbed:
+        status = f"✅ *已订阅*　最低告警档：*{mt}%*（≥{mt}% 才推）"
+    else:
+        status = "⬜️ *未订阅*　点下面「开启订阅」即可"
+
+    text = (
+        "📊 *全交易所合约异动告警*\n"
+        "━━━━━━━━━━━━━━\n"
+        f"{status}\n\n"
+        "• 覆盖 OKX / 币安 / Bybit 永续\n"
+        "• |涨跌幅| 突破 20%/30%/…/400% 分级告警（24h口径）\n"
+        "• OKX/Bybit 秒级实时，币安约1分钟兜底\n"
+        "• 同币同方向升档才再报（防刷屏）\n"
+        "━━━━━━━━━━━━━━\n"
+        "选最低档（越高越少、只留大动作）："
+    )
+    rows = []
+    row = []
+    for p in MIN_TIER_PRESETS:
+        mark = "✅" if (subbed and p == mt) else ""
+        label = f"{mark}≥{p}%" + ("(全部)" if p == 20 else "")
+        row.append(InlineKeyboardButton(label, callback_data=f"ctr:tier:{p}"))
+        if len(row) == 2:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    rows.append([InlineKeyboardButton("📊 看合约涨跌榜", callback_data="ctr:top"),
+                 InlineKeyboardButton("🔄 刷新", callback_data="ctr:panel")])
+    if subbed:
+        rows.append([InlineKeyboardButton("🔕 取消订阅", callback_data="ctr:off")])
+    else:
+        rows.append([InlineKeyboardButton("⚡ 开启订阅", callback_data="ctr:on")])
+    return text, InlineKeyboardMarkup(rows)
+
+
+async def contract_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/contract —— 合约异动告警按钮面板。"""
+    text, kb = _panel(update.effective_chat.id)
+    await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def _live_board():
+    """当前各所永续 24h 涨跌榜（涨/跌各前 8，≥10% 才列），面板「看榜」用。"""
+    try:
+        async with httpx.AsyncClient(timeout=12) as client:
+            results = await asyncio.gather(
+                *[fn(client) for _, fn in EXCHANGES], return_exceptions=True)
+    except Exception as e:
+        return f"取数失败：{str(e)[:60]}"
+    rows = []
+    for (ex_name, _), res in zip(EXCHANGES, results):
+        if isinstance(res, Exception):
+            continue
+        for m in res:
+            rows.append((ex_name, m["sym"], m["change"], m["price"]))
+    if not rows:
+        return "暂时没取到行情，稍后再试。"
+    ups = sorted([r for r in rows if r[2] > 0], key=lambda x: -x[2])[:8]
+    downs = sorted([r for r in rows if r[2] < 0], key=lambda x: x[2])[:8]
+    ups = [r for r in ups if r[2] >= 10]
+    downs = [r for r in downs if r[2] <= -10]
+
+    def fmt(r):
+        ex, sym, ch, price = r
+        return f"  {escape_md(sym)} {ch:+.1f}% [{ex}]（${price:,.4g}）"
+    lines = ["📊 *合约 24h 涨跌榜*（≥10%）"]
+    lines.append("\n🚀 *涨幅前列*")
+    lines += [fmt(r) for r in ups] or ["  （暂无≥10%）"]
+    lines.append("\n💥 *跌幅前列*")
+    lines += [fmt(r) for r in downs] or ["  （暂无≤-10%）"]
+    return "\n".join(lines)
+
+
+async def on_button(query, context):
+    """处理 ctr: 开头的回调（合约面板）。由 menu.button_handler 转发。"""
+    d = query.data
+    chat_id = query.message.chat.id
+    data.setdefault("contract_watch", [])
+
+    if d == "ctr:panel":
+        text, kb = _panel(chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if d == "ctr:on":
+        if not _is_sub(chat_id):
+            data["contract_watch"].append(chat_id)
+            save_data()
+        await query.answer("已开启订阅")
+        text, kb = _panel(chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if d == "ctr:off":
+        data["contract_watch"] = [s for s in data["contract_watch"]
+                                  if str(s) != str(chat_id)]
+        save_data()
+        await query.answer("已取消订阅")
+        text, kb = _panel(chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if d == "ctr:top":
+        await query.answer("拉取中…")
+        board = await _live_board()
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ 返回", callback_data="ctr:panel"),
+            InlineKeyboardButton("🔄 刷新榜", callback_data="ctr:top")]])
+        await safe_edit(query, board, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if d.startswith("ctr:tier:"):
+        try:
+            tier = int(d.split(":")[2])
+        except (ValueError, IndexError):
+            await query.answer("参数错误")
+            return
+        # 选档即视为订阅（还没订就一起订上）
+        if not _is_sub(chat_id):
+            data["contract_watch"].append(chat_id)
+        data.setdefault("contract_min_tier", {})[str(chat_id)] = tier
+        save_data()
+        await query.answer(f"已设为只推 ≥{tier}%")
+        text, kb = _panel(chat_id)
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
+        return
 
 
 # ---------- 后台扫描（REST 轮询，安全网 + 币安主路）----------

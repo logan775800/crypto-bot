@@ -57,6 +57,7 @@ HELP_TEXT = (
     "/downstreak 连续N天下跌的合约扫描（抄底参考）\n"
     "/watchcontract 订阅全交易所合约异动告警（±20%起分级）\n"
     "/watchpump 订阅Bybit全永续15m急涨急跌（默认±15%，可 `/watchpump 20`）\n"
+    "　└ /pumptop 看当前15m滚动涨跌榜（确认监控在跑、离阈值多远）\n"
     "/checklist 合约交易检查清单（开仓前必看，含费率周期/爆仓/止损）\n"
     "　└ 查币名看合约行情会标「资金费结算周期」，1h高频费率会⚠️提醒\n\n"
     "*底部快捷键*：📋菜单 / 📊看板 / 💰查价 / ❓帮助\n"
@@ -451,6 +452,7 @@ def main():
     app.add_handler(CommandHandler("unwatchcontract", contract_alert.unwatch_contract))
     app.add_handler(CommandHandler("watchpump", pumpalert.watch_pump))       # 15m急涨急跌
     app.add_handler(CommandHandler("unwatchpump", pumpalert.unwatch_pump))
+    app.add_handler(CommandHandler("pumptop", pumpalert.pump_top))           # 15m滚动涨跌榜/自检
     app.add_handler(CommandHandler("movers", movers.movers))
     app.add_handler(CommandHandler("weak", strategy.weak))
     app.add_handler(CommandHandler("momentum", strategy.momentum))

@@ -61,6 +61,28 @@ def _rolling_change(hist, now):
     return (cur - ref) / ref * 100.0
 
 
+def _change_and_span(hist, now):
+    """给榜单用：算涨跌幅 + 实际参照跨度秒数。
+
+    和 _rolling_change 的区别：历史不足 15 分钟时**不返回 None**，改用手头最老的
+    采样点算，并把真实跨度一并返回——这样刚启动/热身期也能立刻给出反馈，
+    让用户看到「监控在跑，只是还没到 15 分钟」。
+    """
+    if not hist or len(hist) < 2:
+        return None
+    cur = hist[-1][1]
+    cutoff = now - WINDOW
+    ref_ts = ref_p = None
+    for ts, p in hist:
+        if ts <= cutoff:
+            ref_ts, ref_p = ts, p     # 有满 15 分钟的点就优先用
+    if ref_p is None:
+        ref_ts, ref_p = hist[0]       # 否则用手头最老的
+    if ref_p <= 0:
+        return None
+    return (cur - ref_p) / ref_p * 100.0, now - ref_ts
+
+
 async def _fetch_bybit_perps(client=None):
     """拉全部 U 本位永续，返回 [{sym, price, turnover}]（已过滤成交额下限）。
 
@@ -261,6 +283,74 @@ async def watch_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"改阈值：再发 `/watchpump 20`｜取消：`/unwatchpump`\n"
         f"（重启后需 ~15 分钟重新攒够历史才开始判涨跌，属正常）",
         parse_mode="Markdown")
+
+
+async def pump_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/pumptop —— 当前 15 分钟滚动涨跌榜，用来确认监控在跑、看离阈值多远。
+
+    没告警时最常见的原因就是「真没币动到那么多」——这条命令让你直接看到
+    此刻最猛的币涨跌多少，一目了然。
+    """
+    chat_id = str(update.effective_chat.id)
+    watch = data.get("pump_watch") or {}
+    sub = watch.get(chat_id)
+    pct = float(sub.get("pct", DEFAULT_PCT)) if sub else DEFAULT_PCT
+
+    # 历史为空：要么没人订阅（扫描任务根本没跑），要么刚重启还没拉第一轮
+    if not _price_hist:
+        if not watch:
+            await update.message.reply_text(
+                "📭 还没有人订阅急涨急跌，后台监控**没在跑**（省 API）。\n"
+                "先发 `/watchpump` 开启，等约 15 分钟攒够历史后再看 `/pumptop`。",
+                parse_mode="Markdown")
+        else:
+            await update.message.reply_text(
+                "⏳ 监控刚启动，还没拉到第一轮行情，几十秒后再试 `/pumptop`。",
+                parse_mode="Markdown")
+        return
+
+    now = time.time()
+    ranked = []
+    for sym, h in _price_hist.items():
+        r = _change_and_span(h, now)
+        if r is not None:
+            ranked.append((sym, r[0], r[1], h[-1][1]))   # sym, 涨跌%, 跨度s, 现价
+
+    if not ranked:
+        await update.message.reply_text("⏳ 历史还在攒（不足 2 个采样点），稍等再看。")
+        return
+
+    max_span = max(r[2] for r in ranked)
+    warming = max_span < WINDOW - 60      # 最长跨度还没到 ~15 分钟＝仍在热身
+    ups = sorted([r for r in ranked if r[1] > 0], key=lambda x: -x[1])[:8]
+    downs = sorted([r for r in ranked if r[1] < 0], key=lambda x: x[1])[:8]
+
+    lines = [f"📊 *Bybit 15m 滚动涨跌榜*（共监控 {len(ranked)} 个永续）"]
+    if sub:
+        lines.append(f"你的告警线：涨跌 ≥ *{pct:g}%*")
+    else:
+        lines.append("⚠️ 本群*未订阅*（下面是全局历史）；`/watchpump` 才会推送")
+    if warming:
+        lines.append(f"⏳ 仍在热身：当前最长仅覆盖 ~{max_span/60:.0f} 分钟，"
+                     f"满 15 分钟后判定才完整")
+
+    def fmt(r):
+        sym, ch, span, price = r
+        span_tag = "" if span >= WINDOW - 60 else f" [{span/60:.0f}m]"
+        hit = " 🔔" if abs(ch) >= pct else ""
+        return f"  {escape_md(sym)} {ch:+.1f}%{span_tag}（${price:,.4g}）{hit}"
+
+    lines.append("\n🚀 *涨幅前列*")
+    lines += [fmt(r) for r in ups] or ["  （暂无上涨的）"]
+    lines.append("\n💥 *跌幅前列*")
+    lines += [fmt(r) for r in downs] or ["  （暂无下跌的）"]
+
+    top = max((abs(r[1]) for r in ranked), default=0)
+    if top < pct:
+        lines.append(f"\n此刻最大波动 {top:.1f}%，还没到你 {pct:g}% 的线——"
+                     f"所以没推送是**正常的**。想更灵敏就 `/watchpump {max(int(top),5)}`")
+
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
 async def unwatch_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):

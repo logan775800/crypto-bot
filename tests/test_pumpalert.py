@@ -198,6 +198,71 @@ def test_scan_respects_quiet_hours(monkeypatch):
     assert not sent, "静音时段不该推送"
 
 
+def test_change_and_span_uses_oldest_when_warming():
+    """热身期（不足15m）也要能算，用最老点并报真实跨度。"""
+    now = 100000.0
+    hist = [[now - 300, 1.0], [now, 1.1]]
+    r = P._change_and_span(hist, now)
+    assert r is not None
+    assert round(r[0], 1) == 10.0 and round(r[1]) == 300
+
+
+def _mk_update(cid=555):
+    sent = []
+
+    class Msg:
+        async def reply_text(self, t, **kw):
+            sent.append(t)
+
+    class Upd:
+        message = Msg()
+        effective_chat = type("C", (), {"id": cid})()
+
+    return Upd(), sent
+
+
+def test_pumptop_empty_no_subscribers(monkeypatch):
+    import asyncio
+    from storage import data
+    data["pump_watch"] = {}
+    P._price_hist.clear()
+    upd, sent = _mk_update()
+    asyncio.run(P.pump_top(upd, None))
+    assert "没在跑" in sent[0] and "/watchpump" in sent[0]
+
+
+def test_pumptop_shows_leaderboard_and_below_threshold_note(monkeypatch):
+    import asyncio
+    from storage import data
+    data["pump_watch"] = {"555": {"pct": 15.0}}
+    P._price_hist.clear()
+    now = 2_000_000.0
+    monkeypatch.setattr(P.time, "time", lambda: now)
+    for i in range(16):
+        ts = now - 900 + i * 60
+        P._price_hist.setdefault("BANK", []).append([ts, 1.0 + 0.12 * i / 15])  # +12%
+    upd, sent = _mk_update()
+    asyncio.run(P.pump_top(upd, None))
+    out = sent[0]
+    assert "BANK" in out and "+12" in out
+    assert "还没到你 15% 的线" in out          # 最大波动<阈值 → 明确告诉用户没推送是正常的
+
+
+def test_pumptop_marks_crossed_threshold(monkeypatch):
+    import asyncio
+    from storage import data
+    data["pump_watch"] = {"555": {"pct": 15.0}}
+    P._price_hist.clear()
+    now = 2_000_000.0
+    monkeypatch.setattr(P.time, "time", lambda: now)
+    for i in range(16):
+        ts = now - 900 + i * 60
+        P._price_hist.setdefault("PUMP", []).append([ts, 1.0 + 0.18 * i / 15])  # +18%
+    upd, sent = _mk_update()
+    asyncio.run(P.pump_top(upd, None))
+    assert "🔔" in sent[0] and "还没到" not in sent[0]
+
+
 def test_no_subscribers_skips_fetch(monkeypatch):
     import asyncio
     from storage import data

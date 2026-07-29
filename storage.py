@@ -56,6 +56,8 @@ data.setdefault("plan_seq", 0)          # 计划自增号（按钮 callback_data
 data.setdefault("fex_subs", {})         # 资金费极值订阅 {chat_id: {threshold}}
 data.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:币:方向 -> ts}
 data.setdefault("ai_model_override", "")  # /aimodel 手动指定的AI模型（空=自动降级）
+data.setdefault("pump_watch", {})       # 15m急涨急跌订阅 {chat_id: {"pct": 阈值}}
+data.setdefault("pump_alerted", {})     # 急涨急跌去重 {chat_id: {币: {up,down,ts}}}
 
 def prune_data(now=None):
     """治理 data.json 无限增长：清掉过期冷却/去重记录、给历史类列表封顶。

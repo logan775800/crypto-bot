@@ -13,9 +13,24 @@ from handlers import pumpalert as P
 
 @pytest.fixture(autouse=True)
 def _clean():
+    """每个用例前后都把模块历史 + 相关 data 键清干净。
+
+    关键：必须重置 data['user_prefs']。否则 test_scan_respects_quiet_hours 写进去的
+    全天静音窗口会残留到别的用例，而 _is_quiet 读的是**真实墙上时间**——一旦测试
+    在 CI 上被打乱顺序（服务器镜像装了 pytest-randomly），静音测试先跑，
+    test_scan_end_to_end 的告警就会被静音掉、fired 为空而误判失败。
+    （这正是 v1.0.92 部署被测试卡住、v1.0.93 又卡住的真因。）
+    """
+    from storage import data
     P._price_hist.clear()
+    data["user_prefs"] = {}
+    data["pump_watch"] = {}
+    data["pump_alerted"] = {}
     yield
     P._price_hist.clear()
+    data["user_prefs"] = {}
+    data["pump_watch"] = {}
+    data["pump_alerted"] = {}
 
 
 # ── 滚动窗口算法 ────────────────────────────────────────────────
@@ -127,7 +142,7 @@ def test_scan_end_to_end(monkeypatch):
     P._price_hist.clear()
     data["pump_watch"] = {"555": {"pct": 15.0}}
     data["pump_alerted"] = {}
-    data.setdefault("user_prefs", {})
+    data["user_prefs"] = {}          # 显式清空：绝不能靠 setdefault，否则残留静音窗口会静默本用例
 
     now = [1_000_000.0]
     monkeypatch.setattr(P.time, "time", lambda: now[0])

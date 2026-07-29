@@ -132,3 +132,71 @@ def test_panel_off_unsubscribes(monkeypatch):
     asyncio.run(ca.on_button(q, None))
     assert 555 not in ca.data["contract_watch"] and "555" not in [str(s) for s in ca.data["contract_watch"]]
     assert "未订阅" in q.edited
+
+
+# ── 自检 / 立即补报 ────────────────────────────────────────────────
+def test_alertnow_bypasses_dedup(monkeypatch):
+    """/alertnow 必须无视 contract_tiers 去重，把当前异动全推出来。"""
+    import asyncio
+    fake = [{"ex": "OKX", "sym": "AAA", "change": 22, "price": 1, "tier": 20, "direction": "up"},
+            {"ex": "币安", "sym": "BBB", "change": 55, "price": 2, "tier": 50, "direction": "up"}]
+
+    async def fetch():
+        return list(fake)
+    monkeypatch.setattr(ca, "_fetch_all_movers", fetch)
+    # 即使去重表已记满，alertnow 也照发
+    ca.data["contract_tiers"] = {"AAA": {"up": 20, "ts": 9e18}, "BBB": {"up": 50, "ts": 9e18}}
+    ca.data["contract_min_tier"] = {"555": 20}
+    sent = []
+
+    async def reply(t, **kw):
+        sent.append(t)
+    asyncio.run(ca._do_alert_now(555, reply))
+    blob = "".join(sent)
+    assert "AAA" in blob and "BBB" in blob
+    ca.data["contract_tiers"] = {}
+
+
+def test_alertnow_respects_min_tier(monkeypatch):
+    import asyncio
+    fake = [{"ex": "OKX", "sym": "AAA", "change": 22, "price": 1, "tier": 20, "direction": "up"},
+            {"ex": "币安", "sym": "BBB", "change": 55, "price": 2, "tier": 50, "direction": "up"}]
+
+    async def fetch():
+        return list(fake)
+    monkeypatch.setattr(ca, "_fetch_all_movers", fetch)
+    ca.data["contract_min_tier"] = {"555": 50}       # 只要≥50%
+    sent = []
+
+    async def reply(t, **kw):
+        sent.append(t)
+    asyncio.run(ca._do_alert_now(555, reply))
+    blob = "".join(sent)
+    assert "BBB" in blob and "AAA" not in blob
+    ca.data["contract_min_tier"] = {}
+
+
+def test_diag_splits_deduped_vs_fresh(monkeypatch):
+    """自检必须正确区分「已报过·去重中」和「新的·下轮会推」——这是解释安静的核心。"""
+    import asyncio
+    import time
+    fake = [{"ex": "OKX", "sym": "AAA", "change": 22, "price": 1, "tier": 20, "direction": "up"},
+            {"ex": "币安", "sym": "BBB", "change": 55, "price": 2, "tier": 50, "direction": "up"}]
+
+    async def fetch():
+        return list(fake)
+    monkeypatch.setattr(ca, "_fetch_all_movers", fetch)
+    ca.data["contract_watch"] = [555]
+    ca.data["contract_min_tier"] = {"555": 20}
+    ca.data["pump_watch"] = {}
+    # AAA 已报过(去重中)，BBB 是新的
+    ca.data["contract_tiers"] = {"AAA": {"up": 20, "ts": time.time()}}
+    sent = []
+
+    async def reply(t, **kw):
+        sent.append(t)
+    asyncio.run(ca._do_alert_diag(555, reply))
+    out = sent[0]
+    assert "已报过·去重中：1" in out and "新的·下轮会推：1" in out
+    ca.data["contract_tiers"] = {}
+    ca.data["contract_watch"] = []

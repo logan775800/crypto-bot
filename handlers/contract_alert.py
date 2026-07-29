@@ -321,6 +321,8 @@ def _panel(chat_id):
     if row:
         rows.append(row)
     rows.append([InlineKeyboardButton("📊 看合约涨跌榜", callback_data="ctr:top"),
+                 InlineKeyboardButton("🔔 立即补报当前", callback_data="ctr:now")])
+    rows.append([InlineKeyboardButton("🩺 自检(为啥没告警)", callback_data="ctr:diag"),
                  InlineKeyboardButton("🔄 刷新", callback_data="ctr:panel")])
     if subbed:
         rows.append([InlineKeyboardButton("🔕 取消订阅", callback_data="ctr:off")])
@@ -333,6 +335,121 @@ async def contract_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/contract —— 合约异动告警按钮面板。"""
     text, kb = _panel(update.effective_chat.id)
     await update.message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+
+
+async def _fetch_all_movers():
+    """拉三所永续，返回按 (币,方向) 去重后、达到最低档≥20% 的异动列表（不改任何全局状态）。"""
+    async with httpx.AsyncClient(timeout=12) as client:
+        results = await asyncio.gather(
+            *[fn(client) for _, fn in EXCHANGES], return_exceptions=True)
+    dedup = {}
+    for (ex_name, _), res in zip(EXCHANGES, results):
+        if isinstance(res, Exception):
+            continue
+        for m in res:
+            t = get_tier(abs(m["change"]))
+            if t < 20:
+                continue
+            direction = "up" if m["change"] > 0 else "down"
+            key = (m["sym"], direction)
+            a = {"ex": ex_name, "sym": m["sym"], "change": m["change"],
+                 "price": m["price"], "tier": t, "direction": direction}
+            if key not in dedup or t > dedup[key]["tier"]:
+                dedup[key] = a
+    return list(dedup.values())
+
+
+async def _do_alert_now(chat_id, reply):
+    """立即补推当前异动的核心。reply 是发消息的协程函数（命令用 message.reply_text，
+    按钮回调也用 message.reply_text，各自传进来）。"""
+    mt = _min_tier(chat_id)
+    try:
+        movers = await _fetch_all_movers()
+    except Exception as e:
+        await reply(f"取数失败：{str(e)[:80]}")
+        return
+    movers = [a for a in movers if a["tier"] >= mt]
+    if not movers:
+        await reply(f"✅ 通道正常，但当前**没有** ≥{mt}% 的合约异动（24h口径）。\n"
+                    f"想放宽用 /contract 把最低档调低。", parse_mode="Markdown")
+        return
+    movers.sort(key=lambda a: (-a["tier"], a["ex"], a["sym"]))
+    body = [_render_alert(a) for a in movers]
+    chunks = [body[i:i + MAX_LINES] for i in range(0, len(body), MAX_LINES)]
+    for idx, chunk in enumerate(chunks):
+        head = (f"🚨 *当前合约异动*（补推，≥{mt}%，共{len(movers)}个）\n" if idx == 0
+                else "🚨 *当前合约异动*（续）\n")
+        await reply(head + "\n".join(chunk), parse_mode="Markdown")
+
+
+async def alert_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/alertnow —— 立即把当前所有合约异动补推一遍（无视去重，一次性）。
+
+    解决「怎么一个告警都没有」：正常告警对已报过的币会去重，安静≠坏了。
+    """
+    await update.message.reply_text("🔍 正在拉取当前合约异动…")
+    await _do_alert_now(update.effective_chat.id, update.message.reply_text)
+
+
+async def _do_alert_diag(chat_id, reply):
+    """告警自检核心：订阅状态 + 为什么安静。reply 同上。"""
+    import time
+    cid = str(chat_id)
+
+    def sub(key, is_dict=False):
+        v = data.get(key, {} if is_dict else [])
+        return (cid in [str(x) for x in v]) if not is_dict else (cid in v)
+
+    ctr = sub("contract_watch")
+    pmp = cid in (data.get("pump_watch") or {})
+    mkt = sub("market_watch")
+    lines = [
+        "📋 *告警自检*",
+        "━━━━━━━━━━━━━━",
+        f"本群 chat\\_id：`{chat_id}`",
+        f"📊 合约异动：{'✅ 已订阅' if ctr else '⬜ 未订阅'}"
+        + (f"（最低档 {_min_tier(chat_id)}%）" if ctr else "　→ /contract 开启"),
+        f"⚡ 急涨急跌：{'✅ 已订阅' if pmp else '⬜ 未订阅'}"
+        + (f"（阈值 {(data['pump_watch'][cid]).get('pct',15):g}%）" if pmp else "　→ /pump 开启"),
+        f"📈 市场异动：{'✅ 已订阅' if mkt else '⬜ 未订阅'}",
+        "━━━━━━━━━━━━━━",
+    ]
+
+    # 合约现状：当前有多少币达标、多少被去重、多少是新的
+    try:
+        movers = await _fetch_all_movers()
+        mt = _min_tier(chat_id)
+        movers = [a for a in movers if a["tier"] >= mt]
+        now = time.time()
+        tiers = data.get("contract_tiers", {})
+        deduped = fresh = 0
+        for a in movers:
+            rec = _upgrade_rec(tiers.get(a["sym"]))
+            if rec and now - rec.get("ts", 0) > TIER_RESET:
+                rec = {}
+            prev = rec.get(a["direction"], 0)
+            if a["tier"] > prev:
+                fresh += 1
+            else:
+                deduped += 1
+        lines += [
+            f"当前 ≥{mt}% 的合约异动：*{len(movers)}* 个",
+            f"　├ 已报过·去重中：{deduped} 个 ← 安静的正常原因",
+            f"　└ 新的·下轮会推：{fresh} 个",
+            f"去重记录数：{len(tiers)} 条",
+            "━━━━━━━━━━━━━━",
+            "✅ 你能看到这条 = *推送通道正常*",
+            "想立刻把当前异动全看一遍 → /alertnow",
+        ]
+    except Exception as e:
+        lines.append(f"（拉取现状失败：{str(e)[:60]}）")
+
+    await reply("\n".join(lines), parse_mode="Markdown")
+
+
+async def alert_diag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/alertdiag —— 告警自检：订阅状态 + 为什么安静 + 投递测试（这条消息本身就是测试）。"""
+    await _do_alert_diag(update.effective_chat.id, update.message.reply_text)
 
 
 async def _live_board():
@@ -403,6 +520,16 @@ async def on_button(query, context):
             InlineKeyboardButton("⬅️ 返回", callback_data="ctr:panel"),
             InlineKeyboardButton("🔄 刷新榜", callback_data="ctr:top")]])
         await safe_edit(query, board, reply_markup=kb, parse_mode="Markdown")
+        return
+
+    if d == "ctr:now":
+        await query.answer("拉取当前异动中…")
+        await _do_alert_now(chat_id, query.message.reply_text)
+        return
+
+    if d == "ctr:diag":
+        await query.answer("自检中…")
+        await _do_alert_diag(chat_id, query.message.reply_text)
         return
 
     if d.startswith("ctr:tier:"):

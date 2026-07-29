@@ -449,6 +449,8 @@ def main():
     app.add_handler(CommandHandler("quiet", prefs.set_quiet))
     app.add_handler(CommandHandler("watchmarket", market_alert.watch_market))
     app.add_handler(CommandHandler("contract", contract_alert.contract_panel))   # 合约告警按钮面板
+    app.add_handler(CommandHandler("alertnow", contract_alert.alert_now))        # 立即补推当前异动
+    app.add_handler(CommandHandler("alertdiag", contract_alert.alert_diag))      # 告警自检
     app.add_handler(CommandHandler("watchcontract", contract_alert.watch_contract))
     app.add_handler(CommandHandler("unwatchcontract", contract_alert.unwatch_contract))
     app.add_handler(CommandHandler("pump", pumpalert.pump_panel))            # 15m急涨急跌按钮面板

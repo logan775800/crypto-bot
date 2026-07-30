@@ -27,7 +27,8 @@ BYBIT_BASE = "https://api.bybit.com"
 
 WINDOW = 900              # 滚动窗口秒数（15 分钟）
 DEFAULT_PCT = 15.0        # 默认告警阈值（%）
-MIN_TURNOVER = 3_000_000  # 24h 成交额下限（USDT），滤掉微盘/僵尸合约的插针噪音
+MIN_TURNOVER = 1_000_000  # 24h 成交额下限（USDT），滤掉纯僵尸盘。放低到100万，
+                          # 因为真正15分钟暴涨15%的常是中小盘，卡太高会漏掉正主
 HYSTERESIS = 3.0          # 迟滞（百分点）：回落到 阈值-迟滞 以下才重新武装，防边界抖动刷屏
 REALERT_STEP = 10.0       # 同向继续冲高多少个点才升级重报（15%→25% 再报一次）
 STATE_TTL = WINDOW * 2    # 单币告警记录 30 分钟没更新就作废，允许重新计
@@ -39,7 +40,9 @@ PRESETS = [3, 5, 8, 10, 15, 20]   # 面板上的阈值快捷档
 log = logging.getLogger(__name__)
 
 # 价格历史：{symbol: [[ts, price], ...]}（按时间升序）。模块级、**不落盘**。
+# 每次进程重启（部署）都会清空，需重新攒 15 分钟——这是「刚部署完没告警」的常见原因。
 _price_hist = {}
+_started_at = None       # 本次进程首次扫描的时间戳，用于在 /pumptop 显示已运行多久
 
 
 def _rolling_change(hist, now):
@@ -192,7 +195,10 @@ async def scan_pump(context: ContextTypes.DEFAULT_TYPE):
     if not perps:
         return
 
+    global _started_at
     now = time.time()
+    if _started_at is None:
+        _started_at = now
     seen = _ingest(perps, now)
     changes = _compute_changes(seen, now)
 
@@ -270,7 +276,7 @@ def _panel(chat_id):
         f"{status}\n\n"
         "• 监控全部 U 本位永续（~500个）\n"
         "• 15 分钟内涨跌到阈值就推送，涨🚀跌💥都报\n"
-        "• 已滤掉 24h 成交额 < 300万U 的微盘\n"
+        f"• 已滤掉 24h 成交额 < {MIN_TURNOVER/1e4:g}万U 的僵尸盘\n"
         "━━━━━━━━━━━━━━\n"
         "选阈值（越小越灵敏、告警越多）："
     )
@@ -409,7 +415,7 @@ async def watch_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• 触发：任一币 **15 分钟内涨跌 ≥ {pct:g}%**\n"
         f"• 涨🚀 跌💥 都报，基准=现价对比 15 分钟前\n"
         f"• 每 60 秒扫一次；同币同方向不重复刷屏，再冲高 {REALERT_STEP:g} 个点才升级\n"
-        f"• 已滤掉 24h 成交额 < {MIN_TURNOVER/1e6:g}00 万 U 的微盘\n\n"
+        f"• 已滤掉 24h 成交额 < {MIN_TURNOVER/1e4:g} 万 U 的僵尸盘\n\n"
         f"改阈值：再发 `/watchpump 20`｜取消：`/unwatchpump`\n"
         f"（重启后需 ~15 分钟重新攒够历史才开始判涨跌，属正常）",
         parse_mode="Markdown")
@@ -460,9 +466,12 @@ async def pump_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append(f"你的告警线：涨跌 ≥ *{pct:g}%*")
     else:
         lines.append("⚠️ 本群*未订阅*（下面是全局历史）；`/watchpump` 才会推送")
+    if _started_at:
+        lines.append(f"⏱ 本次运行 {(time.time()-_started_at)/60:.0f} 分钟"
+                     "（每次部署会清空历史、重新攒15分钟）")
     if warming:
-        lines.append(f"⏳ 仍在热身：当前最长仅覆盖 ~{max_span/60:.0f} 分钟，"
-                     f"满 15 分钟后判定才完整")
+        lines.append(f"⏳ *仍在热身*：当前最长仅覆盖 ~{max_span/60:.0f} 分钟，"
+                     f"满 15 分钟后判定才完整——**这期间不会告警是正常的**")
 
     def fmt(r):
         sym, ch, span, price = r

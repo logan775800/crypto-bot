@@ -68,9 +68,14 @@ docker run --rm -v "$PWD":/app -w /app crypto-bot:local python -m pytest -q test
     exit 1
 }
 
-# --force-recreate 保证重建容器、重新加载新代码
+# 先杀掉所有由本镜像启动的容器（含游离在 compose 之外的僵尸），再重建。
+# 否则残留的旧容器会和新容器同时长轮询同一个 bot token，Telegram 把消息随机
+# 分给两边 → 新命令时灵时不灵（旧容器没有该 handler 就静默丢弃）。这是历史踩过的坑。
+echo "==== 清理残留容器（防双实例抢 token）===="
+docker ps -aq --filter ancestor=crypto-bot:local | xargs -r docker rm -f >/dev/null 2>&1 || true
+# --force-recreate 保证重建容器、重新加载新代码；--remove-orphans 清掉孤儿服务容器
 SINCE=$(date -u +%Y-%m-%dT%H:%M:%S)
-docker compose up -d --force-recreate
+docker compose up -d --force-recreate --remove-orphans
 
 echo "==== 健康检查(最多约6分钟) ===="
 ok=0
@@ -84,7 +89,8 @@ done
 if [ "$ok" != "1" ]; then
     echo "❌ 新版本未正常启动，自动回滚到 $PREV"
     git reset --hard "$PREV"
-    docker compose up -d --force-recreate
+    docker ps -aq --filter ancestor=crypto-bot:local | xargs -r docker rm -f >/dev/null 2>&1 || true
+    docker compose up -d --force-recreate --remove-orphans
     exit 1
 fi
 echo "✅ 部署成功: 版本 $TARGET (commit $DEPLOYED)"

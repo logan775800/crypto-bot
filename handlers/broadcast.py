@@ -33,11 +33,33 @@ async def broadcast_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 生成播报内容
 async def build_broadcast_text():
+    """CoinGecko 优先，挂了自动切 Bybit。
+
+    以前这里单点依赖 CoinGecko，它一限流整条播报就只剩「行情获取失败」五个字——
+    可机器人手上明明还接着三个交易所。备用源顶上后，你收到的是行情而不是故障；
+    真的两个源都挂了，也要把**两边各自的原因**写出来，别再让人靠猜。
+    """
+    src, cg_err = "CoinGecko", ""
     try:
         prices = await get_prices(BROADCAST_COINS)
     except Exception as e:
-        logging.error(f"播报查价出错: {e}")
-        return "行情获取失败"
+        logging.error(f"播报查价出错(CoinGecko): {e}")
+        cg_err = str(e)[:80]
+        prices = {}
+    # 全军覆没才降级：部分币缺失是正常的(某些币 CoinGecko 没收录)，不必换源
+    if not prices:
+        try:
+            from handlers.marketdata import simple_prices
+            prices = await simple_prices(BROADCAST_COINS)
+            src = "Bybit"
+        except Exception as e2:
+            logging.error(f"播报查价备用源也失败(Bybit): {e2}")
+            return ("⚠️ 行情获取失败（两个源都没取到）\n"
+                    f"CoinGecko: {cg_err or '返回空'}\n"
+                    f"Bybit: {str(e2)[:80]}")
+        if not prices:
+            return ("⚠️ 行情获取失败（两个源都返回空）\n"
+                    f"CoinGecko: {cg_err or '返回空'}\nBybit: 无匹配交易对")
     lines = ["📊 每日行情播报\n"]
     for sym in BROADCAST_COINS:
         info = prices.get(sym)
@@ -45,6 +67,8 @@ async def build_broadcast_text():
             continue
         emoji = "📈" if info["change"] >= 0 else "📉"
         lines.append(f"{emoji} {sym}: ${info['usd']:,.2f} ({info['change']:+.2f}%)")
+    if src != "CoinGecko":
+        lines.append(f"\n（行情源：{src}，CoinGecko 暂不可用）")
     return "\n".join(lines)
 
 # 定时任务：给所有订阅的对话推送（被 job_queue 调用）

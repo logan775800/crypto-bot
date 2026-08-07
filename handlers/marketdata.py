@@ -484,6 +484,48 @@ async def market_context():
     return "\n".join(out)
 
 
+# ── 8) 简易批量报价（CoinGecko 的备用源）─────────────────────────────
+async def simple_prices(symbols):
+    """{符号: {"usd": 价, "change": 24h涨跌%}}，字段与 api.get_prices_usd 一致。
+
+    存在的理由：好几个功能（每日播报等）单点依赖 CoinGecko，而免费额度被
+    一堆定时任务共用，429 一下整条功能就只剩一句"获取失败"。可手边明明有
+    三个交易所的行情——这里用 Bybit 顶上，现货优先、没有现货的用永续补。
+
+    一次拉全量 ticker 再本地过滤：比逐个币发请求快，也不会因为某个币在
+    Bybit 没有就整批失败。
+    """
+    want = {str(s).upper(): f"{str(s).upper()}USDT" for s in symbols or []}
+    if not want:
+        return {}
+    spot, linear = await asyncio.gather(
+        _get("/v5/market/tickers", {"category": "spot"}),
+        _get("/v5/market/tickers", {"category": CAT}),
+        return_exceptions=True,
+    )
+    table = {}
+    # 后放的不覆盖先放的 → 现货优先，永续只用来补现货没有的币
+    for src in (spot, linear):
+        if isinstance(src, Exception):
+            log.warning(f"备用报价源取数失败: {src}")
+            continue
+        for t in (src.get("list") or []):
+            s = t.get("symbol")
+            if s and s not in table:
+                table[s] = t
+    out = {}
+    for sym, pair in want.items():
+        t = table.get(pair)
+        if not t:
+            continue
+        try:
+            out[sym] = {"usd": float(t["lastPrice"]),
+                        "change": float(t.get("price24hPcnt") or 0) * 100}
+        except (TypeError, ValueError, KeyError):
+            continue
+    return out
+
+
 # ── 7) 清算数据（Bybit 无公开清算REST，复用 OKX 源）──────────────────
 async def liquidation_analysis(symbol):
     """Bybit 无公开清算 REST，复用 OKX 源——所以它是最容易挂的一个。

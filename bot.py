@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -51,12 +51,16 @@ HELP_TEXT = (
     "/portfolio 我的持仓（请私聊使用）\n\n"
     "*🎮 虚拟合约交易*（模拟盘，练手不碰真钱，私聊）\n"
     "/vopen BTC long 1000 10 开多（1000U保证金10x，入场取现价）\n"
-    "　└ /vclose BTC 平仓　/vpos 持仓+浮盈+爆仓价　/vhistory 胜率历史\n\n"
+    "　└ /vclose BTC 平仓　/vpos 持仓+浮盈+爆仓价　/vhistory 胜率历史\n"
+    "　└ /vtpsl BTC tp=70000 sl=60000 挂止盈止损（触及自动平仓，和实盘同构）\n"
+    "　└ 开仓含真实滑点+账户费率+合约最小下单量校验，持仓扣资金费\n\n"
     "*🔴 实盘交易*（Bybit永续·管理员·默认模拟盘）\n"
     "/trade 🎛 交易台——点按钮开仓/平仓/改止损/预警，记不住命令就用它\n"
     "/ropen BTC long 1000 10 62000 sl=60000 tp=68000 限价开仓(带止盈损,弹确认)\n"
     "　└ /rclose BTC 平仓　/rpos 实盘持仓　/rbal 余额　/rorders /rcancel 挂单\n"
     "　└ /rtpsl BTC tp= sl= 改止盈止损　/rliqalert 5 爆仓预警\n"
+    "/keycheck 🔐 密钥体检：这把key有哪些权限、能不能提现、绑没绑IP\n"
+    "　└ /killswitch on 出事时一键禁用实盘开仓（平仓查询不受影响）｜/audit 操作记录\n"
     "/cockpit 🚗 持仓驾驶舱：每个仓的趋势状态/距爆仓/有无止损/资金费/建议动作+账户红色风险\n"
     "/rstats 30 实盘复盘：胜率/盈亏比/期望值/最大回撤，按币·多空·持仓时长·时段拆解\n"
     "　└ `/rstats 30 ai` 让 AI 从数字里挑出你的行为漏洞（这是唯一能提升胜率的功能）\n"
@@ -327,6 +331,8 @@ async def post_init(application):
         BotCommand("backtest", "🧪 规则回测(扣成本的净期望)"),
         BotCommand("riskprofile", "⚙️ 我的风控参数"),
         BotCommand("weekly", "📅 交易周报(行为画像)"),
+        BotCommand("keycheck", "🔐 密钥权限体检"),
+        BotCommand("killswitch", "🔴 一键禁用实盘下单"),
         BotCommand("plan", "📋 生成交易计划(会自动失效)"),
         BotCommand("plans", "📋 我的交易计划"),
     ]
@@ -405,6 +411,12 @@ def main():
     app.add_handler(CommandHandler("riskset", riskprofile.risk_set_cmd))
     # 周报：看行为漂移而不是单周盈亏
     app.add_handler(CommandHandler("weekly", weekly.weekly_cmd))
+    # 虚拟盘止盈止损（和实盘条件单同构）
+    app.add_handler(CommandHandler("vtpsl", vtrade.vtpsl))
+    # 密钥安全：权限体检 / 一键停手 / 操作审计
+    app.add_handler(CommandHandler("keycheck", keyguard.keycheck_cmd))
+    app.add_handler(CommandHandler("killswitch", keyguard.killswitch_cmd))
+    app.add_handler(CommandHandler("audit", keyguard.audit_cmd))
     # 交易计划：一屏能执行 + 会自己失效
     app.add_handler(CommandHandler("plan", plan.plan_cmd))
     app.add_handler(CommandHandler("plans", plan.plans_cmd))

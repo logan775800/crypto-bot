@@ -28,7 +28,28 @@ async def _real_frictions(symbol, side, notional, entry):
     取不到盘口就退回无摩擦，但要如实标出来，别假装算过。
     """
     out = {"entry": entry, "slip": 0.0, "fee_rate": FEE_RATE,
-           "partial": False, "estimated": False}
+           "partial": False, "estimated": False, "spec_note": ""}
+    # 合约规格：数量要按步长取整、不能低于最小下单量。实盘会直接拒单，
+    # 模拟盘不校验的话，用户会练出一堆实盘根本下不进去的仓位
+    try:
+        from handlers import sizing
+        spec = await sizing.spec_for(symbol)
+        if spec:
+            qty = notional / entry if entry else 0
+            mul = spec.get("multiplier") or 1
+            if mul > 1:
+                qty /= mul
+            step = spec.get("qty_step") or 0
+            if step > 0:
+                qty = int(qty / step) * step
+            mn = spec.get("min_qty") or 0
+            if mn and qty < mn:
+                out["spec_note"] = (f"⚠️ 实盘下不进去：算出 {qty:g}，"
+                                    f"低于 {spec['symbol']} 的最小下单量 {mn:g}")
+            elif mul > 1:
+                out["spec_note"] = f"合约面值 ×{mul}，实盘对应 {qty:g} 张"
+    except Exception as e:
+        logging.debug(f"虚拟盘取合约规格失败 {symbol}: {e}")
     try:
         from handlers import econ
         mi = await econ.market_inputs(symbol, side, notional)
@@ -279,6 +300,7 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{symbol} {dir_txt} {lev:g}x\n"
         f"入场价 ${fmt(entry)}" + (f"（含滑点 {sim['slip']:+.3f}%）" if sim["slip"] else "") + "\n"
         + ("⚠️ 盘口深度不够这个名义，实盘会**部分成交**\n" if sim["partial"] else "")
+        + (f"{sim['spec_note']}\n" if sim.get("spec_note") else "")
         + f"保证金 ${margin:,.2f}｜仓位 ${notional:,.2f}\n"
         f"手续费 -${fee:,.2f}（费率 {sim['fee_rate']*100:.3f}%）\n"
         f"理论爆仓价 ${fmt(liq)}\n"
@@ -540,6 +562,113 @@ async def render_vhist(query):
 
 
 # ============ 后台自动爆仓监控（job，每 60s）============
+def _check_tpsl(pos, mark):
+    """价格是否触及这个仓的止盈/止损。返回 (类型, 成交价) 或 None。
+
+    触及价用**挂单价**而不是当前价：实盘条件单在触发价成交（滑点另算），
+    用当前价会让模拟盘的成交价系统性地优于实盘。
+    """
+    side = pos.get("side")
+    sl, tp = pos.get("sl"), pos.get("tp")
+    if sl:
+        if (side == "long" and mark <= sl) or (side == "short" and mark >= sl):
+            return "止损", sl
+    if tp:
+        if (side == "long" and mark >= tp) or (side == "short" and mark <= tp):
+            return "止盈", tp
+    return None
+
+
+async def _auto_close(a, sym, pos, price, kind):
+    """止盈/止损自动平仓。复用和手动平仓一致的成本口径。"""
+    qty = pos["qty"]
+    if pos["side"] == "long":
+        pnl = (price - pos["entry"]) * qty
+    else:
+        pnl = (pos["entry"] - price) * qty
+    fee = pos["margin"] * pos["lev"] * pos.get("fee_rate", FEE_RATE)
+    fund = pos.get("funding_paid", 0.0)
+    net = pnl - fee - fund
+    a["balance"] += max(0.0, pos["margin"] + net)
+    roe = net / pos["margin"] * 100 if pos["margin"] else 0
+    a["history"].append({
+        "sym": sym, "side": pos["side"], "lev": pos["lev"],
+        "entry": pos["entry"], "exit": price, "margin": pos["margin"],
+        "pnl": net, "roe": roe, "ts": time.time(), "auto": kind,
+    })
+    a["positions"].pop(sym, None)
+    save_data()
+    emoji = "🟢" if net >= 0 else "🔴"
+    return (f"{emoji} *虚拟{kind}自动平仓*\n"
+            f"{sym} {'多' if pos['side']=='long' else '空'} {pos['lev']:g}x\n"
+            f"入场 ${fmt(pos['entry'])} → {kind} ${fmt(price)}\n"
+            f"实现盈亏 {net:+,.2f} ({roe:+.1f}%)\n"
+            f"　毛 {pnl:+,.2f}｜手续费 -{fee:,.2f}"
+            + (f"｜资金费 {-fund:+,.2f}" if fund else "") + "\n"
+            f"账户可用 ${a['balance']:,.2f}")
+
+
+async def vtpsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/vtpsl BTC tp=70000 sl=60000 —— 给虚拟仓挂止盈止损（0 = 清除）。"""
+    if is_group(update):
+        await safe_reply(update.message, "🔒 请私聊使用")
+        return
+    uid = str(update.effective_user.id)
+    a = _acct(uid)
+    args = context.args or []
+    if not args:
+        await safe_reply(update.message,
+            "🎯 *虚拟止盈止损*\n\n`/vtpsl BTC tp=70000 sl=60000`\n"
+            "　只设一个也行；填 `0` 清除\n\n"
+            "后台每 60 秒检查一次，触及就自动平仓并通知——"
+            "和实盘的条件单同构，练出来的体感能迁移。", parse_mode="Markdown")
+        return
+    sym = args[0].upper()
+    pos = a.get("positions", {}).get(sym)
+    if not pos:
+        await safe_reply(update.message, f"没有 {sym} 的虚拟持仓")
+        return
+    changed = []
+    for kv in args[1:]:
+        if "=" not in kv:
+            continue
+        k, v = kv.split("=", 1)
+        k = k.strip().lower()
+        if k not in ("tp", "sl"):
+            continue
+        try:
+            px = float(v)
+        except ValueError:
+            await safe_reply(update.message, f"{k} 的值要是数字")
+            return
+        if px <= 0:
+            pos.pop(k, None)
+            changed.append(f"清除{k.upper()}")
+            continue
+        # 方向自洽：做多的止损必须在入场之下，止盈在之上。写反了等于把
+        # 止损变成止盈，实盘里这是会真亏钱的错误，模拟盘也不该放过去
+        e = pos["entry"]
+        if pos["side"] == "long":
+            bad = (k == "sl" and px >= e) or (k == "tp" and px <= e)
+        else:
+            bad = (k == "sl" and px <= e) or (k == "tp" and px >= e)
+        if bad:
+            await safe_reply(update.message,
+                f"❌ {k.upper()} {fmt(px)} 方向不对："
+                f"{'做多' if pos['side']=='long' else '做空'}的止损要在入场"
+                f"{'下方' if pos['side']=='long' else '上方'}、止盈在另一侧。已拒绝。")
+            return
+        pos[k] = px
+        changed.append(f"{k.upper()}={fmt(px)}")
+    if not changed:
+        await safe_reply(update.message, "没看懂参数，用法 `/vtpsl BTC tp=70000 sl=60000`",
+                         parse_mode="Markdown")
+        return
+    save_data()
+    await safe_reply(update.message,
+                     f"✅ {sym} 已设：{'、'.join(changed)}\n后台每 60 秒检查，触及自动平仓")
+
+
 async def check_liquidations(context: ContextTypes.DEFAULT_TYPE):
     accts = data.get("vtrade", {})
     if not accts:
@@ -564,6 +693,21 @@ async def check_liquidations(context: ContextTypes.DEFAULT_TYPE):
             if not info:
                 continue
             mark = info["price"]
+            # 止盈止损先于爆仓判定：实盘里 TP/SL 是挂在交易所的条件单，
+            # 价格一到就成交，根本走不到爆仓。不模拟这一层的话，模拟盘会
+            # 把「本来该被止损带走的单」一路拿到爆仓，练出完全错误的体感。
+            tp_sl = _check_tpsl(pos, mark)
+            if tp_sl:
+                kind, px = tp_sl
+                msg = await _auto_close(a, sym, pos, px, kind)
+                changed = True
+                if chat_id and msg:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=msg,
+                                                       parse_mode="Markdown")
+                    except Exception as e:
+                        logging.error(f"虚拟{kind}通知失败 {chat_id}: {e}")
+                continue
             liq = _liq(pos)
             hit = (pos["side"] == "long" and mark <= liq) or \
                   (pos["side"] == "short" and mark >= liq)

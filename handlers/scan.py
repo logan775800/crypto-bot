@@ -27,6 +27,16 @@ POOL = 40                      # 粗筛保留多少个进入细算
 DEEP = 12                      # 细算多少个（每个要打 4 个接口，这是耗时大头）
 CONCURRENCY = 6                # 并发上限，别把交易所打出限流
 REF_NOTIONAL = 5000            # 算执行质量用的参考名义(USDT)
+# ATR 可接受区间（占价格%）。太低=没波动，赚不回成本；太高=止损必须放很远，
+# 同样风险下仓位小到没意义，而且插针能扫掉任何合理止损。
+ATR_MIN, ATR_MAX = 0.6, 8.0
+# 净盈亏比过滤：按 1.5×ATR 止损、**3R 结构目标**试算，要求净值 ≥2.0。
+# 目标必须高于门槛——第一版用 2R 目标配 2.0 门槛，扣完成本必然 <2，
+# 结果全市场每个币都被这一条否掉，等于没有区分度。
+# 3R 目标是"一个像样的结构位"的合理代理；能不能剩下 2R 才是要考的。
+PROBE_RR = 3.0
+MIN_NET_RR = 2.0
+BTC_ALIGN_PCT = 1.5            # BTC 15m 动这么多以上时，反向的山寨机会要打折
 
 # 拥挤阈值：单期资金费到这个量级就说明一边已经很挤了
 FUNDING_HOT = 0.0005           # 0.05%/期 ≈ 年化 55%
@@ -82,8 +92,13 @@ def score_execution(spread_pct, slip_pct, partial):
     return _clamp(total)
 
 
-def overall(trend, liq, crowd, exec_q):
-    """综合分 + 一句话结论。**带否决**：流动性/执行不及格时趋势不算数。"""
+def overall(trend, liq, crowd, exec_q, atr_pct=None, net_rr=None, btc_conflict=False):
+    """综合分 + 一句话结论。**带否决**：流动性/执行不及格时趋势不算数。
+
+    后三个参数是「结果导向」的否决，跟前四维不同——它们不打分，只否决：
+    波动区间不对、净盈亏比不够、跟 BTC 顶着干，这些不是"分低一点"，
+    是"这单本身就不该做"。
+    """
     raw = trend * 0.35 + liq * 0.25 + exec_q * 0.25 + (100 - crowd) * 0.15
     vetoes = []
     if liq < 30:
@@ -92,6 +107,15 @@ def overall(trend, liq, crowd, exec_q):
         vetoes.append("执行成本过高")
     if crowd > 80:
         vetoes.append("拥挤度极高")
+    if atr_pct is not None:
+        if atr_pct < ATR_MIN:
+            vetoes.append(f"波动太小({atr_pct:.2f}%)，赚不回成本")
+        elif atr_pct > ATR_MAX:
+            vetoes.append(f"波动过大({atr_pct:.1f}%)，止损放不合理")
+    if net_rr is not None and net_rr < MIN_NET_RR:
+        vetoes.append(f"净盈亏比仅{net_rr:.2f}")
+    if btc_conflict:
+        vetoes.append("与BTC方向冲突")
     if vetoes:
         raw = min(raw, 35)
     if raw >= 70 and not vetoes:
@@ -134,12 +158,13 @@ async def _pool():
 
 
 async def _tf_snapshot(sym, iv, limit=120):
-    """某周期的 EMA 排列与斜率。取不到就返回 None —— 缺周期不猜。"""
+    """某周期的 EMA 排列、斜率、ATR%。取不到就返回 None —— 缺周期不猜。"""
     try:
         r = await md._get("/v5/market/kline", {
             "category": md.CAT, "symbol": sym,
             "interval": md.INTERVALS[iv], "limit": limit})
-        c = [float(x[4]) for x in (r.get("list") or [])[::-1]]
+        rows = (r.get("list") or [])[::-1]
+        c = [float(x[4]) for x in rows]
         if len(c) < 55:
             return None
         e20, e50 = md.ema(c, 20), md.ema(c, 50)
@@ -149,10 +174,50 @@ async def _tf_snapshot(sym, iv, limit=120):
         align = 1 if last > e20 > e50 else (-1 if last < e20 < e50 else 0)
         prev = md.ema(c[:-10], 20)
         slope = ((e20 - prev) / prev * 100) if prev else 0
-        return {"align": align, "slope": slope, "close": last}
+        h = [float(x[2]) for x in rows]
+        lo = [float(x[3]) for x in rows]
+        a14 = md.atr(h, lo, c, 14)
+        return {"align": align, "slope": slope, "close": last,
+                "atr_pct": (a14 / last * 100) if (a14 and last) else None}
     except Exception as e:
         log.debug(f"扫描取 {sym} {iv} 失败: {e}")
         return None
+
+
+async def _btc_bias():
+    """BTC 15m 的方向与幅度。整轮扫描只取一次。取不到返回 0（不据此否决）。"""
+    try:
+        r = await md._get("/v5/market/kline", {
+            "category": md.CAT, "symbol": "BTCUSDT",
+            "interval": md.INTERVALS["15m"], "limit": 2})
+        rows = (r.get("list") or [])[::-1]
+        if len(rows) < 1:
+            return 0.0
+        o, c = float(rows[-1][1]), float(rows[-1][4])
+        return (c - o) / o * 100 if o else 0.0
+    except Exception as e:
+        log.debug(f"扫描取 BTC 联动失败: {e}")
+        return 0.0
+
+
+def _net_rr(price, atr_pct, slip_pct, taker=0.00055, rr=PROBE_RR):
+    """按 1.5×ATR 止损 / 3R 结构目标试算净盈亏比。
+
+    这是全流程里唯一一个**结果导向**的指标：前面几维都在说"环境好不好"，
+    这个直接回答"扣完成本还剩多少"。低流动性小币经常前四维看着还行，
+    到这一步才现原形——因为滑点和手续费是按名义扣的，跟止损距离不成比例。
+    """
+    if not (price and atr_pct and atr_pct > 0):
+        return None
+    from handlers import econ
+    stop_pct = atr_pct * 1.5
+    entry = price
+    stop = entry * (1 - stop_pct / 100)
+    tp = entry * (1 + stop_pct * rr / 100)
+    a = econ.analyze(entry, stop, tp, REF_NOTIONAL, "long",
+                     fee_in=taker, fee_out=taker,
+                     slip_in_pct=slip_pct or 0, slip_out_pct=slip_pct or 0)
+    return (a or {}).get("net_rr")
 
 
 async def _oi_change(sym):
@@ -188,7 +253,7 @@ async def _book_quality(sym):
         return None
 
 
-async def _deep(sym, ticker, turnover, sem):
+async def _deep(sym, ticker, turnover, sem, btc_move=0.0):
     """对单个候选做细算。任何一项缺失都如实标 None，不用默认值糊过去。"""
     async with sem:
         tf_res, oi, book = await asyncio.gather(
@@ -213,7 +278,18 @@ async def _deep(sym, ticker, turnover, sem):
     crowd = score_crowding(funding, oi)
     ex = score_execution((book or {}).get("spread"), (book or {}).get("slip"),
                          (book or {}).get("partial", False))
-    total, verdict = overall(trend, liq, crowd, ex)
+    # 波动区间：用 1h 的 ATR%（有就用，没有退到任一可用周期）
+    atr_pct = None
+    for iv in ("1h", "4h", "15m"):
+        if tf.get(iv, {}).get("atr_pct"):
+            atr_pct = tf[iv]["atr_pct"]
+            break
+    net_rr = _net_rr(price, atr_pct, (book or {}).get("slip"))
+    # BTC 联动：大盘在动，而这个币的趋势方向跟它顶着干 → 否决
+    agree = sum(v.get("align", 0) for v in tf.values())
+    btc_conflict = (abs(btc_move) >= BTC_ALIGN_PCT and agree != 0
+                    and (btc_move > 0) != (agree > 0))
+    total, verdict = overall(trend, liq, crowd, ex, atr_pct, net_rr, btc_conflict)
     missing = []
     if not tf:
         missing.append("K线")
@@ -227,18 +303,21 @@ async def _deep(sym, ticker, turnover, sem):
         "exec": ex, "total": total, "verdict": verdict,
         "funding": funding, "oi_change": oi,
         "slip": (book or {}).get("slip"), "partial": (book or {}).get("partial"),
+        "atr_pct": atr_pct, "net_rr": net_rr, "btc_conflict": btc_conflict,
         "missing": missing,
     }
 
 
 async def run(limit=DEEP):
     """完整扫描。返回按可交易性排序的结果。"""
-    pool = await _pool()
-    if not pool:
+    pool, btc = await asyncio.gather(_pool(), _btc_bias(), return_exceptions=True)
+    if isinstance(pool, Exception) or not pool:
         return []
+    btc = 0.0 if isinstance(btc, Exception) else btc
     sem = asyncio.Semaphore(CONCURRENCY)
     res = await asyncio.gather(
-        *[_deep(s, t, tv, sem) for s, t, tv in pool[:limit]], return_exceptions=True)
+        *[_deep(s, t, tv, sem, btc) for s, t, tv in pool[:limit]],
+        return_exceptions=True)
     out = [r for r in res if r and not isinstance(r, Exception)]
     out.sort(key=lambda r: -r["total"])
     return out
@@ -259,6 +338,10 @@ def render(rows, limit=8):
             f"　趋势 {r['trend']:.0f}({r['direction']})｜流动性 {r['liq']:.0f}｜"
             f"拥挤 {r['crowd']:.0f}｜执行 {r['exec']:.0f}")
         extra = []
+        if r.get("net_rr") is not None:
+            extra.append(f"净RR {r['net_rr']:.2f}")
+        if r.get("atr_pct"):
+            extra.append(f"ATR{r['atr_pct']:.2f}%")
         if r["slip"] is not None:
             extra.append(f"滑点{r['slip']:.2f}%")
         if r["funding"]:

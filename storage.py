@@ -58,6 +58,8 @@ data.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:�
 data.setdefault("ai_model_override", "")  # /aimodel 手动指定的AI模型（空=自动降级）
 data.setdefault("pump_watch", {})       # 15m急涨急跌订阅 {chat_id: {"pct": 阈值}}
 data.setdefault("pump_alerted", {})     # 急涨急跌去重 {chat_id: {币: {up,down,ts}}}
+data.setdefault("trading_disabled", False)  # 实盘下单总开关(killswitch)
+data.setdefault("audit_log", [])         # 实盘操作审计
 data.setdefault("risk_profile", {})      # 个性化风控参数 {uid: {...}}
 data.setdefault("weekly_subs", [])       # 周报订阅 chat_id
 data.setdefault("weekly_snap", {})       # 上周行为快照（算漂移用）
@@ -100,8 +102,9 @@ def prune_data(now=None):
         if old:
             removed["contract_tiers"] = len(old)
 
-    # 已推新闻链接去重表：只留最近 500 条
-    for key, cap in (("pushed_news", 500), ("alerted_unlocks", 500)):
+    # 已推新闻链接去重表 / 审计日志：只留最近 N 条
+    for key, cap in (("pushed_news", 500), ("alerted_unlocks", 500),
+                     ("audit_log", 500)):
         lst = data.get(key)
         if isinstance(lst, list) and len(lst) > cap:
             removed[key] = len(lst) - cap

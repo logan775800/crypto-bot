@@ -30,6 +30,30 @@ BYBIT_API_SECRET = os.environ.get("BYBIT_API_SECRET", "")
 RECV_WINDOW = "5000"
 
 
+def _guard_order(body):
+    """所有开仓单的最后一道闸 + 审计。**写在下单函数内部**，不靠调用方自觉。
+
+    只拦开仓（reduceOnly=False）：出事时你需要的是「不能再开新仓」，
+    而平仓和撤单恰恰是这时候最该畅通的。
+    审计无论是否放行都要写——被拦下的尝试同样是需要复盘的信息。
+    """
+    try:
+        from handlers.keyguard import trading_enabled, audit
+    except Exception:
+        return                      # keyguard 不可用时不阻断交易（它是护栏不是依赖）
+    opening = not body.get("reduceOnly")
+    allowed = trading_enabled() or not opening
+    audit("order" if allowed else "order_blocked", {
+        "symbol": body.get("symbol"), "side": body.get("side"),
+        "type": body.get("orderType"), "qty": body.get("qty"),
+        "price": body.get("price", "market"), "reduceOnly": body.get("reduceOnly"),
+        "testnet": _is_testnet(),
+    })
+    if not allowed:
+        raise RuntimeError("实盘开仓已被 /killswitch 禁用。平仓和查询不受影响，"
+                           "恢复请发 /killswitch off")
+
+
 def _base_url():
     return "https://api-testnet.bybit.com" if _is_testnet() else "https://api.bybit.com"
 
@@ -212,6 +236,7 @@ class BybitClient:
             body["stopLoss"] = str(sl)
         if link_id:
             body["orderLinkId"] = link_id
+        _guard_order(body)
         return await self._post("/v5/order/create", body)
 
     async def place_market(self, symbol, side, qty, reduce_only=False,
@@ -228,6 +253,7 @@ class BybitClient:
             body["stopLoss"] = str(sl)
         if link_id:
             body["orderLinkId"] = link_id
+        _guard_order(body)
         return await self._post("/v5/order/create", body)
 
     async def cancel(self, symbol, order_id=None, link_id=None):

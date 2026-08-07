@@ -49,10 +49,158 @@ def main_menu_kb():
         [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
          InlineKeyboardButton("🛠 实用工具", callback_data="cat_tools")],
         [InlineKeyboardButton("💬 AI 助手（问我任何问题）", callback_data="ask_start")],
+        # 交易闭环的四块：找机会 → 算成本 → 控风险 → 回头看
+        [InlineKeyboardButton("🔍 机会扫描", callback_data="cat_scan"),
+         InlineKeyboardButton("🧮 交易工具", callback_data="cat_calc")],
+        [InlineKeyboardButton("🛡 风险中心", callback_data="cat_risk"),
+         InlineKeyboardButton("📅 复盘中心", callback_data="cat_review")],
         [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
          InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
         [InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
     ])
+
+
+def _back():
+    return [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")]
+
+
+# 新功能一律要有按钮入口 —— 只能靠打命令的功能等于没做。
+# 需要参数的（净盈亏比/回测）走「引导式」：点按钮 → 提示怎么填 → 用户发一行参数。
+CATS = {
+    "cat_scan": (
+        "🔍 *机会扫描*\n\n"
+        "按**可交易性**排序，不是按涨幅——涨幅第一名往往是最不该碰的那个。\n"
+        "四维打分：趋势 / 流动性 / 拥挤 / 执行，任一项不及格直接否决。",
+        [[InlineKeyboardButton("🔍 全市场扫描（约20秒）", callback_data="do:scan")],
+         [InlineKeyboardButton("📊 合约涨跌榜", callback_data="ctr:top"),
+          InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")]]),
+    "cat_calc": (
+        "🧮 *交易工具*\n\n"
+        "下单前的三件事：这是哪个合约、扣完成本还剩多少、这个止损能开多大。",
+        [[InlineKeyboardButton("💰 净盈亏比", callback_data="ask:net"),
+          InlineKeyboardButton("🔎 合约身份", callback_data="ask:sym")],
+         [InlineKeyboardButton("🧪 规则回测", callback_data="ask:backtest"),
+          InlineKeyboardButton("🩺 数据体检", callback_data="ask:datacheck")],
+         [InlineKeyboardButton("📋 生成交易计划", callback_data="ask:plan"),
+          InlineKeyboardButton("📐 标注图表", callback_data="ask:achart")]]),
+    "cat_risk": (
+        "🛡 *风险中心*\n\n"
+        "参数会**真的挡住**仓位计算，不是印在文档里让你自己遵守。",
+        [[InlineKeyboardButton("⚙️ 我的风控参数", callback_data="do:riskprofile")],
+         [InlineKeyboardButton("🧮 反推仓位", callback_data="ask:risk"),
+          InlineKeyboardButton("🛡 风险守护", callback_data="rgpanel")],
+         [InlineKeyboardButton("🔔 事件预警", callback_data="ask:events"),
+          InlineKeyboardButton("📊 合约异动", callback_data="ctr:panel")],
+         [InlineKeyboardButton("✅ 开仓检查清单", callback_data="do:checklist")]]),
+    "cat_review": (
+        "📅 *复盘中心*\n\n"
+        "周报看的是**行为漂移**而不是单周盈亏——行为你能控制，盈亏你不能。",
+        [[InlineKeyboardButton("📅 本周周报", callback_data="do:weekly"),
+          InlineKeyboardButton("📊 成绩单30天", callback_data="do:rstats")],
+         [InlineKeyboardButton("🚗 持仓驾驶舱", callback_data="do:cockpit"),
+          InlineKeyboardButton("📋 我的计划", callback_data="do:plans")]]),
+}
+
+# 引导式输入：callback → (提示文案, 对应命令名)
+ASK = {
+    "net": ("💰 *净盈亏比*　发一行参数：\n`BANK long 0.081 0.0795 0.086 2000`\n"
+            "　币 方向 入场 止损 止盈 名义USDT `[持仓小时]`", "net"),
+    "sym": ("🔎 *合约身份*　发币名，如 `LAB`", "sym"),
+    "backtest": ("🧪 *规则回测*　发参数：`BTC 1h trend`\n"
+                 "　周期 5m/15m/1h/4h　规则 trend/pullback/breakout", "backtest"),
+    "datacheck": ("🩺 *数据体检*　发币名，如 `BANK`", "datacheck"),
+    "plan": ("📋 *交易计划*　发「币 方向」，如 `BANK short`", "plan"),
+    "achart": ("📐 *标注图表*　发「币 周期」，如 `BTC 1h`", "achart"),
+    "risk": ("🧮 *反推仓位*　发「入场 止损 [风险%]」，如 `0.081 0.0828 0.5%`\n"
+             "　带币名更好：`BANK 0.081 0.0828 0.5%`", "risk"),
+    "events": ("🔔 *事件预警*　发要盯的币，如 `BTC ETH`\n"
+               "　盯 OI跳升/价OI结构切换/费率跨拥挤区/盘口翻转", "events"),
+}
+
+class _FakeCtx:
+    """把「按钮 + 用户发的一行参数」伪装成一次命令调用。
+
+    这样按钮入口和命令入口走的是**同一份**处理逻辑，不会出现
+    「命令能用、按钮版行为不一样」这种要分别维护两套的情况。
+    """
+    def __init__(self, args, real):
+        self.args = args
+        self.bot = real.bot
+        self.user_data = real.user_data
+        self.chat_data = real.chat_data
+        self.application = getattr(real, "application", None)
+
+
+async def _run_direct(query, context, name):
+    """无参数功能：点按钮直接跑。用 query.message 冒充 update.message。"""
+    handlers = {
+        "scan": ("handlers.scan", "scan_cmd", "🔍 扫描中…"),
+        "riskprofile": ("handlers.riskprofile", "risk_profile_cmd", None),
+        "weekly": ("handlers.weekly", "weekly_cmd", "📅 生成周报…"),
+        "rstats": ("handlers.rstats", "rstats", "📊 拉取成绩单…"),
+        "cockpit": ("handlers.cockpit", "cockpit", "🚗 读取持仓…"),
+        "plans": ("handlers.plan", "plans_cmd", None),
+        "checklist": ("handlers.checklist", "checklist", None),
+    }
+    if name not in handlers:
+        await query.answer("未知功能")
+        return
+    mod_name, fn_name, tip = handlers[name]
+    await query.answer(tip or "")
+    import importlib
+    try:
+        fn = getattr(importlib.import_module(mod_name), fn_name)
+    except (ImportError, AttributeError) as e:
+        logging.error(f"菜单直跑 {name} 找不到处理函数: {e}")
+        await query.message.reply_text(f"这个功能暂时用不了：{str(e)[:60]}")
+        return
+    args = ["30"] if name == "rstats" else []
+    fake_update = type("U", (), {
+        "message": query.message,
+        "effective_chat": query.message.chat,
+        "effective_user": query.from_user,
+    })()
+    try:
+        await fn(fake_update, _FakeCtx(args, context))
+    except Exception as e:
+        logging.error(f"菜单直跑 {name} 出错: {e}")
+        await query.message.reply_text(f"执行失败：{str(e)[:80]}")
+
+
+async def run_awaited_cmd(update, context, text):
+    """用户在引导式输入后发来的那行参数 → 转成对应命令执行。
+
+    返回 True 表示已处理（调用方要停止后续的「当成币名查价」）。
+    """
+    cmd = context.user_data.pop("await_cmd", None)
+    if not cmd:
+        return False
+    table = {
+        "net": ("handlers.econ", "net_cmd"),
+        "sym": ("handlers.symbols", "sym_cmd"),
+        "backtest": ("handlers.backtest", "backtest_cmd"),
+        "datacheck": ("handlers.datameta", "datacheck"),
+        "plan": ("handlers.plan", "plan_cmd"),
+        "achart": ("handlers.annotchart", "achart"),
+        "events": ("handlers.events", "events_cmd"),
+        "risk": ("handlers.riskguard", "risk"),
+    }
+    if cmd not in table:
+        return False
+    import importlib
+    mod_name, fn_name = table[cmd]
+    try:
+        fn = getattr(importlib.import_module(mod_name), fn_name)
+    except (ImportError, AttributeError) as e:
+        logging.error(f"引导式命令 {cmd} 找不到处理函数: {e}")
+        return False
+    try:
+        await fn(update, _FakeCtx((text or "").split(), context))
+    except Exception as e:
+        logging.error(f"引导式命令 {cmd} 执行出错: {e}")
+        await update.message.reply_text(f"执行失败：{str(e)[:80]}")
+    return True
+
 
 async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 打开菜单即视为放弃未完成的预警设置，避免残留状态误把后续输入当价格/币名
@@ -60,6 +208,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("await_alert_coin", None)
     context.user_data.pop("await_watchpct", None)
     context.user_data.pop("await_track_addr", None)
+    context.user_data.pop("await_cmd", None)    # 放弃未完成的引导式输入
     context.user_data.pop("ai_session", None)   # 打开菜单即退出 AI 问答会话
     await update.message.reply_text(
         "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
@@ -241,6 +390,28 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("ev:"):
         from handlers import events as _events
         await _events.on_button(query, context)
+
+    # ---- 新功能分类页（扫描/工具/风险/复盘）----
+    elif d in CATS:
+        text, rows = CATS[d]
+        await safe_edit(query, text, parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup(rows + [_back()]))
+
+    # ---- 引导式输入：点按钮 → 提示格式 → 下一条消息当参数 ----
+    elif d.startswith("ask:"):
+        key = d.split(":", 1)[1]
+        if key not in ASK:
+            await query.answer("未知功能")
+            return
+        tip, cmd = ASK[key]
+        context.user_data["await_cmd"] = cmd
+        await safe_edit(query, tip + "\n\n_直接发消息即可，发 /menu 取消_",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup([_back()]))
+
+    # ---- 无参数功能：点了直接跑 ----
+    elif d.startswith("do:"):
+        await _run_direct(query, context, d.split(":", 1)[1])
 
     # ---- 部署审批：确认/取消（仅管理员）----
     elif d.startswith("jdok:") or d.startswith("jdno:"):

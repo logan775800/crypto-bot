@@ -66,6 +66,14 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_ask_text(update, context, text)
         return
 
+    # 引导式命令：菜单里点了「净盈亏比/回测/合约身份…」，这条就是参数行。
+    # 放在最前面（AI 会话之后）——用户刚点完按钮，下一条一定是参数，
+    # 落到"当币名查价"会得到一个莫名其妙的结果。
+    if context.user_data.get("await_cmd"):
+        from handlers.menu import run_awaited_cmd
+        if await run_awaited_cmd(update, context, text):
+            return
+
     # 地址追踪：用户点了"添加地址"，现在发来的是以太坊地址
     if context.user_data.get("await_track_addr"):
         import re as _re

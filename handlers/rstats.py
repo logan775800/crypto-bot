@@ -232,6 +232,95 @@ def _hour_bucket(t):
     return f"{h:02d}:00-{h:02d}:59"
 
 
+# ── 计划 vs 实际 ────────────────────────────────────────────────
+# 「是否追单」以前只能靠"单笔亏损放大"这类间接标签去猜。有了 /plan 的历史计划，
+# 就能直接比对：计划的入场区在哪、实际成交在哪、差多少。
+# 这是行为归因里最硬的一块证据——它不依赖任何对意图的推测。
+CHASE_R = 0.25          # 实际成交偏离计划入场区超过止损距离的这个比例 = 追单
+
+
+def match_plans(trades, plans):
+    """把每笔成交和它对应的计划配上。
+
+    配对规则：同币、同方向、计划创建时间早于成交时间、且是**最近的**那份。
+    配不上的不猜——宁可少一条证据，也不能把 A 计划的价位算到 B 交易头上。
+    """
+    by_key = {}
+    for p in plans or []:
+        if not p.get("entry") or not p.get("stop"):
+            continue
+        key = (p.get("symbol"), p.get("side"))
+        by_key.setdefault(key, []).append(p)
+    for lst in by_key.values():
+        lst.sort(key=lambda x: x.get("created", 0))
+
+    out = []
+    for t in trades or []:
+        lst = by_key.get((t["symbol"], t["side"]))
+        if not lst or not t.get("entry"):
+            continue
+        ts = (t.get("ts") or 0) / 1000
+        prior = [p for p in lst if p.get("created", 0) <= ts]
+        if not prior:
+            continue
+        p = prior[-1]
+        lo, hi = min(p["entry"]), max(p["entry"])
+        risk = abs((lo + hi) / 2 - p["stop"])
+        if risk <= 0:
+            continue
+        # 偏离方向要看多空：做多在区间**上方**成交才叫追，下方成交是更好的价
+        if t["side"] == "long":
+            dev = t["entry"] - hi if t["entry"] > hi else min(0.0, t["entry"] - lo)
+        else:
+            dev = lo - t["entry"] if t["entry"] < lo else min(0.0, hi - t["entry"])
+        out.append({
+            "trade": t, "plan": p,
+            "plan_zone": (lo, hi), "actual": t["entry"],
+            "dev": dev, "dev_r": dev / risk,
+            "chased": dev / risk > CHASE_R,
+            "pnl": t["pnl"],
+        })
+    return out
+
+
+def chase_summary(matched):
+    """追单 vs 守纪律的结果对比。数字摆出来比任何说教都有用。"""
+    if not matched:
+        return None
+    chased = [m for m in matched if m["chased"]]
+    disc = [m for m in matched if not m["chased"]]
+
+    def agg(rows):
+        if not rows:
+            return None
+        n = len(rows)
+        pnl = sum(r["pnl"] for r in rows)
+        wins = sum(1 for r in rows if r["pnl"] > 0)
+        return {"n": n, "pnl": pnl, "win_rate": wins / n * 100, "avg": pnl / n}
+    return {"total": len(matched), "chased": agg(chased), "disciplined": agg(disc),
+            "avg_dev_r": sum(m["dev_r"] for m in matched) / len(matched)}
+
+
+def build_chase_text(trades, plans):
+    m = match_plans(trades, plans)
+    s = chase_summary(m)
+    if not s:
+        return ""
+    lines = ["", f"*计划 vs 实际*　配上计划的成交 {s['total']} 笔",
+             f"　平均偏离计划入场区 {s['avg_dev_r']:+.2f}R"]
+    for key, label in (("chased", f"追单（偏离>{CHASE_R}R）"), ("disciplined", "守在计划里")):
+        a = s[key]
+        if a:
+            lines.append(f"　{label}　{a['n']}笔　胜率{a['win_rate']:.0f}%　"
+                         f"合计 {_money(a['pnl'])}　均{_money(a['avg'])}/笔")
+    if s["chased"] and s["disciplined"]:
+        d = s["disciplined"]["avg"] - s["chased"]["avg"]
+        if d > 0:
+            lines.append(f"　→ 守纪律的单每笔多赚 {_money(d)}——追进去的钱是从盈亏比里扣的")
+    lines.append("_只统计能配上历史计划的成交，配不上的不猜_")
+    return "\n".join(lines)
+
+
 # ── 亏损归因 ────────────────────────────────────────────────────
 # 「胜率 42%」告诉不了你该改什么。「你的亏损 70% 来自持仓超过一天的山寨多单」
 # 才是可执行的。这里把每笔亏损打上**行为标签**，再按标签汇总亏了多少。
@@ -338,6 +427,13 @@ def build_stats_text(trades, days, fund=None, env=""):
     attr = build_attribution_text(trades)
     if attr:
         lines.append(attr)
+    try:
+        from storage import data as _d
+        chase = build_chase_text(trades, _d.get("plans") or [])
+        if chase:
+            lines.append(chase)
+    except Exception as e:
+        log.warning(f"计划vs实际对比失败: {e}")
 
     # 币种：最亏的 5 个
     by_sym = _agg(trades, lambda t: t["symbol"].replace("USDT", ""))

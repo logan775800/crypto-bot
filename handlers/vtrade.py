@@ -15,7 +15,53 @@ from storage import data, save_data
 from handlers.util import safe_reply
 
 START_BALANCE = 10000.0   # 初始虚拟本金（USDT）
-FEE_RATE = 0.0005         # 单边吃单手续费 0.05%（开+平各扣一次，模拟真实磨损）
+FEE_RATE = 0.0005         # 单边吃单手续费兜底值（取不到真实费率时用）
+
+
+async def _real_frictions(symbol, side, notional, entry):
+    """把实盘的三种摩擦搬进模拟盘：滑点、真实费率、部分成交。
+
+    模拟盘的意义是让手感能迁移到实盘。零滑点、固定费率的模拟盘会养出两个
+    错误直觉：「这个位置我挂得到」和「这个量我开得进去」——低流动性小币上
+    这两条都不成立，而那正是最容易亏大钱的地方。
+
+    取不到盘口就退回无摩擦，但要如实标出来，别假装算过。
+    """
+    out = {"entry": entry, "slip": 0.0, "fee_rate": FEE_RATE,
+           "partial": False, "estimated": False}
+    try:
+        from handlers import econ
+        mi = await econ.market_inputs(symbol, side, notional)
+        slip = mi["slip_in"] or 0.0
+        # 滑点方向：开多成交价被推高，开空被压低
+        out["entry"] = entry * (1 + slip / 100) if side == "long" else entry * (1 - slip / 100)
+        out["slip"] = slip if side == "long" else -slip
+        out["fee_rate"] = mi["taker"]
+        out["partial"] = mi.get("partial", False)
+        out["estimated"] = True
+    except Exception as e:
+        logging.warning(f"虚拟盘摩擦估算失败 {symbol}: {e}")
+    return out
+
+
+def accrue_funding(pos, rate, now=None):
+    """按持仓时长累计资金费。返回本次新增的成本（正=付出）。
+
+    实盘里隔夜单的资金费经常比手续费还贵，模拟盘不扣就会让人以为
+    「拿着不动没成本」——那是永续最贵的错觉之一。
+    """
+    import time as _t
+    now = now or _t.time()
+    last = pos.get("funding_ts") or pos.get("open_ts") or now
+    hours = (now - last) / 3600
+    if hours <= 0:
+        return 0.0
+    from handlers import econ
+    notional = pos.get("margin", 0) * pos.get("lev", 1)
+    cost = econ.funding_cost(notional, rate, hours, pos.get("side", "long"))
+    pos["funding_paid"] = pos.get("funding_paid", 0.0) + cost
+    pos["funding_ts"] = now
+    return cost
 MAX_LEV = 125             # 杠杆上限
 
 
@@ -205,7 +251,12 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         entry = r["price"]
 
     notional = margin * lev
-    fee = notional * FEE_RATE
+    # 和实盘同构：入场价要算上真实滑点，数量要过合约规格。
+    # 不这么做的话，用户在模拟盘上养成的手感（"这个位置我能挂到"、"这个量能开"）
+    # 到实盘全部失效——那比不练还糟，因为他会带着错误的信心上真钱。
+    sim = await _real_frictions(symbol, side, notional, entry)
+    entry = sim["entry"]
+    fee = notional * sim["fee_rate"]
     cost = margin + fee
     if cost > a["balance"] + 1e-9:
         await safe_reply(update.message, 
@@ -217,16 +268,19 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     a["positions"][symbol] = {
         "side": side, "margin": margin, "lev": lev, "entry": entry,
         "qty": notional / entry, "open_ts": time.time(), "open_fee": fee,
+        "funding_paid": 0.0, "funding_ts": time.time(),
+        "fee_rate": sim["fee_rate"],
     }
     save_data()
     liq = _liq(a["positions"][symbol])
     dir_txt = "做多 📈" if side == "long" else "做空 📉"
-    await safe_reply(update.message, 
+    await safe_reply(update.message,
         f"✅ *虚拟开仓*\n"
         f"{symbol} {dir_txt} {lev:g}x\n"
-        f"入场价 ${fmt(entry)}\n"
-        f"保证金 ${margin:,.2f}｜仓位 ${notional:,.2f}\n"
-        f"手续费 -${fee:,.2f}\n"
+        f"入场价 ${fmt(entry)}" + (f"（含滑点 {sim['slip']:+.3f}%）" if sim["slip"] else "") + "\n"
+        + ("⚠️ 盘口深度不够这个名义，实盘会**部分成交**\n" if sim["partial"] else "")
+        + f"保证金 ${margin:,.2f}｜仓位 ${notional:,.2f}\n"
+        f"手续费 -${fee:,.2f}（费率 {sim['fee_rate']*100:.3f}%）\n"
         f"理论爆仓价 ${fmt(liq)}\n"
         f"剩余可用 ${a['balance']:,.2f}\n\n"
         f"平仓 `/vclose {symbol}`｜查仓 `/vpos`\n"
@@ -278,8 +332,18 @@ async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pnl = (mark - pos["entry"]) * close_qty
     else:
         pnl = (pos["entry"] - mark) * close_qty
-    close_fee = close_margin * pos["lev"] * FEE_RATE
-    net = pnl - close_fee
+    close_fee = close_margin * pos["lev"] * pos.get("fee_rate", FEE_RATE)
+    # 持仓期间的资金费：拿着不动是有成本的，这是永续最贵的错觉之一
+    fund = 0.0
+    try:
+        from handlers import marketdata as md
+        t = await md._get("/v5/market/tickers",
+                          {"category": md.CAT, "symbol": md.norm(symbol)})
+        rate = float(((t.get("list") or [{}])[0]).get("fundingRate") or 0)
+        fund = accrue_funding(pos, rate) * frac
+    except Exception as e:
+        logging.warning(f"虚拟平仓资金费计算失败 {symbol}: {e}")
+    net = pnl - close_fee - fund
     # 逐仓：亏损不超过这部分保证金（超了就是爆仓，balance 只退到 0）
     ret = max(0.0, close_margin + net)
     a["balance"] += ret
@@ -305,8 +369,10 @@ async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"{emoji} *虚拟平仓 {word}* {'(部分)' if pct<100 else ''}\n"
         f"{symbol} {'多' if pos['side']=='long' else '空'} {pos['lev']:g}x\n"
         f"入场 ${fmt(pos['entry'])} → 平仓 ${fmt(mark)}\n"
-        f"实现盈亏 {net:+,.2f} ({roe:+.1f}%)（含手续费 -${close_fee:,.2f}）"
-        f"{remain_txt}\n"
+        f"实现盈亏 {net:+,.2f} ({roe:+.1f}%)\n"
+        f"　毛盈亏 {pnl:+,.2f}｜手续费 -{close_fee:,.2f}"
+        + (f"｜资金费 {-fund:+,.2f}" if fund else "")
+        + f"{remain_txt}\n"
         f"账户可用 ${a['balance']:,.2f}",
         parse_mode="Markdown")
 

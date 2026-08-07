@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -31,6 +31,12 @@ HELP_TEXT = (
     "/datacheck BANK 🔎 数据体检：各维度取不取得到、数据几点的、延迟多少、有没有插针\n"
     "/sym LAB 🔎 合约身份：这代号在哪个所、面值倍数、按币还是按张、最小下单量\n"
     "　└ 同名不同币会全部列出并做价格偏离检测——下单前先确认是哪个\n"
+    "/net BANK long 0.081 0.0795 0.086 2000 💰 净盈亏比：扣掉手续费/滑点/资金费还剩多少\n"
+    "　└ 止损1%的短线单，光两次吃单手续费就能把毛1.2:1压到净0.98:1\n"
+    "/scan 🔍 机会扫描：全市场按**可交易性**排序（趋势/流动性/拥挤/执行 四维打分）\n"
+    "　└ 不是涨幅榜——涨幅第一名往往是最不该碰的那个\n"
+    "/events BTC ETH 🔔 事件预警：OI跳升/价OI结构切换/费率跨拥挤区/盘口翻转\n"
+    "　└ 每条都带上下文和「这意味着什么」，不是干巴巴一句「价格到了」\n"
     "/plan BANK short 📋 交易计划：触发/入场/止损/分段止盈/**失效条件**，一屏能执行\n"
     "　└ 后台按5m收盘盯着：触发、止盈触及、**计划失效**、过期都会主动推给你\n"
     "　└ /plans 我的计划　/replan p3 重新校验（旧计划别硬做）\n"
@@ -310,6 +316,8 @@ async def post_init(application):
         BotCommand("datacheck", "🔎 数据体检(时间+完整度)"),
         BotCommand("sym", "🔎 合约身份(哪个所/面值/单位)"),
         BotCommand("net", "💰 净盈亏比(扣费/滑点/资金费)"),
+        BotCommand("scan", "🔍 机会扫描(可交易性评分)"),
+        BotCommand("events", "🔔 事件预警(OI/费率/盘口切换)"),
         BotCommand("plan", "📋 生成交易计划(会自动失效)"),
         BotCommand("plans", "📋 我的交易计划"),
     ]
@@ -377,6 +385,10 @@ def main():
     app.add_handler(CommandHandler("sym", symbols.sym_cmd))
     # 净盈亏比：毛的那个是价格距离，净的才是到手的钱
     app.add_handler(CommandHandler("net", econ.net_cmd))
+    # 机会扫描：按可交易性排序，不是按涨幅
+    app.add_handler(CommandHandler("scan", scan.scan_cmd))
+    # 事件驱动预警：盯状态切换，每条带上下文
+    app.add_handler(CommandHandler("events", events.events_cmd))
     # 交易计划：一屏能执行 + 会自己失效
     app.add_handler(CommandHandler("plan", plan.plan_cmd))
     app.add_handler(CommandHandler("plans", plan.plans_cmd))
@@ -532,6 +544,7 @@ def main():
     jq.run_repeating(riskguard.check_risk, interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒
     jq.run_repeating(condalert.check_conds, interval=120, first=80)  # 条件触发提醒(价格+指标组合)，每2分钟
     jq.run_repeating(plan.check_plans, interval=120, first=95)  # 交易计划生命周期(触发/止盈/失效/过期)，每2分钟
+    jq.run_repeating(events.check_events, interval=300, first=110)  # 事件驱动预警(OI跳升/四象限切换/费率跨阈/盘口翻转)，每5分钟
     jq.run_repeating(fundextreme.scan_fex, interval=3600, first=240)  # 资金费极值订阅扫描，每小时
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）

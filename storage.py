@@ -58,6 +58,9 @@ data.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:�
 data.setdefault("ai_model_override", "")  # /aimodel 手动指定的AI模型（空=自动降级）
 data.setdefault("pump_watch", {})       # 15m急涨急跌订阅 {chat_id: {"pct": 阈值}}
 data.setdefault("pump_alerted", {})     # 急涨急跌去重 {chat_id: {币: {up,down,ts}}}
+data.setdefault("event_subs", {})        # 事件驱动预警订阅 {chat_id: {symbols:[]}}
+data.setdefault("event_state", {})       # 各币上一轮状态快照（判"切换"的基线）
+data.setdefault("event_cooldown", {})    # 事件推送冷却 {币:事件 -> ts}
 data.setdefault("contract_min_tier", {})  # 合约告警每群最低档 {chat_id: 20/30/50/100}
 
 def prune_data(now=None):

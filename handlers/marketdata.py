@@ -527,6 +527,70 @@ async def simple_prices(symbols):
 
 
 # ── 7) 清算数据（Bybit 无公开清算REST，复用 OKX 源）──────────────────
+async def liquidity_zones(symbol, depth=200):
+    """价格路径上的**流动性密集区** —— 止盈该放在哪之前的一层。
+
+    刻意不叫"清算热区"：真正的清算热力图需要全市场逐仓位数据，交易所不公开，
+    市面上那些图都是按假设杠杆反推的**估算**。把估算说成事实，用户会把止盈
+    挂在一个根本不存在的位置上。
+
+    这里只用两样**能证实**的东西：
+      1. 当前订单簿里的挂单密集档（真实存在的挂单，但随时可撤）；
+      2. 近期已发生的清算（历史事实，说明那个价位曾经打爆过人）。
+    并且两者严格分开标注 —— 一个是"现在有挂单"，一个是"过去爆过仓"，
+    都**不等于**"价格一定会去那里"。
+    """
+    sym = norm(symbol)
+    out = [f"【{sym} 价格路径上的流动性】"]
+    try:
+        r, srv = await _get2("/v5/market/orderbook",
+                             {"category": CAT, "symbol": sym, "limit": depth})
+        bids = [(float(p), float(s)) for p, s in (r.get("b") or [])]
+        asks = [(float(p), float(s)) for p, s in (r.get("a") or [])]
+    except Exception as e:
+        return (f"⚠️ {sym} 盘口取不到（{str(e)[:50]}），无法给出流动性分布。"
+                f"**不可**凭空谈「上方/下方有多少流动性」。")
+    if not bids or not asks:
+        return f"⚠️ {sym} 盘口为空，无法给出流动性分布。"
+    out[0] = f"【{sym} 价格路径上的流动性】{stamp(srv)}"
+    mid = (bids[0][0] + asks[0][0]) / 2
+
+    def clusters(side, label, n=3):
+        if not side:
+            return []
+        avg = sum(s for _, s in side) / len(side)
+        big = [(p, s) for p, s in side if s > avg * 4]
+        big.sort(key=lambda x: -x[1])
+        rows = []
+        for p, s in big[:n]:
+            dist = (p - mid) / mid * 100
+            rows.append(f"　{label} {f(p)}（{dist:+.2f}%）挂 {s:,.0f}")
+        return rows
+
+    out.append(f"现价附近 {f(mid)}")
+    up = clusters(asks, "上方")
+    dn = clusters(bids, "下方")
+    out += up or ["　上方 无明显密集挂单"]
+    out += dn or ["　下方 无明显密集挂单"]
+    out.append("以上是**当前挂单**（真实存在但随时可撤），不是承诺的支撑阻力。")
+
+    # 历史清算：事实，但属于"已经发生过"，不能当成未来目标
+    try:
+        from handlers.okx import build_liq_text
+        liq = await build_liq_text(sym.replace("USDT", ""))
+        out.append("")
+        out.append("近期**已发生**的清算（历史事实，不代表价格会再去）：")
+        out.append(liq)
+    except Exception as e:
+        out.append("")
+        out.append(f"（历史清算数据暂不可用：{str(e)[:50]}——"
+                   f"这不代表该币没有清算，只是这次取不到）")
+    out.append("")
+    out.append("⚠️ 交易所不公开逐仓位数据，**没有人**能给出真实的清算热力图。"
+               "任何标着「下方清算密集」的图都是按假设杠杆反推的估算，别当事实用。")
+    return "\n".join(out)
+
+
 async def liquidation_analysis(symbol):
     """Bybit 无公开清算 REST，复用 OKX 源——所以它是最容易挂的一个。
     挂了必须说清「这个维度这次没有」，而不是让模型以为「该币没有清算」。"""

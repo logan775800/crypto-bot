@@ -237,6 +237,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import contract_alert
         await contract_alert.on_button(query, context)
 
+    # ---- 事件驱动预警面板（OI跳升/结构切换/费率跨阈/盘口翻转）----
+    elif d.startswith("ev:"):
+        from handlers import events as _events
+        await _events.on_button(query, context)
+
     # ---- 部署审批：确认/取消（仅管理员）----
     elif d.startswith("jdok:") or d.startswith("jdno:"):
         from config import is_admin

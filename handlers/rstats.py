@@ -232,6 +232,72 @@ def _hour_bucket(t):
     return f"{h:02d}:00-{h:02d}:59"
 
 
+# ── 亏损归因 ────────────────────────────────────────────────────
+# 「胜率 42%」告诉不了你该改什么。「你的亏损 70% 来自持仓超过一天的山寨多单」
+# 才是可执行的。这里把每笔亏损打上**行为标签**，再按标签汇总亏了多少。
+#
+# 标签必须能从成交数据本身判定，不能靠猜意图。所以只用四条能证实的：
+MAJORS = ("BTCUSDT", "ETHUSDT", "SOLUSDT")
+BIG_LEV = 20            # 超过这个杠杆算重杠杆
+LONG_HOLD = 86400       # 持仓超过一天
+BIG_LOSS_R = 2.0        # 单笔亏损超过账户典型亏损的这个倍数 = 止损被放大过
+
+
+def loss_tags(t, typical_loss):
+    """给一笔交易打行为标签。只打**能从数据证实**的，不猜意图。"""
+    tags = []
+    if t["pnl"] >= 0:
+        return tags
+    if t["symbol"] not in MAJORS:
+        tags.append("山寨小币")
+    if (t.get("lev") or 0) >= BIG_LEV:
+        tags.append("重杠杆")
+    d = t.get("dur")
+    if d is not None and d >= LONG_HOLD:
+        tags.append("持仓超一天")
+    if d is not None and d < 300:
+        tags.append("5分钟内被打掉")
+    if typical_loss > 0 and abs(t["pnl"]) >= typical_loss * BIG_LOSS_R:
+        tags.append("单笔亏损放大")
+    return tags or ["其他"]
+
+
+def attribution(trades):
+    """亏损归因：{标签: (笔数, 亏损额)}，按亏损额降序。
+
+    注意分母：一笔亏损可能同时命中多个标签（重杠杆的山寨单持仓超一天），
+    所以各标签金额**相加会超过总亏损**。这是刻意的——我们要回答的是
+    「哪些行为参与了亏损」，不是把亏损切成互斥的份额。
+    """
+    losses = [t for t in trades if t["pnl"] < 0]
+    if not losses:
+        return [], 0.0
+    amounts = sorted(abs(t["pnl"]) for t in losses)
+    typical = amounts[len(amounts) // 2]        # 中位亏损作为"典型"
+    g = {}
+    for t in losses:
+        for tag in loss_tags(t, typical):
+            e = g.setdefault(tag, [0, 0.0])
+            e[0] += 1
+            e[1] += abs(t["pnl"])
+    rows = sorted(((k, v[0], v[1]) for k, v in g.items()), key=lambda x: -x[2])
+    return rows, sum(abs(t["pnl"]) for t in losses)
+
+
+def build_attribution_text(trades):
+    if not trades:
+        return ""
+    rows, total = attribution(trades)
+    if not rows:
+        return "\n*亏损归因*　这段时间没有亏损单。"
+    lines = ["", f"*亏损归因*　总亏损 {_money(-total)}"]
+    for tag, n, amt in rows[:6]:
+        lines.append(f"　{tag}　{n}笔　{_money(-amt)}　({amt/total*100:.0f}%)")
+    lines.append("_一笔可能命中多个标签，百分比相加会超过 100%——"
+                 "这里回答的是「哪些行为参与了亏损」，不是切份额_")
+    return "\n".join(lines)
+
+
 def _money(x):
     return f"{x:+,.2f}"
 
@@ -267,6 +333,11 @@ def build_stats_text(trades, days, fund=None, env=""):
         + (f"（当前正连亏 {s['cur_loss_streak']} 笔 ⚠️）" if s["cur_loss_streak"] >= 3 else ""),
         f"最赚一笔 {_money(s['best'])}｜最亏一笔 {_money(s['worst'])}",
     ]
+
+    # 亏损归因放在币种拆解之前：「亏在哪种行为上」比「亏在哪个币上」更可执行
+    attr = build_attribution_text(trades)
+    if attr:
+        lines.append(attr)
 
     # 币种：最亏的 5 个
     by_sym = _agg(trades, lambda t: t["symbol"].replace("USDT", ""))
@@ -361,6 +432,11 @@ def build_ai_digest(trades, days, fund=None):
         for k, n, p, wr in rows[:limit]:
             out.append(f"  {k}: {p:+.2f} USDT, {n}笔, 胜率{wr:.0f}%")
 
+    rows, tot_loss = attribution(trades)
+    if rows:
+        out.append(f"亏损归因(总亏损 {tot_loss:.2f} USDT，一笔可命中多个标签):")
+        for tag, n, amt in rows[:6]:
+            out.append(f"  {tag}: {amt:.2f} USDT, {n}笔 ({amt/tot_loss*100:.0f}%)")
     _dump("按币种(最亏在前):", _agg(trades, lambda t: t["symbol"].replace("USDT", "")))
     _dump("按方向:", _agg(trades, lambda t: "做多" if t["side"] == "long" else "做空"))
     by_dur = _agg(trades, _dur_bucket)

@@ -71,6 +71,12 @@ async def _post_chat(body, timeout=70):
             last = f"{model}: HTTP{code} {detail[:100]}"
             logging.warning(f"AI 模型 {model} 不可用({code})，换下一个: {detail[:100]}")
             continue
+        except (httpx.TimeoutException, httpx.TransportError) as e:
+            # 模型卡死不吐字/连不上，比掉渠道更常见。只认状态码的话这里会直接炸穿，
+            # 后面整条备用链一个都试不到——降级逻辑等于白写。
+            last = f"{model}: {type(e).__name__}"
+            logging.warning(f"AI 模型 {model} 超时/连接失败，换下一个: {type(e).__name__}")
+            continue
         if model != _ACTIVE_MODEL:
             if _ACTIVE_MODEL or model != AI_MODEL:
                 logging.warning(f"AI 模型切换: {_ACTIVE_MODEL or AI_MODEL} → {model}")
@@ -88,7 +94,7 @@ async def ask_ai(prompt: str):
             {"role": "user", "content": prompt},
         ],
         "temperature": 0.7,
-    }, timeout=60)
+    }, timeout=90)      # 中转站慢起来 60s 不够，宁可等也别整条失败
     return m.get("content") or ""
 
 async def ask_ai_messages(messages, system=None, temperature=0.7):
@@ -360,10 +366,16 @@ async def ai_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def build_ai_text(symbol):
     """返回AI分析文本（供按钮调用）"""
+    from handlers.util import escape_md
     if not AI_API_KEY or not AI_BASE_URL:
         return "AI未配置"
-    prices = await get_daily_prices(symbol, 35)
-    cur = await get_price(symbol)
+    # 行情源(CoinGecko)限流/超时是最常见的失败，给句人话而不是让异常冒到"AI分析失败"
+    try:
+        prices = await get_daily_prices(symbol, 35)
+        cur = await get_price(symbol)
+    except Exception as e:
+        logging.warning(f"AI分析取行情失败 {symbol}: {e}")
+        return f"⚠️ 行情源暂时取不到 {escape_md(symbol)} 的数据（限流或超时），过一会儿再试"
     if not prices or not cur:
         return "数据获取失败"
     r = do_analyze(prices)
@@ -372,5 +384,4 @@ async def build_ai_text(symbol):
                  f"RSI:{r.get('rsi',0):.1f} MA7:${r.get('ma7',0):,.0f} MA30:${r.get('ma30',0):,.0f} MACD:{ms}")
     reply = await ask_ai(f"分析这些技术指标：{data_text}，给简洁趋势解读")
     # AI 输出是自由文本，可能含 _ * ` 等字符，转义后再嵌入 Markdown，避免整条消息渲染失败
-    from handlers.util import escape_md
     return f"🤖 *{symbol} AI分析*\n\n{escape_md(reply)}\n\n⚠️ 不构成投资建议"

@@ -479,7 +479,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(query, text, reply_markup=back_to("cat_analysis"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"AI出错: {e}")
-            await query.edit_message_text("AI分析失败", reply_markup=back_to("cat_analysis"))
+            # 带上原因：只写日志的话，用户只能看到"AI分析失败"四个字，
+            # 到底是行情源限流还是模型挂了根本无从判断
+            await query.edit_message_text(f"AI分析失败：{str(e)[:100]}",
+                                          reply_markup=back_to("cat_analysis"))
 
     # ============ 预警（引导式：选币→选方向→发价格）============
     elif d == "cat_alert":

@@ -15,6 +15,7 @@ import logging
 import asyncio
 import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import BadRequest, ChatMigrated, Forbidden
 from telegram.ext import ContextTypes
 from storage import data, save_data
 from handlers.util import escape_md, safe_edit
@@ -30,7 +31,10 @@ TIERS = list(range(20, 401, 10))
 HYSTERESIS = 3
 # 最小 24h 成交额（USDT），滤掉僵尸/微盘合约的噪音；按需调整
 MIN_TURNOVER = 1_000_000
-TIER_RESET = 86400                          # 记录 24h 后过期，允许重新计档
+# 记录**自首次入档起** 24h 后过期，允许重新计档。注意是按 t0(首次) 算而不是 ts(最后更新)：
+# WS 每秒都在推 tick，按 ts 算的话记录会被无限续命，长期挂在高位的币（恰恰是最该看的
+# 那批）从此永远不再告警——这个过期逻辑就形同虚设了。
+TIER_RESET = 86400
 LEV_SUFFIX = ("UP", "DOWN", "BULL", "BEAR")  # 币安杠杆代币，排除
 MAX_LINES = 40                              # 单条消息最多多少行，超出分条发
 # 推送冷却：同一(币,方向,档位)在此秒数内只推一次。台阶记录跨所/跨路径抖动时
@@ -52,27 +56,47 @@ def get_tier(change_abs):
 
 
 def _upgrade_rec(rec):
-    """兼容旧格式 {tier,dir,ts} → 新格式 {up:最高档, down:最高档, ts}。
-    旧格式只记单一方向，方向一翻就得整条作废，是之前反复重报的根因。"""
+    """兼容旧格式 {tier,dir,ts} → 新格式 {up:最高档, down:最高档, ts:最后更新, t0:首次入档}。
+    旧格式只记单一方向，方向一翻就得整条作废，是之前反复重报的根因。
+    t0 缺失(更早的记录)时用 ts 顶上，最多让这条记录晚一轮过期。"""
     if not rec:
         return {}
     if "tier" in rec and "dir" in rec:
-        return {rec["dir"]: rec["tier"], "ts": rec.get("ts", 0)}
+        ts = rec.get("ts", 0)
+        return {rec["dir"]: rec["tier"], "ts": ts, "t0": ts}
+    rec.setdefault("t0", rec.get("ts", 0))
     return rec
 
 
-def eval_tier_cross(ex_name, sym, change, now=None):
+def _global_min_tier():
+    """所有订阅群里**最宽松**的那个最低告警档。
+
+    低于它的穿档一个群都不会收到，因此不该写进去重表——否则档位被白烧掉，
+    日后把最低档调低，这个币再也报不出那一档了。没有订阅者时按默认档。
+    """
+    subs = data.get("contract_watch") or []
+    if not subs:
+        return MIN_ALERT_TIER
+    return min(_min_tier(c) for c in subs)
+
+
+def eval_tier_cross(ex_name, sym, change, now=None, min_tier=None):
     """判断某币当前涨跌幅是否升到了**该方向上**更高的台阶。
 
     命中返回要告警的台阶(int)并更新 data["contract_tiers"]；否则返回 None。
     WS 实时与 REST 轮询共用此函数 → 同一套去重。
 
-    记录格式 {sym: {"up": 最高档, "down": 最高档, "ts": 时间}}：
+    记录格式 {sym: {"up": 最高档, "down": 最高档, "ts": 最后更新, "t0": 首次入档}}：
     **按方向各自记最高档**，所以某个源瞬时报出反向读数时，不会把原方向的记录清掉
     （旧实现会 pop 整条 → 下一轮又被当成"首次穿档"重报，KORU 那次刷屏就是这么来的）。
+
+    min_tier：低于此档不记账（默认取 _global_min_tier()）。记账必须和"至少有一个群
+    会收到"绑定，否则被过滤掉的告警照样把档位烧掉。
     """
     if now is None:
         now = time.time()
+    if min_tier is None:
+        min_tier = _global_min_tier()
     data.setdefault("contract_tiers", {})
     tiers = data["contract_tiers"]
     change_abs = abs(change)
@@ -80,8 +104,8 @@ def eval_tier_cross(ex_name, sym, change, now=None):
     key = sym                    # 只按币去重：同一个币在多所同时异动＝一个事件，只报一次
     rec = _upgrade_rec(tiers.get(key))
 
-    # 过期(24h)：整条作废，允许重新计档
-    if rec and now - rec.get("ts", 0) > TIER_RESET:
+    # 过期(自首次入档 24h)：整条作废，允许重新计档
+    if rec and now - rec.get("t0", rec.get("ts", 0)) > TIER_RESET:
         rec = {}
 
     # 明显回落到迟滞带以下(< 最低档-迟滞) → 解除武装，清记录，之后重新穿越才再报
@@ -97,8 +121,17 @@ def eval_tier_cross(ex_name, sym, change, now=None):
         return None
 
     tier = get_tier(change_abs)
+    # 没有任何群会收到这一档 → 只续命、不记账。烧掉档位的代价是永久性的
+    # （改回低档也再报不出来），而漏记的代价只是下次重新判一遍。
+    if tier < min_tier:
+        if rec:
+            rec["ts"] = now
+            tiers[key] = rec
+        return None
+
     prev = rec.get(direction, 0)
     rec["ts"] = now
+    rec.setdefault("t0", now)             # 首次入档时间，过期按它算
     if tier > prev:                       # 仅在该方向升到更高台阶才报（同档/反向抖动不再重复）
         rec[direction] = tier
         tiers[key] = rec
@@ -153,10 +186,46 @@ async def push_to_subscribers(bot, alerts):
             text = head + "\n".join(chunk)
             if idx == len(chunks) - 1:
                 text += "\n\n⚠️ 合约杠杆风险高，异动剧烈，不构成投资建议"
-            try:
-                await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
-            except Exception as e:
-                logging.error(f"合约告警推送失败 {chat_id}: {e}")
+            if not await _send_or_drop(bot, chat_id, text):
+                break          # 这个 chat 发不出去了，剩下的分条也别试了
+
+
+def _drop_sub(chat_id, why):
+    """把确定已死的 chat 从订阅里摘掉。留着它只会每轮 400 一次，
+    而档位照样被烧——「明明订阅着却一条都收不到」就是这么来的。"""
+    data["contract_watch"] = [s for s in data.get("contract_watch", [])
+                              if str(s) != str(chat_id)]
+    (data.get("contract_min_tier") or {}).pop(str(chat_id), None)
+    save_data()
+    logging.warning(f"合约告警：已摘除失效订阅 {chat_id}（{why}）")
+
+
+# 这些 BadRequest 文案代表「这个 chat 永久没救了」，其余(限流/网络抖动)保留订阅
+_DEAD_CHAT_HINTS = ("chat not found", "chat_id is empty", "peer_id_invalid",
+                    "group chat was upgraded", "user is deactivated")
+
+
+async def _send_or_drop(bot, chat_id, text):
+    """发一条消息。确定性失效 → 摘订阅；临时性错误 → 只记日志、保留订阅。
+    返回是否发送成功。"""
+    try:
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        return True
+    except ChatMigrated as e:
+        # 群升级成超级群，chat_id 变了：把所有订阅搬过去，别让告警从此石沉大海
+        from storage import migrate_chat
+        migrate_chat(chat_id, e.new_chat_id)
+        logging.warning(f"合约告警：群已升级，订阅迁移 {chat_id} → {e.new_chat_id}")
+    except Forbidden as e:
+        _drop_sub(chat_id, str(e)[:80])          # 被踢/被拉黑
+    except BadRequest as e:
+        if any(h in str(e).lower() for h in _DEAD_CHAT_HINTS):
+            _drop_sub(chat_id, str(e)[:80])
+        else:
+            logging.error(f"合约告警推送失败 {chat_id}: {e}")
+    except Exception as e:
+        logging.error(f"合约告警推送失败 {chat_id}: {e}")
+    return False
 
 
 def _render_alert(a):
@@ -267,7 +336,7 @@ async def watch_contract(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• |涨跌幅| 突破 20% / 30% / … / 400% 分级告警\n"
         "• 每条标注交易所来源，多所同时命中都会发\n"
         "• OKX/Bybit 秒级实时(WebSocket)，币安约1分钟兜底\n"
-        "• 同币同方向升档才再报\n\n"
+        "• 同币同方向升档才再报，满24h可重报一次\n\n"
         "取消订阅：/unwatchcontract"
     )
 
@@ -305,7 +374,7 @@ def _panel(chat_id):
         "• 覆盖 OKX / 币安 / Bybit 永续\n"
         "• |涨跌幅| 突破 20%/30%/…/400% 分级告警（24h口径）\n"
         "• OKX/Bybit 秒级实时，币安约1分钟兜底\n"
-        "• 同币同方向升档才再报（防刷屏）\n"
+        "• 同币同方向升档才再报（防刷屏），满24h可重报一次\n"
         "━━━━━━━━━━━━━━\n"
         "选最低档（越高越少、只留大动作）："
     )
@@ -425,7 +494,7 @@ async def _do_alert_diag(chat_id, reply):
         deduped = fresh = 0
         for a in movers:
             rec = _upgrade_rec(tiers.get(a["sym"]))
-            if rec and now - rec.get("ts", 0) > TIER_RESET:
+            if rec and now - rec.get("t0", rec.get("ts", 0)) > TIER_RESET:
                 rec = {}
             prev = rec.get(a["direction"], 0)
             if a["tier"] > prev:
@@ -563,21 +632,25 @@ async def scan_contracts(context: ContextTypes.DEFAULT_TYPE):
         return
 
     now = time.time()
+    gmt = _global_min_tier()          # 整轮共用，省得每个币重算一遍
     alerts = []
     for (ex_name, _), res in zip(EXCHANGES, results):
         if isinstance(res, Exception):
             logging.warning(f"合约扫描 {ex_name} 失败: {res}")
             continue
         for m in res:
-            tier = eval_tier_cross(ex_name, m["sym"], m["change"], now)
+            tier = eval_tier_cross(ex_name, m["sym"], m["change"], now, min_tier=gmt)
             if tier:
                 alerts.append({"ex": ex_name, "sym": m["sym"], "change": m["change"],
                                "price": m["price"], "tier": tier,
                                "direction": "up" if m["change"] > 0 else "down"})
 
     # 清理过期记录，避免无限增长
+    # v.get("ts") 而非 v["ts"]：一条缺字段的脏记录不该让整个扫描任务抛异常，
+    # 那会把这一轮已经判出来的告警全丢掉（而且每 5 分钟丢一次）
     tiers = data.get("contract_tiers", {})
-    data["contract_tiers"] = {k: v for k, v in tiers.items() if now - v["ts"] < TIER_RESET * 2}
+    data["contract_tiers"] = {k: v for k, v in tiers.items()
+                              if isinstance(v, dict) and now - v.get("ts", 0) < TIER_RESET * 2}
     save_data()
 
     await push_to_subscribers(context.bot, alerts)

@@ -104,6 +104,54 @@ def test_503_no_available_channel_also_switches(monkeypatch):
     assert msg["content"] == "hi from good-model"
 
 
+def test_timeout_switches_to_next_model(monkeypatch):
+    """模型卡死不吐字必须也走降级。
+
+    只捕获 HTTPStatusError 的话，读超时会直接炸穿 _post_chat，后面整条备用链
+    一个都试不到 —— 用户看到的就是"AI分析失败"，但模型其实好好的在那儿。
+    """
+    import httpx
+    seen = []
+
+    def route(m):
+        seen.append(m)
+        if m == "good-model":
+            return _ok(m)
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(A.httpx, "AsyncClient", _fake_client(route))
+    msg = asyncio.run(A._post_chat({"messages": []}))
+    assert msg["content"] == "hi from good-model"
+    assert seen == ["dead-primary", "dead-backup", "good-model"]
+
+
+def test_connect_error_switches_too(monkeypatch):
+    """连不上某个渠道同理，也该往下试。"""
+    import httpx
+
+    def route(m):
+        if m == "good-model":
+            return _ok(m)
+        raise httpx.ConnectError("no route to host")
+
+    monkeypatch.setattr(A.httpx, "AsyncClient", _fake_client(route))
+    msg = asyncio.run(A._post_chat({"messages": []}))
+    assert msg["content"] == "hi from good-model"
+
+
+def test_all_timeout_raises_readable_error(monkeypatch):
+    """全都超时也要给条人话，不能抛个光秃秃的 ReadTimeout。"""
+    import httpx
+
+    def route(m):
+        raise httpx.ReadTimeout("timed out")
+
+    monkeypatch.setattr(A.httpx, "AsyncClient", _fake_client(route))
+    with pytest.raises(RuntimeError) as ei:
+        asyncio.run(A._post_chat({"messages": []}))
+    assert "所有 AI 模型都不可用" in str(ei.value)
+
+
 def test_auth_error_raises_immediately(monkeypatch):
     """401 是密钥问题，换模型没用——必须立刻抛，不要白试一串。"""
     seen = []

@@ -61,8 +61,14 @@ docker compose build || { echo "❌ 镜像构建失败，回滚代码"; git rese
 
 # 先跑单元测试再动运行中的容器：不过就中止 + 把代码回退回去，线上完全不受影响。
 # 用 docker run（而非 compose run）避免与 container_name 撞名。
+#
+# ⚠️ -e DATA_FILE 是必须的：这里把**生产目录**挂进 /app，而 DATA_FILE 默认就是
+# /app/data.json。不覆盖它的话，测试里的清理夹具会把订阅、风控参数直接写回
+# 生产数据（2026-08-07 实际发生过：每次部署都清空合约异动订阅并禁用实盘下单）。
+# conftest 里也做了同样的隔离，这里是第二道——两处都改坏才可能再出事。
 echo "==== 单元测试 ===="
-docker run --rm -v "$PWD":/app -w /app crypto-bot:local python -m pytest -q tests/ || {
+docker run --rm -v "$PWD":/app -w /app -e DATA_FILE=/tmp/pytest_data.json \
+    crypto-bot:local python -m pytest -q tests/ || {
     echo "❌ 单元测试未通过，中止部署（运行中的容器未改动），代码回退到 $PREV"
     git reset --hard "$PREV"
     exit 1

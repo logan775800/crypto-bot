@@ -130,6 +130,11 @@ SYSTEM = (
     "「我这打法行不行」时必调，别凭感觉评价（仅管理员）\n"
     "- get_price / get_contract / get_top_movers / get_fear_greed：快速报价与榜单\n\n"
     "**分析交易计划时的标准流程**（别偷懒只调一个）：\n"
+    "0) resolve_symbol(代号) 先把合约身份钉死——这一步不能跳。同一个代号在不同所"
+    "可能是**完全不同的项目**；1000PEPE/SHIB1000 这类合约的报价是「1000枚」的价格，"
+    "拿现货单价套止损距离会差三个数量级；Bybit 按币计量、OKX 按张计量，"
+    "「开100」在两个所根本不是一回事。解析出多个候选时**必须问用户选哪个**，"
+    "在他确认之前不许给任何价位。回答开头要写明「交易所 / 交易对 / 标的 / 结算币」。\n"
     "1) get_market_context() 看 BTC/ETH 风险——BTC 15m/1h 破位时，山寨多头计划要降仓或取消；\n"
     "2) get_klines 大周期(4h/1h)定方向与结构，再 get_klines 小周期(15m/5m)定执行；\n"
     "3) get_oi_history + get_funding_history 判断是谁推动、有没有拥挤/挤压风险；\n"
@@ -153,7 +158,12 @@ SYSTEM = (
     "4. 数据不全时，宁可给一个明确降级的结论（「因为缺 X，这单只能给到方向，"
     "精确进场位建议等数据恢复」），也不要用完整的语气输出精确价位。"
     "**假装完整比承认缺失危险得多**——用户会照着假的精确数字下单。\n"
-    "5. 需要确认数据状态时调 get_data_status(币)。\n\n"
+    "5. 需要确认数据状态时调 get_data_status(币)。\n"
+    "6. **没调过的工具 = 没有那份数据。** 系统会在你给最终答案前，把这一轮你实际"
+    "调到的工具与结果列成「数据清单」发给你，并在你答完后**自动扫描**你有没有用到"
+    "清单里没有的维度——用了就会被打回重写。所以：想谈盘口就先调 get_orderbook，"
+    "想谈 OI 就先调 get_oi_history，别拿「一般来说这个位置会有买盘」凑数。"
+    "凑出来的完整度是假的，用户会照着假数字下单。\n\n"
     "⚠️ 关键：需要实时数据时必须主动调工具，绝不要停下来反问「你先给个币种」。"
     "如果问题需要具体币种但用户没点名是哪个币，就**默认按 BTC** 拉数据分析，"
     "开头说明「以 BTC 为例，换币再告诉我」即可，别只抛问题就结束。"
@@ -250,6 +260,16 @@ TOOLS = [
         "description": "某币近期清算数据(OKX聚合)，用于判断挤压空间与止盈是否该放在流动性密集区前。",
         "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
     {"type": "function", "function": {
+        "name": "resolve_symbol",
+        "description": ("把用户说的币种代号解析成**明确的合约身份**：交易所、交易对、标的、"
+                        "结算币、计量单位(币/张)、面值倍数(1000PEPE 这类)、最小下单量、最大杠杆。"
+                        "**任何涉及具体价位/仓位的分析之前必须先调它**——同一个代号在不同所"
+                        "可能是不同项目，面值倍数搞错止损距离会差几个数量级。"
+                        "返回多个候选时不许自己挑，要问用户。"),
+        "parameters": {"type": "object", "properties": {
+            "query": {"type": "string", "description": "用户说的代号，如 LAB、1000PEPE、AKE"}},
+            "required": ["query"]}}},
+    {"type": "function", "function": {
         "name": "get_data_status",
         "description": ("体检某币各数据维度现在取不取得到（K线各周期/OI/资金费/盘口/清算），"
                         "含交易所数据时间与完整度百分比。要给完整交易计划前先调它，"
@@ -338,6 +358,16 @@ async def _tool_exec(name, args):
         from handlers import datameta
         rep = await datameta.probe(sym)
         return rep.for_ai()
+    if name == "resolve_symbol":
+        from handlers import symbols
+        q = str(args.get("query") or args.get("symbol") or "")
+        insts, under = await symbols.resolve(q)
+        warn, prices = None, {}
+        if len(insts) > 1:
+            # 跨所同名先比价：一致就说明是同一个项目，不必逼用户选；
+            # 差得离谱才是真·同名不同币，那时才必须问清楚
+            warn, prices = await symbols.divergence_check(insts)
+        return symbols.for_ai(insts, under, warn, prices)
     return f"未知工具 {name}"
 
 
@@ -421,9 +451,26 @@ def _ai_quota_ok(context, uid):
     return True, q["count"]
 
 
-def _make_exec(update, context):
-    """按调用者身份包一层：账户类工具需鉴权，其余走公开数据工具。"""
+def _make_exec(update, context, mf=None):
+    """按调用者身份包一层：账户类工具需鉴权，其余走公开数据工具。
+
+    mf：本轮数据清单。每个工具结果都过一遍记账，最终答案要按它受约束——
+    模型没调过的工具就是没有那份数据，不许凭"一般来说"补全。
+    """
     async def _exec(name, args):
+        res = await _exec_inner(name, args)
+        if mf is not None:
+            try:
+                mf.record(name, args, res)
+                if mf.symbol is None:
+                    sym = str((args or {}).get("symbol") or "").upper()
+                    if sym:
+                        mf.symbol = sym
+            except Exception as e:      # 记账绝不能影响正常回答
+                log.warning(f"数据清单记账失败: {e}")
+        return res
+
+    async def _exec_inner(name, args):
         uid = update.effective_user.id if update.effective_user else 0
         # 文件工具按会话取缓存的上传文件（同群共享，谁传的谁都能问）
         from handlers import docfile
@@ -451,6 +498,14 @@ def _make_exec(update, context):
             return _virtual_snapshot(uid)
         return await _tool_exec(name, args)
     return _exec
+
+
+def _guard(mf):
+    """把数据清单包成 ask_ai_tools 认的校验器：(违规列表, 重写指令)。"""
+    def check(text):
+        bad = mf.violations(text)
+        return bad, (mf.fix_prompt(bad) if bad else "")
+    return check
 
 
 def _history(context):
@@ -488,7 +543,14 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
     try:
         # 优先带工具调用（能查实时数据）；工具链路异常则降级为纯对话
         try:
-            reply = await ask_ai_tools(hist, TOOLS, _make_exec(update, context), system=SYSTEM)
+            from handlers.manifest import Manifest
+            mf = Manifest()
+            reply = await ask_ai_tools(
+                hist, TOOLS, _make_exec(update, context, mf), system=SYSTEM,
+                ledger=mf.ledger, guard=_guard(mf))
+            head = mf.header()
+            if head:
+                reply = f"{head}\n\n{reply}"
         except Exception as te:
             log.warning(f"工具对话失败，降级纯对话: {te}")
             reply = await ask_ai_messages(hist, system=SYSTEM)

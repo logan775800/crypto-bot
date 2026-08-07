@@ -306,7 +306,13 @@ async def oi_analysis(symbol, interval="15m"):
     def pct(a, b):
         return (b - a) / a * 100 if a else 0
 
-    out = [f"【{sym} OI历史 {interval}】最近{len(ois)}期，当前OI {ois[-1]:,.0f}｜{stamp(srv)}"]
+    # 单位必须写清楚：Bybit 的 openInterest 是**标的币数量**，不是 USDT 名义价值。
+    # 把它当美元读会把「OI 涨了 200 万」理解成完全不同的量级。
+    base = sym[:-4] if sym.endswith("USDT") else sym
+    notional = ois[-1] * closes[-1] if closes else None
+    out = [f"【{sym} OI历史 {interval}】最近{len(ois)}期｜{stamp(srv)}",
+           f"当前OI {ois[-1]:,.0f} {base}（单位=币数量，非USDT）"
+           + (f"　≈ 名义 {notional:,.0f} USDT" if notional else "")]
     for span, label in ((3, "近3期"), (12, "近12期"), (len(ois) - 1, "全窗")):
         if len(ois) > span and span > 0:
             d_oi = pct(ois[-1 - span], ois[-1])
@@ -340,8 +346,18 @@ async def funding_analysis(symbol):
                    {"category": CAT, "symbol": sym, "limit": 60})
     rows = (h.get("list") or [])[::-1]
     rates = [float(x["fundingRate"]) * 100 for x in rows]
+    nxt = tk.get("nextFundingTime")
+    when = ""
+    if nxt:
+        try:
+            import time as _t
+            when = "，下次结算 " + _t.strftime("%H:%M", _t.localtime(int(nxt) / 1000))
+        except (TypeError, ValueError, OSError):
+            when = ""
     out = [f"【{sym} 资金费率】{stamp(srv)}",
-           f"当前(下一期预测) {cur:+.4f}%／期",
+           # 口径写死：这个数是**下一期的预测值**，不是已结算的历史值，
+           # 两者混用会把"已经付过的成本"和"还没发生的成本"算重
+           f"当前 {cur:+.4f}%／期（口径：下一期**预测**值，尚未结算{when}）",
            f"标记价 {f(mark)}｜指数价 {f(idx)}｜基差 {basis:+.3f}%"
            + ("（永续溢价，多头付费）" if basis > 0 else "（永续折价，空头付费）")]
     if rates:
@@ -350,7 +366,8 @@ async def funding_analysis(symbol):
         mx, mn = max(rates), min(rates)
         pos = sum(1 for r in rates if r > 0)
         recent = rates[-3:]
-        out.append(f"历史{n}期(约{n*8}h): 均值 {avg:+.4f}%｜区间 {mn:+.4f}%~{mx:+.4f}%｜正费率占比 {pos/n*100:.0f}%")
+        out.append(f"历史{n}期(约{n*8}h，**已结算**值): 均值 {avg:+.4f}%｜"
+                   f"区间 {mn:+.4f}%~{mx:+.4f}%｜正费率占比 {pos/n*100:.0f}%")
         out.append(f"最近3期: {'、'.join(f'{r:+.4f}%' for r in recent)}")
         # 极端判断
         if cur >= mx * 0.9 and cur > 0:

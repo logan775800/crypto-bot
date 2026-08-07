@@ -115,17 +115,41 @@ async def _chat_completion(msgs, tools=None, temperature=0.7, timeout=70):
 
 
 async def ask_ai_tools(messages, tools, tool_executor, system=None,
-                       temperature=0.7, max_rounds=7):
+                       temperature=0.7, max_rounds=7, ledger=None, guard=None,
+                       max_fixes=1):
     """带函数调用的多轮对话。tools=OpenAI function schema 列表；
     tool_executor(name, args)->str 执行工具并返回文本结果。
     循环：模型请求→若返回 tool_calls 则执行并回填→直到出最终文本或到 max_rounds。
-    不修改传入的 messages。返回最终文本。"""
+    不修改传入的 messages。返回最终文本。
+
+    ledger()->str：模型停止调工具、准备给最终答案前注入的硬约束（数据清单）。
+    guard(text)->(违规列表, 修正指令)：拿到最终文本后校验，有违规就带着说明让它重写。
+    自觉遵守约束在「不许编造数据」这件事上不可靠，所以要有事后校验这一道。
+    """
     msgs = ([{"role": "system", "content": system}] if system else []) + list(messages)
+    injected = False
+    fixes = 0
     for _ in range(max_rounds):
         m = await _chat_completion(msgs, tools=tools, temperature=temperature)
         tcs = m.get("tool_calls")
         if not tcs:
-            return m.get("content") or ""
+            text = m.get("content") or ""
+            # 模型不再调工具 = 已经取完数，此刻注入清单再让它重答一次，
+            # 这样约束是基于"它实际拿到了什么"，而不是取数前的空猜。
+            if ledger and not injected:
+                injected = True
+                msgs.append({"role": "assistant", "content": text})
+                msgs.append({"role": "user", "content": ledger()})
+                continue
+            if guard and fixes < max_fixes:
+                bad, fix = guard(text)
+                if bad:
+                    fixes += 1
+                    logging.warning(f"AI 回答违反数据清单，要求重写: {bad[:2]}")
+                    msgs.append({"role": "assistant", "content": text})
+                    msgs.append({"role": "user", "content": fix})
+                    continue
+            return text
         # 回填这一轮的 assistant(tool_calls) + 各工具结果
         msgs.append({"role": "assistant", "content": m.get("content"), "tool_calls": tcs})
         for tc in tcs:
@@ -142,9 +166,19 @@ async def ask_ai_tools(messages, tools, tool_executor, system=None,
                 result = f"（工具 {name} 出错：{str(e)[:80]}）"
             msgs.append({"role": "tool", "tool_call_id": tc.get("id", ""),
                          "content": str(result)[:4000]})
-    # 到达轮次上限：最后不带 tools 强制出文本总结
+    # 到达轮次上限：最后不带 tools 强制出文本总结（清单约束仍要生效）
+    if ledger and not injected:
+        msgs.append({"role": "user", "content": ledger()})
     m = await _chat_completion(msgs, tools=None, temperature=temperature)
-    return m.get("content") or "（没能得出结论，换个问法试试）"
+    text = m.get("content") or "（没能得出结论，换个问法试试）"
+    if guard:
+        bad, fix = guard(text)
+        if bad:
+            msgs.append({"role": "assistant", "content": text})
+            msgs.append({"role": "user", "content": fix})
+            m = await _chat_completion(msgs, tools=None, temperature=temperature)
+            text = m.get("content") or text
+    return text
 
 
 async def ask_ai_struct(messages, tools, fn_name, system=None, temperature=0.3):

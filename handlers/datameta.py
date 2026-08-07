@@ -21,6 +21,13 @@ log = logging.getLogger(__name__)
 KLINE_IVS = ("5m", "15m", "30m", "1h", "4h", "1d")
 OI_IVS = ("15m", "1h")
 
+# 交易所时间 vs 本机时间的差。时钟漂移或网络劣化会让"实时数据"其实是几十秒前的，
+# 而永续在这个尺度上完全可以走完一个止损距离。
+FRESH_OK = 10        # 秒：这以内算实时
+FRESH_WARN = 30      # 秒：超过就只能给观察方案，不能给"立即下单"
+# 各数据源的服务器时间彼此相差多少算异常（不同源拼在一起做决策的前提是它们同代）
+SRC_SKEW_WARN = 15   # 秒
+
 
 class Report:
     """一次探测的结果。渲染成给人看的 header，或给 AI 看的降级说明。"""
@@ -33,6 +40,46 @@ class Report:
         self.oi = {}
         self.others = {}        # {名称: (ok, 说明)}
         self.stale = []         # 数据滞后的周期
+        self.src_ms = {}        # {数据源: 服务器毫秒} —— 用于跨源时间差检查
+        self.local_ms = None    # 探测时的本机毫秒
+        self.spike = None       # 插针检测结论
+
+    # ── 新鲜度 ────────────────────────────────────────────
+    @property
+    def delay_s(self):
+        """数据落后本机多少秒。负数(交易所时钟略快)一律按 0 看。"""
+        if not (self.server_ms and self.local_ms):
+            return None
+        return max(0.0, (self.local_ms - self.server_ms) / 1000)
+
+    @property
+    def skew_s(self):
+        """各数据源服务器时间的最大差值——拼在一起做决策前必须确认它们同代。"""
+        if len(self.src_ms) < 2:
+            return None
+        v = list(self.src_ms.values())
+        return (max(v) - min(v)) / 1000
+
+    @property
+    def realtime_ok(self):
+        """够不够新到可以给「立即下单」的方案。
+
+        延迟未知时按「不阻断」处理：probe() 一定会填 local_ms，未知只出现在
+        手工构造的 Report 上。把未知当成过期会让所有非探测路径无谓降级。
+        """
+        d = self.delay_s
+        return d is None or d <= FRESH_WARN
+
+    def freshness_line(self):
+        d = self.delay_s
+        if d is None:
+            return "新鲜度：未知（拿不到交易所时间）"
+        tag = "实时" if d <= FRESH_OK else ("偏慢" if d <= FRESH_WARN else "过期")
+        txt = f"最新数据延迟 {d:.0f}s（{tag}）"
+        sk = self.skew_s
+        if sk is not None and sk > SRC_SKEW_WARN:
+            txt += f"　⚠️ 各数据源时间相差 {sk:.0f}s，不是同一时刻的快照"
+        return txt
 
     # ── 完整度 ────────────────────────────────────────────
     def _all(self):
@@ -67,7 +114,7 @@ class Report:
 
     @property
     def healthy(self):
-        return not self.missing and not self.stale
+        return not self.missing and not self.stale and self.realtime_ok and not self.spike
 
     @property
     def invalid_symbol(self):
@@ -100,12 +147,17 @@ class Report:
                     f"换个币，或先用 `/fex`／币安专区确认它在哪个所有永续。")
         lines = [
             f"`{short}USDT 永续｜{self.exchange}｜{md.stamp(self.server_ms)}`",
+            self.freshness_line(),
             f"K线：{self._grp(self.klines)}",
         ]
         oi_txt = self._grp(self.oi)
         others = "｜".join(
             f"{name} {'✅' if ok else '⚠️ 暂不可用'}" for name, (ok, _) in self.others.items())
         lines.append(f"OI：{oi_txt}｜{others}")
+        if self.spike:
+            lines.append(f"⚠️ {self.spike}")
+        if not self.realtime_ok:
+            lines.append("⚠️ *数据过期，只能给观察方案，不能按「立即下单」执行*")
         if self.stale:
             lines.append(f"⚠️ {'/'.join(self.stale)} 数据滞后，可能停更或合约停牌")
         if self.missing:
@@ -129,11 +181,28 @@ class Report:
             return (f"【数据状态】Bybit 上不存在 {self.symbol} 这个永续合约（symbol 无效）。"
                     f"这不是取数失败，是该合约不存在。请直接告诉用户币种代号可能写错了、"
                     f"或该币在 Bybit 没有永续，**不要**给出任何该币的分析或价位。")
-        if self.healthy:
-            return (f"【数据状态】{self.symbol} 全部维度取数成功，{md.stamp(self.server_ms)}。"
-                    f"可正常给出完整结论。")
+        extra = []
+        if not self.realtime_ok:
+            d = self.delay_s
+            extra.append(
+                f"⚠️ 实时性不达标（数据延迟 {d:.0f}s，阈值 {FRESH_WARN}s）。"
+                f"你**只能**给观察方案与触发条件，**不得**给「现价立即进场」这类指令，"
+                f"并要提醒用户先刷新确认现价。")
+        sk = self.skew_s
+        if sk is not None and sk > SRC_SKEW_WARN:
+            extra.append(f"⚠️ 各数据源服务器时间相差 {sk:.0f}s，它们不是同一时刻的快照，"
+                         f"跨源对比（如盘口 vs K线）的结论要降低置信度。")
+        if self.spike:
+            extra.append(f"⚠️ {self.spike}。插针价位没有真实成交承接，"
+                         f"**不要**把它当作前高/前低或止损参考位。")
+        if self.healthy and not extra:
+            d = self.delay_s
+            lag = f"，延迟 {d:.0f}s" if d is not None else ""
+            return (f"【数据状态】{self.symbol} 全部维度取数成功，{md.stamp(self.server_ms)}"
+                    f"{lag}。可正常给出完整结论。")
         parts = [f"【数据状态·重要】{self.symbol}，{md.stamp(self.server_ms)}，"
                  f"数据完整度 {self.completeness:.0f}%（{self.ok_count}/{self.total}）。"]
+        parts += extra
         if self.missing:
             parts.append(
                 f"以下维度**本次取不到**：{'、'.join(self.missing)}。"
@@ -158,6 +227,8 @@ async def _probe_kline(rep, iv):
             rep.klines[iv] = (False, "Bybit 返回空K线（该周期无数据）")
             return
         rep.server_ms = rep.server_ms or srv
+        if srv:
+            rep.src_ms[f"Bybit-K线{iv}"] = int(srv)
         lag_txt, stale = md.bar_lag(srv, int(rows[0][0]), iv)   # list 是新→旧，[0] 最新
         if stale:
             rep.stale.append(iv)
@@ -200,6 +271,8 @@ async def _probe_book(rep):
         r, srv = await md._get2("/v5/market/orderbook",
                                 {"category": md.CAT, "symbol": rep.symbol, "limit": 1})
         rep.server_ms = rep.server_ms or srv
+        if srv:
+            rep.src_ms["Bybit-盘口"] = int(srv)
         ok = bool(r.get("b")) and bool(r.get("a"))
         rep.others["盘口"] = (ok, "" if ok else "Bybit 未返回买卖盘")
     except Exception as e:
@@ -217,13 +290,53 @@ async def _probe_liq(rep):
         rep.others["清算数据"] = (False, f"OKX 源取数失败：{str(e)[:50]}")
 
 
+async def _probe_spike(rep):
+    """插针检测：最近 5m K线里有没有异常长影线。
+
+    插针会把「前高/前低」污染成一个根本没有成交承接的价位，止损挂在那种位置
+    等于白送。所以要显式标出来，而不是让它混进结构位里。
+    """
+    try:
+        r, srv = await md._get2("/v5/market/kline", {
+            "category": md.CAT, "symbol": rep.symbol,
+            "interval": "5", "limit": 60})
+        rows = (r.get("list") or [])[::-1]
+        if len(rows) < 20:
+            return
+        if srv:
+            rep.src_ms["Bybit-K线5m"] = int(srv)
+        rng = []
+        for x in rows:
+            hi, lo, c = float(x[2]), float(x[3]), float(x[4])
+            if c > 0:
+                rng.append((hi - lo) / c * 100)
+        if not rng:
+            return
+        med = sorted(rng)[len(rng) // 2]
+        if med <= 0:
+            return
+        worst_i, worst = max(enumerate(rng), key=lambda t: t[1])
+        # 单根振幅超过中位数 6 倍 = 插针而非正常波动
+        if worst > med * 6 and worst > 1.0:
+            bar = rows[worst_i]
+            rep.spike = (f"最近5小时内出现插针：单根5m振幅 {worst:.1f}%"
+                         f"（常态 {med:.2f}%），最高 {md.f(bar[2])} / 最低 {md.f(bar[3])}")
+    except Exception as e:
+        log.debug(f"插针检测失败 {rep.symbol}: {e}")
+
+
 async def probe(symbol, kline_ivs=KLINE_IVS, oi_ivs=OI_IVS):
     """并发探测所有维度。整个过程不抛异常——探测本身失败也是一种「数据状态」。"""
     rep = Report(symbol)
     tasks = [_probe_kline(rep, iv) for iv in kline_ivs]
     tasks += [_probe_oi(rep, iv) for iv in oi_ivs]
-    tasks += [_probe_funding(rep), _probe_book(rep), _probe_liq(rep)]
+    tasks += [_probe_funding(rep), _probe_book(rep), _probe_liq(rep), _probe_spike(rep)]
     await asyncio.gather(*tasks, return_exceptions=True)
+    # 本机时间在**所有请求都回来之后**取，这样 delay 包含了网络往返，
+    # 反映的是"用户看到这份数据时它已经多旧了"，而不是理论上的时钟差
+    rep.local_ms = int(time.time() * 1000)
+    if rep.src_ms:
+        rep.server_ms = max(rep.src_ms.values())
     if not rep.server_ms:
         # 所有 Bybit 调用都失败了，退回本机时间并明确标注——总比不给时间强
         rep.server_ms = int(time.time() * 1000)

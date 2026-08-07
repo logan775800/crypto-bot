@@ -47,6 +47,59 @@ def plan_size(equity, entry, stop, risk_pct):
     }
 
 
+def apply_spec(s, spec):
+    """把交易所的**合约规格**套到算出来的仓位上。
+
+    不套的话会给出根本下不进去的单：数量小于最小下单量、不是步长的整数倍、
+    杠杆超过该合约上限。算得再漂亮，交易所一句 "qty invalid" 就全废了。
+    spec 来自 symbols.Inst（min_qty / qty_step / max_lev / multiplier）。
+    """
+    if not s or not spec:
+        return s
+    out = dict(s)
+    notes = []
+    step = spec.get("qty_step") or 0
+    mn = spec.get("min_qty") or 0
+    qty = s["qty"]
+    # 面值倍数：1000PEPE 这类合约，1 张 = 1000 枚，数量要按面值折算
+    mul = spec.get("multiplier") or 1
+    if mul > 1:
+        qty = qty / mul
+        notes.append(f"合约面值 ×{mul}，数量已折算为合约张数")
+    if step > 0:
+        qty = int(qty / step) * step        # 向下取整到步长，宁可少开不超风险
+    out["qty_raw"] = s["qty"]
+    out["qty"] = qty
+    if mn and qty < mn:
+        out["too_small"] = True
+        notes.append(f"⚠️ 算出的数量 {md.f(qty)} 低于最小下单量 {md.f(mn)}——"
+                     f"要么加大风险%，要么这个止损距离下这个币开不了")
+    lev_cap = spec.get("max_lev")
+    if lev_cap:
+        out["margins"] = {lv: m for lv, m in s["margins"].items() if lv <= lev_cap}
+        if any(lv > lev_cap for lv in s["margins"]):
+            notes.append(f"该合约最大杠杆 {md.f(lev_cap)}x，已过滤掉超出的档位")
+    out["spec_notes"] = notes
+    out["spec"] = spec
+    return out
+
+
+def liq_distance(entry, lev, side, mmr=0.005):
+    """逐仓爆仓价与它离入场多远（%）。
+
+    近似式：爆仓价 = 入场 × (1 ∓ 1/杠杆 ± 维持保证金率)。
+    精确值要按交易所分档保证金算，但这里的用途是**对比止损距离**——
+    只要能回答「爆仓价是不是比止损还近」就够了，这个量级足够可靠。
+    """
+    if not (entry > 0 and lev > 0):
+        return None, None
+    if side == "long":
+        liq = entry * (1 - 1 / lev + mmr)
+    else:
+        liq = entry * (1 + 1 / lev - mmr)
+    return liq, abs(liq - entry) / entry * 100
+
+
 def exposure(positions, side=None):
     """已有仓位的名义暴露。side 传 long/short 只算同向的。"""
     tot = 0.0
@@ -73,8 +126,15 @@ def build_text(s, exp=None, symbol=None, env=""):
                 "用法 `/risk 0.081 0.0828 0.5%`（入场 止损 风险%）")
     dir_txt = "做多 📈" if s["side"] == "long" else "做空 📉"
     head = f"🧮 *仓位计算*" + (f" {symbol}" if symbol else "") + (f" {env}" if env else "")
+    spec = s.get("spec") or {}
+    ident = ""
+    if spec.get("symbol"):
+        ident = f"合约 Bybit {spec['symbol']}｜计量 {spec.get('unit', '?')}"
+        if spec.get("ambiguous"):
+            ident += "　⚠️ 该代号在多个所都有，确认是这个再下单"
     lines = [
         head,
+        *([ident] if ident else []),
         f"{dir_txt}｜入场 {md.f(s['entry'])} → 止损 {md.f(s['stop'])}",
         f"止损距离 *{s['dist_pct']:.2f}%*（{md.f(s['dist'])}）",
         "━━━━━━━━━━━━━━",
@@ -91,7 +151,18 @@ def build_text(s, exp=None, symbol=None, env=""):
             warn = "　❌ 超过总权益，做不了"
         elif m > s["equity"] * 0.5:
             warn = "　⚠️ 占用过半权益"
-        lines.append(f"　{lev}x → {m:,.2f} USDT{warn}")
+        # 爆仓价比止损还近 = 杠杆开太高，止损根本轮不到触发
+        liq, liq_pct = liq_distance(s["entry"], lev, s["side"])
+        liq_txt = ""
+        if liq_pct is not None:
+            liq_txt = f"　爆仓 {md.f(liq)}（{liq_pct:.1f}%）"
+            if liq_pct <= s["dist_pct"]:
+                liq_txt += " ❌ 比止损还近，先爆再止损"
+            elif liq_pct < s["dist_pct"] * 1.5:
+                liq_txt += " ⚠️ 离止损太近，插针即爆"
+        lines.append(f"　{lev}x → {m:,.2f} USDT{warn}{liq_txt}")
+    for n in (s.get("spec_notes") or []):
+        lines.append(f"　{n}")
     lines.append("")
     lines.append(f"触及止损 → 账户回撤 *-{s['dd_pct']:g}%*（{s['risk_usdt']:,.2f} USDT）")
 
@@ -147,6 +218,29 @@ async def _account(update_or_query):
     except Exception as e:
         log.warning(f"仓位计算取账户失败: {e}")
         return None, None
+
+
+async def spec_for(symbol):
+    """取该币在 **Bybit** 的合约规格（实盘走 Bybit，所以按它的规格约束）。
+    解析不到就返回 None——拿不到规格不该让整个仓位计算失败，只是少一层校验。"""
+    if not symbol:
+        return None
+    try:
+        from handlers import symbols as sy
+        insts, _under = await sy.resolve(symbol)
+        # 必须是 Bybit 的 USDT 永续：USDC 永续(BTCPERP)和交割合约(BTCUSDT-14AUG26)
+        # 结算币/到期日都不同，拿错了保证金和爆仓价算的是另一个合约
+        by = [i for i in insts if i.exchange == "Bybit"
+              and (i.settle or "") == "USDT" and "永续" in (i.kind or "")]
+        if not by:
+            return None
+        i = by[0]
+        return {"min_qty": i.min_qty, "qty_step": i.qty_step, "max_lev": i.max_lev,
+                "multiplier": i.multiplier, "symbol": i.symbol, "unit": i.qty_unit,
+                "ambiguous": len(insts) > 1}
+    except Exception as e:
+        log.warning(f"取合约规格失败 {symbol}: {e}")
+        return None
 
 
 def parse_args(args):
@@ -208,6 +302,7 @@ async def size_cmd(update, context, parsed):
             parse_mode="Markdown")
         return
     s = plan_size(equity, entry, stop, risk)
+    s = apply_spec(s, await spec_for(symbol))
     exp = exposure(pos, s["side"]) if s else None
     from handlers.rtrade import _env_tag
     await safe_reply(update.message, build_text(s, exp, symbol, _env_tag()),
@@ -228,6 +323,7 @@ async def from_btn(query, context, symbol, entry, stop, risk):
     if not s:
         await query.answer("入场价和止损价不能相同", show_alert=True)
         return
+    s = apply_spec(s, await spec_for(None if symbol == "-" else symbol))
     exp = exposure(pos, s["side"])
     sym = None if symbol == "-" else symbol
     await safe_edit(query, build_text(s, exp, sym, _env_tag()),

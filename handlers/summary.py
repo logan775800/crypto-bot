@@ -105,7 +105,7 @@ async def summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"总结出错: {e}")
-        await update.message.reply_text("生成失败")
+        await update.message.reply_text(f"生成失败：{str(e)[:80]}")
 
 # 订阅每日总结
 async def sub_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):

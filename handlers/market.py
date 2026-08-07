@@ -8,7 +8,7 @@ async def fear(update: Update, context: ContextTypes.DEFAULT_TYPE):
         d = await get_fear_greed()
     except Exception as e:
         logging.error(f"恐惧贪婪指数出错: {e}")
-        await update.message.reply_text("获取失败，请稍后再试")
+        await update.message.reply_text(f"获取失败，请稍后再试：{str(e)[:80]}")
         return
     value = d["value"]
     cls = d["classification"]
@@ -60,7 +60,7 @@ async def gas(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = await get_gas_multi()
     except Exception as e:
         logging.error(f"gas查询出错: {e}")
-        await update.message.reply_text("获取失败，请稍后再试")
+        await update.message.reply_text(f"获取失败，请稍后再试：{str(e)[:80]}")
         return
     lines = ["⛽ 各链 Gas 费 (gwei)\n"]
     eth_gwei = None

@@ -44,7 +44,7 @@ async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices = await get_prices(list(holdings.keys()))
     except Exception as e:
         logging.error(f"组合查价出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
         return
     lines = ["💼 你的投资组合\n"]
     total_cost = total_value = 0.0
@@ -203,7 +203,7 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices = await get_prices(list(holdings.keys()))
     except Exception as e:
         logging.error(f"排行查价出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
         return
 
     # 算每个币的盈亏

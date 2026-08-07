@@ -46,7 +46,7 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error(f"查询出错: {e}")
-        await update.message.reply_text("查询失败，请稍后再试")
+        await update.message.reply_text(f"查询失败，请稍后再试：{str(e)[:80]}")
 
 # 功能2：/top 涨跌榜
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -55,7 +55,7 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
         gainers, losers = await get_top_movers(15)
     except Exception as e:
         logging.error(f"涨跌榜出错: {e}")
-        await update.message.reply_text("查询失败，请稍后再试")
+        await update.message.reply_text(f"查询失败，请稍后再试：{str(e)[:80]}")
         return
     lines = ["🚀 24h 涨幅榜 TOP15\n"]
     for i, c in enumerate(gainers, 1):
@@ -80,7 +80,7 @@ async def compare(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices = await get_prices(valid)
     except Exception as e:
         logging.error(f"对比出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
         return
     lines = ["📊 多币对比\n"]
     for sym in valid:
@@ -105,7 +105,7 @@ async def info(update: Update, context: ContextTypes.DEFAULT_TYPE):
         md = await get_market_data([symbol])
     except Exception as e:
         logging.error(f"详情出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
         return
     d = md.get(symbol)
     if not d:
@@ -161,7 +161,7 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logging.error(f"计算出错: {e}")
-            await update.message.reply_text("查询失败")
+            await update.message.reply_text(f"查询失败：{str(e)[:80]}")
     else:
         # 模式1：币换美元
         symbol = args[1].upper()
@@ -178,4 +178,4 @@ async def calc(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
         except Exception as e:
             logging.error(f"计算出错: {e}")
-            await update.message.reply_text("查询失败")
+            await update.message.reply_text(f"查询失败：{str(e)[:80]}")

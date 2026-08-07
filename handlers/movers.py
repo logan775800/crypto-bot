@@ -71,4 +71,4 @@ async def movers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         logging.error(f"异动快照出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")

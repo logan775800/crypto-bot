@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -309,6 +309,7 @@ async def post_init(application):
         BotCommand("achart", "📐 标注图表(结构位+止损带画在图上)"),
         BotCommand("datacheck", "🔎 数据体检(时间+完整度)"),
         BotCommand("sym", "🔎 合约身份(哪个所/面值/单位)"),
+        BotCommand("net", "💰 净盈亏比(扣费/滑点/资金费)"),
         BotCommand("plan", "📋 生成交易计划(会自动失效)"),
         BotCommand("plans", "📋 我的交易计划"),
     ]
@@ -374,6 +375,8 @@ def main():
     app.add_handler(CommandHandler("datacheck", datameta.datacheck))
     # 合约身份：同代号跨所可能是不同项目，面值倍数搞错止损差几个数量级
     app.add_handler(CommandHandler("sym", symbols.sym_cmd))
+    # 净盈亏比：毛的那个是价格距离，净的才是到手的钱
+    app.add_handler(CommandHandler("net", econ.net_cmd))
     # 交易计划：一屏能执行 + 会自己失效
     app.add_handler(CommandHandler("plan", plan.plan_cmd))
     app.add_handler(CommandHandler("plans", plan.plans_cmd))

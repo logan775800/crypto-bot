@@ -60,7 +60,7 @@ async def chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.error(f"画图出错: {e}")
-        await update.message.reply_text("生成图表失败，请稍后再试")
+        await update.message.reply_text(f"生成图表失败，请稍后再试：{str(e)[:80]}")
 
 
 # 功能8：持仓饼图（私聊用）
@@ -116,7 +116,7 @@ async def portfolio_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error(f"饼图出错: {e}")
-        await update.message.reply_text("生成饼图失败，请稍后再试")
+        await update.message.reply_text(f"生成饼图失败，请稍后再试：{str(e)[:80]}")
 
 
 # A：技术分析图（价格+均线+布林带）
@@ -190,4 +190,4 @@ async def analyze_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error(f"技术分析图出错: {e}")
-        await update.message.reply_text("生成失败，请稍后再试")
+        await update.message.reply_text(f"生成失败，请稍后再试：{str(e)[:80]}")

@@ -84,7 +84,7 @@ async def arb(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(_arb_lines(symbol, prices), parse_mode="Markdown")
     except Exception as e:
         logging.error(f"比价出错: {e}")
-        await update.message.reply_text("查询失败，请稍后再试")
+        await update.message.reply_text(f"查询失败，请稍后再试：{str(e)[:80]}")
 
 async def build_arb_text(symbol):
     prices = await _all_prices(symbol)

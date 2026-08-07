@@ -98,7 +98,7 @@ async def whale(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"巨鲸监控出错({chain_key}): {e}")
-        await update.message.reply_text("查询失败，请稍后再试")
+        await update.message.reply_text(f"查询失败，请稍后再试：{str(e)[:80]}")
 
 # 供按钮调用（默认ETH）
 async def build_whale_text(threshold=100):

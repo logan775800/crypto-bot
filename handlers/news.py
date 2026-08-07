@@ -100,7 +100,7 @@ async def news(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error(f"新闻命令出错: {e}")
-        await update.message.reply_text("获取失败，请稍后再试")
+        await update.message.reply_text(f"获取失败，请稍后再试：{str(e)[:80]}")
 
 
 # ===== 新闻定时推送 =====

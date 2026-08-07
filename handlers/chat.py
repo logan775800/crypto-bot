@@ -140,6 +140,11 @@ SYSTEM = (
     "3) get_oi_history + get_funding_history 判断是谁推动、有没有拥挤/挤压风险；\n"
     "4) 需要精确进场时再 get_orderbook + get_recent_trades 看承接与挂单墙；\n"
     "5) 涉及仓位大小/该不该减仓，调 get_my_account() 按真实权益算。\n\n"
+    "**盈亏比一律看净的**：给出任何带止盈的方案前调 estimate_costs，用扣掉"
+    "手续费/滑点/资金费之后的净盈亏比做判断。用价格距离算的毛盈亏比只能用来对比——"
+    "止损 1% 的短线单，光两次吃单手续费就能把毛 1.2:1 压到净 0.98:1，"
+    "那是慢性亏损而不是策略。净盈亏比 <1 时要直接说这单不该做，"
+    "并给出「入场位挪到哪里才划算」，而不是硬凑一个近的止盈。\n"
     "**给方案时要具体、可执行**：方向与理由、进场区间(挂单还是等回踩/破位确认)、"
     "止损放在哪(用 ATR 或结构失效位，别拍脑袋)、止盈分段(参考流动性/前高前低)、"
     "仓位按「单笔风险≈权益0.5%~1%÷止损距离」反推(拿到账户就用真实数字算，"
@@ -270,6 +275,23 @@ TOOLS = [
             "query": {"type": "string", "description": "用户说的代号，如 LAB、1000PEPE、AKE"}},
             "required": ["query"]}}},
     {"type": "function", "function": {
+        "name": "estimate_costs",
+        "description": ("算这一单**扣掉手续费/滑点/资金费之后**的真实盈亏比。"
+                        "滑点按当前盘口逐档吃穿估算(会告诉你深度够不够、会不会部分成交)，"
+                        "资金费按预计持仓时长累计，费率优先用账户真实值。"
+                        "**给出任何带止盈的计划前都要调它**——用价格距离算的 1.8:1 "
+                        "在低流动性小币或窄止损上，净值可能不到 1，甚至是负的。"),
+        "parameters": {"type": "object", "properties": {
+            **_SYM,
+            "side": {"type": "string", "enum": ["long", "short"]},
+            "entry": {"type": "number", "description": "入场价"},
+            "stop": {"type": "number", "description": "止损价"},
+            "tp": {"type": "number", "description": "止盈价（多个TP就用最后一个或分别算）"},
+            "notional": {"type": "number", "description": "名义仓位USDT。不知道就用1000试算"},
+            "hold_hours": {"type": "number",
+                           "description": "预计持仓小时数，用于估资金费。日内填4，隔夜填24"}},
+            "required": ["symbol", "side", "entry", "stop", "tp", "notional"]}}},
+    {"type": "function", "function": {
         "name": "get_data_status",
         "description": ("体检某币各数据维度现在取不取得到（K线各周期/OI/资金费/盘口/清算），"
                         "含交易所数据时间与完整度百分比。要给完整交易计划前先调它，"
@@ -290,6 +312,16 @@ TOOLS = [
                         "(方向/均价/杠杆/未实现盈亏/爆仓价)。要按真实账户算仓位、单笔风险、"
                         "是否同向暴露过高、该不该减仓时用。仅管理员可用。"),
         "parameters": {"type": "object", "properties": {}}}},
+    {"type": "function", "function": {
+        "name": "get_portfolio_risk",
+        "description": ("真实账户的**组合风险聚合**：每个仓的风险USDT、同向合计、"
+                        "最坏情况回撤%、以及**没设止损的裸奔仓**。还给出每个仓"
+                        "减仓25%/50%/全平之后风险和占用各变成多少。"
+                        "用户问「该不该减仓」「我现在风险大不大」「能不能再开一单」时**必调**——"
+                        "他要的是数字对比，不是再来一遍市场分析。仅管理员。"),
+        "parameters": {"type": "object", "properties": {
+            "symbol": {"type": "string",
+                       "description": "只看某个仓的减仓推演，留空=看全账户"}}}}},
     {"type": "function", "function": {
         "name": "get_my_trade_stats",
         "description": ("读取用户 Bybit 真实账户的**历史成绩单**(只读)：胜率、盈亏比、每笔期望值、"
@@ -358,6 +390,16 @@ async def _tool_exec(name, args):
         from handlers import datameta
         rep = await datameta.probe(sym)
         return rep.for_ai()
+    if name == "estimate_costs":
+        from handlers import econ
+        try:
+            _a, txt = await econ.estimate(
+                sym, str(args.get("side") or "long"),
+                float(args["entry"]), float(args["stop"]), float(args["tp"]),
+                float(args["notional"]), float(args.get("hold_hours") or 8))
+            return txt
+        except (KeyError, TypeError, ValueError) as e:
+            return f"（净盈亏比算不了，参数不全或非法：{str(e)[:60]}）"
     if name == "resolve_symbol":
         from handlers import symbols
         q = str(args.get("query") or args.get("symbol") or "")
@@ -398,6 +440,50 @@ async def _account_snapshot():
             out.append(f"合计浮盈 {total:+.2f} USDT")
     except Exception as e:
         out.append(f"查持仓失败：{str(e)[:60]}")
+    return "\n".join(out)
+
+
+async def _risk_snapshot(symbol=""):
+    """组合风险 + 减仓推演，给 AI 回答「该不该减仓」用。
+
+    同向仓位按**完全相关**聚合：BTC 一破位山寨是一起走的，
+    把相关性当 0 会让账面风险看起来只有真实值的几分之一。
+    """
+    from handlers.rtrade import _client, _env_tag
+    from handlers import sizing as sz
+    from handlers import marketdata as md
+    c = _client()
+    bal = await c.wallet_balance("USDT")
+    equity = float(bal.get("totalEquity") or 0)
+    poss = await c.positions_all()
+    r = sz.portfolio_risk(poss, equity)
+    out = [f"【组合风险 {_env_tag()}】总权益 {equity:,.2f} USDT"]
+    if not r["positions"]:
+        out.append("当前无持仓 —— 没有敞口，任何新单都是第一笔风险。")
+        return "\n".join(out)
+    for x in r["positions"]:
+        tag = "⚠️裸奔(无止损)" if x["naked"] else ""
+        out.append(f"{x['symbol']} {'多' if x['side']=='long' else '空'}｜"
+                   f"名义 {x['value']:,.0f}｜风险 {x['risk']:,.2f} USDT"
+                   f"（{x['risk']/equity*100:.2f}%）{tag}")
+    out.append(f"同向合计：多 {r['long_pct']:.2f}%｜空 {r['short_pct']:.2f}%")
+    out.append(f"**最坏情况回撤 {r['worst_pct']:.2f}%**"
+               f"（同向仓位按完全相关计——BTC 破位时山寨是一起走的，不存在分散）")
+    if r["naked"]:
+        out.append(f"⚠️ 裸奔仓（没设止损）：{'、'.join(str(s) for s in r['naked'])}"
+                   f" —— 它们的风险不是计划内的那点，是到爆仓为止")
+    # 减仓推演
+    targets = [p for p in poss if not symbol or md.norm(symbol) == p.get("symbol")]
+    for p in targets[:4]:
+        rows = sz.reduce_scenarios(p, equity)
+        if not rows:
+            continue
+        out.append(f"\n{p.get('symbol')} 减仓推演：")
+        for row in rows:
+            out.append(f"　减{row['pct']}% → 落袋 {row['realized']:+,.2f}｜"
+                       f"剩余名义 {row['left_value']:,.0f}｜"
+                       f"剩余风险 {row['left_risk']:,.2f} USDT"
+                       + (f"（{row['left_risk_pct']:.2f}%）" if row['left_risk_pct'] is not None else ""))
     return "\n".join(out)
 
 
@@ -494,10 +580,83 @@ def _make_exec(update, context, mf=None):
                 return "（未配置 Bybit API 密钥，拿不到历史成绩单）"
             except Exception as e:
                 return f"（拉取成绩单失败：{str(e)[:80]}）"
+        if name == "get_portfolio_risk":
+            from config import is_admin
+            if not is_admin(uid):
+                return "（无权限：只有管理员能查询真实账户风险）"
+            try:
+                return await _risk_snapshot(str(args.get("symbol") or "").upper())
+            except RuntimeError:
+                return "（未配置 Bybit API 密钥，拿不到真实持仓）"
+            except Exception as e:
+                return f"（组合风险计算失败：{str(e)[:80]}）"
         if name == "get_my_virtual_positions":
             return _virtual_snapshot(uid)
         return await _tool_exec(name, args)
     return _exec
+
+
+# ── 会话上下文：记住在聊哪个币、什么方向、什么价位 ────────────────
+# 用户的真实说法是连着来的：「分析AKE」→「回踩能不能多」→「我已经在0.00405做多」
+# → 「现在要不要减仓」。每句都重新猜币种会让后三句全部答偏。
+_CTX_TTL = 3600          # 一小时没提就当换话题了，别拿隔夜的入场价当现在的
+_ENTRY_PAT = re.compile(r"(?:在|@)\s*([0-9]*\.?[0-9]+)\s*(?:做多|做空|开多|开空|进|入|多|空)")
+_SIDE_PAT = re.compile(r"(做多|开多|多单|抄底|long)|(做空|开空|空单|long?short|short)", re.I)
+_CLEAR_PAT = re.compile(r"^\s*(/clear|清空上下文|换个?币|重新开始)\s*$")
+
+
+def _ctx(context):
+    c = context.chat_data.get("trade_ctx") or {}
+    if c and time.time() - c.get("ts", 0) > _CTX_TTL:
+        return {}
+    return c
+
+
+def update_ctx(context, text, symbol=None):
+    """从用户这句话里抽出币种/方向/入场价，累积到会话上下文。
+
+    只**补充**不覆盖：没提方向就沿用上次的，这样「现在要不要减仓」
+    还知道说的是哪个仓。显式说了新的才更新。
+    """
+    c = dict(_ctx(context))
+    if symbol:
+        if c.get("symbol") and c["symbol"] != symbol:
+            c = {"symbol": symbol}        # 换币了，旧的方向/入场价一律作废
+        else:
+            c["symbol"] = symbol
+    m = _ENTRY_PAT.search(text or "")
+    if m:
+        try:
+            c["entry"] = float(m.group(1))
+        except ValueError:
+            pass
+    s = _SIDE_PAT.search(text or "")
+    if s:
+        c["side"] = "long" if s.group(1) else "short"
+    if c:
+        c["ts"] = time.time()
+        context.chat_data["trade_ctx"] = c
+    return c
+
+
+def ctx_hint(context):
+    """把上下文渲染成给模型的一句话。空的就不说，别凭空造出一个币。"""
+    c = _ctx(context)
+    if not c:
+        return ""
+    bits = []
+    if c.get("symbol"):
+        bits.append(f"币种 {c['symbol']}")
+    if c.get("side"):
+        bits.append("方向 " + ("做多" if c["side"] == "long" else "做空"))
+    if c.get("entry"):
+        bits.append(f"用户自述入场价 {c['entry']:g}")
+    if not bits:
+        return ""
+    return ("【会话上下文】" + "、".join(bits) +
+            "。用户这句话如果没点名币种，默认就是它，不要反问也不要换成 BTC。"
+            "入场价是**用户自己说的**，不是行情数据——引用时要说明来源，"
+            "别把它当成取数得到的成交价。")
 
 
 def _guard(mf):
@@ -545,9 +704,14 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
         try:
             from handlers.manifest import Manifest
             mf = Manifest()
+            update_ctx(context, user_text)
+            sys_prompt = SYSTEM + ("\n\n" + ctx_hint(context) if ctx_hint(context) else "")
             reply = await ask_ai_tools(
-                hist, TOOLS, _make_exec(update, context, mf), system=SYSTEM,
+                hist, TOOLS, _make_exec(update, context, mf), system=sys_prompt,
                 ledger=mf.ledger, guard=_guard(mf))
+            # 模型解析出的币种回填进上下文，下一句「要不要减仓」就不用再猜
+            if mf.symbol:
+                update_ctx(context, "", mf.symbol)
             head = mf.header()
             if head:
                 reply = f"{head}\n\n{reply}"
@@ -588,9 +752,17 @@ async def ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def reset_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/resetchat 清空当前会话的对话记忆。"""
+    """/resetchat 清空当前会话的对话记忆 + 交易上下文。
+
+    两个一起清：只清对话记忆而留着「币种/方向/入场价」，下一句还是会被
+    旧的币种带偏，用户会以为没清干净。
+    """
     context.chat_data.pop("chat_hist", None)
-    await safe_reply(update.message, "🧹 已清空对话记忆，重新开始。")
+    had = context.chat_data.pop("trade_ctx", None)
+    extra = ""
+    if had and had.get("symbol"):
+        extra = f"（原来在聊 {had['symbol']}，也一并忘了）"
+    await safe_reply(update.message, f"🧹 已清空对话记忆与交易上下文，重新开始。{extra}")
 
 
 async def mention_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):

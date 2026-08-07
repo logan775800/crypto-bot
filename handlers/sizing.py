@@ -119,6 +119,96 @@ def exposure(positions, side=None):
     return {"total": tot, "same_side": same, "same_side_alt": alt}
 
 
+def portfolio_risk(positions, equity, new_plan=None):
+    """把「每笔都只冒 0.5%」加总成「真出事时账户一共亏多少」。
+
+    单笔风险算得再对也只是单笔。真实的杀伤来自两件事：
+      1) **多笔止损同时触发**——山寨在 BTC 破位时是一起走的，不存在"分散"；
+      2) **裸奔仓位**——没设止损的仓，它的风险不是 0.5%，是到爆仓为止。
+
+    所以这里按「同向仓位视为完全相关」计算最坏情况，而不是按独立事件开方缩小。
+    在加密永续上，把相关性当 0 是最贵的那种乐观。
+    """
+    out = {"equity": equity, "positions": [], "naked": [],
+           "risk_long": 0.0, "risk_short": 0.0, "worst": 0.0}
+    if not equity or equity <= 0:
+        return out
+    for p in positions or []:
+        try:
+            entry = float(p.get("avgPrice") or 0)
+            value = float(p.get("positionValue") or 0)
+        except (TypeError, ValueError):
+            continue
+        if entry <= 0 or value <= 0:
+            continue
+        side = "long" if p.get("side") == "Buy" else "short"
+        sl = _f(p.get("stopLoss"))
+        liq = _f(p.get("liqPrice"))
+        if sl and sl > 0:
+            risk = value * abs(entry - sl) / entry
+            naked = False
+        else:
+            # 没止损：风险按到爆仓价算。没有爆仓价（全仓）就按整笔保证金算，
+            # 无论如何都不能记成 0 —— 记 0 就是在账面上把最危险的仓位藏起来
+            if liq and liq > 0:
+                risk = value * abs(entry - liq) / entry
+            else:
+                risk = value
+            naked = True
+            out["naked"].append(p.get("symbol"))
+        out["positions"].append({"symbol": p.get("symbol"), "side": side,
+                                 "value": value, "risk": risk, "naked": naked})
+        out[f"risk_{side}"] += risk
+    if new_plan:
+        out[f"risk_{new_plan['side']}"] += new_plan.get("risk_usdt", 0)
+    # 最坏情况：同向的一起打脸（多空对冲不算数——它们不会同时止损）
+    out["worst"] = max(out["risk_long"], out["risk_short"])
+    out["worst_pct"] = out["worst"] / equity * 100
+    out["long_pct"] = out["risk_long"] / equity * 100
+    out["short_pct"] = out["risk_short"] / equity * 100
+    return out
+
+
+def _f(x):
+    try:
+        v = float(x)
+        return v if v > 0 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def reduce_scenarios(pos, equity, pcts=(25, 50, 100)):
+    """减仓推演：砍掉 25%/50%/全平之后，这个仓的风险和占用各变成多少。
+
+    回答的是「该不该减」而不是「行情怎么看」——用户问这句话时，
+    要的是数字对比，不是再来一遍市场分析。
+    """
+    try:
+        entry = float(pos.get("avgPrice") or 0)
+        value = float(pos.get("positionValue") or 0)
+        upnl = float(pos.get("unrealisedPnl") or 0)
+    except (TypeError, ValueError):
+        return []
+    if entry <= 0 or value <= 0:
+        return []
+    sl = _f(pos.get("stopLoss"))
+    liq = _f(pos.get("liqPrice"))
+    ref = sl or liq
+    base_risk = value * abs(entry - ref) / entry if ref else value
+    out = []
+    for pct in pcts:
+        keep = 1 - pct / 100
+        row = {
+            "pct": pct,
+            "realized": upnl * pct / 100,          # 减仓即落袋这部分浮盈/浮亏
+            "left_value": value * keep,
+            "left_risk": base_risk * keep,
+            "left_risk_pct": (base_risk * keep / equity * 100) if equity else None,
+        }
+        out.append(row)
+    return out
+
+
 def build_text(s, exp=None, symbol=None, env=""):
     """把计算结果渲染成一屏能看完的卡。"""
     if not s:

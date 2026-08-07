@@ -83,4 +83,4 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update.message, text, reply_markup=kb, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"看板出错: {e}")
-        await update.message.reply_text("生成失败，请稍后再试")
+        await update.message.reply_text(f"生成失败，请稍后再试：{str(e)[:80]}")

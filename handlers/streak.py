@@ -202,6 +202,6 @@ async def _run_scan(update, context, direction):
         txt = await build_streak_text(direction, ex, days, min_m)
     except Exception as e:
         logging.error(f"{cmd} 扫描出错: {e}")
-        await update.message.reply_text("扫描失败，稍后再试")
+        await update.message.reply_text(f"扫描失败，稍后再试：{str(e)[:80]}")
         return
     await update.message.reply_text(txt, parse_mode="Markdown")

@@ -124,6 +124,28 @@ def card(p, with_meta=True):
                      + (f"（{'，'.join(extra)}）" if extra else ""))
     inv = p.get("invalid") or {}
     lines.append(f"*失效*　{escape_md(inv.get('desc') or '—')}")
+    g = p.get("guards") or {}
+    if g:
+        chase = g.get("max_chase_pct")
+        lines.append(
+            f"*执行守卫*　追价≤{chase:g}%｜滑点≤{g.get('max_slip_pct', MAX_SLIP_PCT):g}%"
+            + ("｜BTC破位取消" if g.get("btc_abort") else "")
+            + ("｜费率拥挤取消" if g.get("funding_abort") else ""))
+        lines.append(f"_错过入场区就不追了——追进去的每一分都从盈亏比里扣_")
+
+    # 净盈亏比：毛的那个是价格距离，净的才是到手的钱。两者差距大时必须点出来，
+    # 否则用户会按毛值做决定——止损窄的短线单上这个差距能让 1.2:1 变成 0.98:1
+    net = p.get("net") or {}
+    if net.get("net_rr") is not None:
+        lines.append("")
+        lines.append(f"*净盈亏比* {net['net_rr']:.2f}:1"
+                     f"（毛 {net['gross_rr']:.2f}，成本吃掉 {net.get('eaten_pct', 0):.0f}%）"
+                     f"｜按名义 {net['notional']:,.0f}U 试算")
+        if net["net_rr"] < 1:
+            lines.append("❌ *净盈亏比不足 1* —— 扣完手续费/滑点/资金费，"
+                         "赢一次赚的还不够输一次亏的，这单不该做")
+        if net.get("partial"):
+            lines.append("⚠️ 盘口深度不够这个名义，会**部分成交**，实际滑点比试算更差")
 
     # 盈亏比是「这单值不值得做」最直接的数字，差就要刺眼
     if p.get("rr_final") is not None and p["rr_final"] < LOW_RR:
@@ -292,7 +314,35 @@ async def generate(symbol, side, chat_id, uid):
         PLAN_TOOL, "submit_plan", system=SYSTEM)
 
     p = _from_ai(args, sym, side, chat_id, uid, rep)
+    await attach_net(p)
     return save(p), rep
+
+
+# 试算净盈亏比用的名义。盈亏比本身与名义无关，但**滑点**跟名义强相关——
+# 名义越大吃穿的档位越多。用一个中等规模做基准，用户仓位远大于它时
+# 实际滑点会更差，卡片里的「部分成交」提示就是干这个的。
+NET_PROBE_NOTIONAL = 2000
+
+
+async def attach_net(p):
+    """给计划挂上净盈亏比。算不出来就不挂——缺这一项不该让整份计划生成失败。"""
+    try:
+        from handlers import econ
+        lo, hi = min(p["entry"]), max(p["entry"])
+        mid = (lo + hi) / 2
+        tp = (p.get("tps") or [{}])[-1].get("price")
+        if not tp:
+            return
+        mi = await econ.market_inputs(p["symbol"], p["side"], NET_PROBE_NOTIONAL)
+        a = econ.analyze(mid, p["stop"], tp, NET_PROBE_NOTIONAL, p["side"],
+                         fee_in=mi["taker"], fee_out=mi["taker"],
+                         slip_in_pct=mi["slip_in"], slip_out_pct=mi["slip_out"],
+                         funding_rate=mi["funding_rate"], hold_hours=8)
+        if a:
+            a["partial"] = mi.get("partial", False)
+            p["net"] = a
+    except Exception as e:
+        log.warning(f"净盈亏比计算失败 {p.get('symbol')}: {e}")
 
 
 MIN_TP_GAP_PCT = 0.15    # 两个止盈位挨得比这还近就是同一个位置，分段没有意义
@@ -301,6 +351,10 @@ LOW_RR = 1.0             # 末段盈亏比低于它 = 这单的数学期望本�
 # 所以用一个「无论如何都太窄了」的百分比兜底：实测模型给过 0.11% 的止损，
 # 正常盘口噪声就能扫掉。真正的 ATR 约束交给 SYSTEM 提示。
 MIN_STOP_PCT = 0.3
+# 追价上限 = 止损距离的多少倍。追进去的每一分都是从 R 里扣的：止损 1% 的单
+# 追 0.5%，止损距离变 1.5%、盈利距离少 0.5%，盈亏比直接腰斩。
+MAX_CHASE_OF_STOP = 0.25
+MAX_SLIP_PCT = 0.3       # 触发后市价进场的最大可接受滑点，超了就别进
 
 
 def rr(entry_mid, stop, tp):
@@ -383,6 +437,14 @@ def _from_ai(a, sym, side, chat_id, uid, rep=None):
         "invalid": {"desc": a["invalid_desc"], "price": float(a["invalid_price"]),
                     # 失效方向：做空计划被「站回上方」证伪，做多被「跌破下方」证伪
                     "dir": "above" if side == "short" else "below"},
+        # 执行守卫：计划本身是对的，但**执行方式**能把它做亏。
+        # 追价上限用止损距离的比例而非固定值——止损 1% 的单追 0.5% 等于送掉半个 R。
+        "guards": {
+            "max_chase_pct": round(stop_pct * MAX_CHASE_OF_STOP, 3),
+            "max_slip_pct": MAX_SLIP_PCT,
+            "btc_abort": True,
+            "funding_abort": True,
+        },
         "data_meta": ({"completeness": rep.completeness, "missing": rep.missing}
                       if rep else {}),
         "hit_tps": [],
@@ -471,6 +533,68 @@ def evaluate(p, close, high, low, now=None):
     return None, None
 
 
+# ── 环境类取消条件 ──────────────────────────────────────────────
+# 价格没碰失效位，但**市场环境已经变了**，计划照样不该执行。
+# 这几条是永续特有的：现货没有资金费，也没有「BTC 一动全场跟着走」这么强的联动。
+BTC_ABORT_PCT = 2.0       # BTC 15m 跌/涨超过这个幅度 = 大盘破位，山寨反向计划作废
+FUNDING_ABORT = 0.001     # 资金费率单期超过 0.1%（年化~110%）= 拥挤到不值得进场
+MAJORS = ("BTCUSDT", "ETHUSDT")
+
+
+async def _env_aborts(symbols):
+    """返回 {币: 取消原因}。取不到数据就不取消——宁可漏杀也不能误杀一份好计划。"""
+    out = {}
+    # BTC 破位：只取一次，所有山寨计划共用
+    btc_move = None
+    try:
+        r = await md._get("/v5/market/kline", {
+            "category": md.CAT, "symbol": "BTCUSDT",
+            "interval": md.INTERVALS["15m"], "limit": 2})
+        rows = r.get("list") or []
+        if len(rows) >= 2:
+            x = rows[1]
+            o, c = float(x[1]), float(x[4])
+            if o > 0:
+                btc_move = (c - o) / o * 100
+    except Exception as e:
+        log.warning(f"计划环境检查取 BTC 失败: {e}")
+
+    for sym in symbols:
+        if sym in MAJORS:
+            continue          # BTC/ETH 自己不受"BTC 联动"约束
+        if btc_move is not None and abs(btc_move) >= BTC_ABORT_PCT:
+            out[sym] = ("btc", f"BTC 15m {btc_move:+.1f}%（破位阈值 ±{BTC_ABORT_PCT}%）",
+                        "long" if btc_move < 0 else "short")
+    # 资金费拥挤：逐币查（数量少，活计划通常个位数）
+    for sym in symbols:
+        try:
+            t = await md._get("/v5/market/tickers", {"category": md.CAT, "symbol": sym})
+            fr = float(((t.get("list") or [{}])[0]).get("fundingRate") or 0)
+        except Exception:
+            continue
+        if abs(fr) >= FUNDING_ABORT:
+            # 费率为正=多头拥挤，此时取消的是**多单**
+            out.setdefault(sym, ("funding",
+                                 f"资金费率 {fr*100:+.3f}%/期，已到拥挤阈值 ±{FUNDING_ABORT*100:g}%",
+                                 "long" if fr > 0 else "short"))
+    return out
+
+
+def env_abort_reason(p, aborts):
+    """这份计划是否该被环境条件取消。方向不对就不管——
+    BTC 砸盘只杀山寨多单，空单反而是受益的。"""
+    hit = aborts.get(p["symbol"])
+    if not hit:
+        return None
+    kind, desc, kill_side = hit
+    if p.get("side") != kill_side:
+        return None
+    if not (p.get("guards") or {}).get(f"{kind}_abort", True):
+        return None          # 用户显式关掉了这条守卫
+    label = "大盘破位" if kind == "btc" else "资金费拥挤"
+    return f"{label}：{desc}"
+
+
 async def check_plans(context):
     """后台 job：按币聚合取一次 5m K线，驱动所有活计划的状态机。"""
     live = [p for p in _all() if p.get("status") in LIVE]
@@ -479,6 +603,10 @@ async def check_plans(context):
     now = time.time()
     changed = False
     bars = {}
+    # 只有还没触发的计划才受环境条件约束：已经在场内的仓位该由止损管，
+    # 而不是被一条"环境变了"直接判死——那会变成用市价平掉一个本来有止损的仓
+    waiting = {p["symbol"] for p in live if p.get("status") == "waiting"}
+    aborts = await _env_aborts(waiting) if waiting else {}
     for sym in {p["symbol"] for p in live}:
         try:
             r = await md._get("/v5/market/kline", {
@@ -493,6 +621,24 @@ async def check_plans(context):
             log.warning(f"计划盯盘取 {sym} K线失败: {e}")
 
     for p in live:
+        # 环境取消优先于价格状态机：价格还没碰失效位，但前提已经没了
+        if p.get("status") == "waiting":
+            why = env_abort_reason(p, aborts)
+            if why:
+                p["status"] = "invalid"
+                p["invalid_reason"] = why
+                p["updated"] = now
+                changed = True
+                try:
+                    await context.bot.send_message(
+                        chat_id=p["chat_id"], parse_mode="Markdown",
+                        text=(f"❌ *计划取消*　`{p['id']}` {escape_md(p['symbol'])}\n"
+                              f"{escape_md(why)}\n"
+                              f"_价格还没走到失效位，但进场前提已经变了。_"),
+                        reply_markup=kb(p))
+                except Exception as e:
+                    log.error(f"计划环境取消推送失败 {p.get('chat_id')}: {e}")
+                continue
         b = bars.get(p["symbol"])
         if not b:
             # 取不到数据时只判过期（过期不需要价格），绝不猜价格

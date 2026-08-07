@@ -200,7 +200,7 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"vopen 查价出错: {e}")
             r = None
         if not r:
-            await safe_reply(update.message, "取现价失败，稍后再试，或手动指定入场价")
+            await safe_reply(update.message, f"取现价失败，稍后再试，或手动指定入场价：{str(e)[:80]}")
             return
         entry = r["price"]
 
@@ -266,7 +266,7 @@ async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logging.error(f"vclose 查价出错: {e}")
         r = None
     if not r:
-        await safe_reply(update.message, "取现价失败，稍后再试")
+        await safe_reply(update.message, f"取现价失败，稍后再试：{str(e)[:80]}")
         return
     mark = r["price"]
 
@@ -332,7 +332,7 @@ async def vpos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         prices = await get_prices(list(positions.keys()))
     except Exception as e:
         logging.error(f"vpos 查价出错: {e}")
-        await safe_reply(update.message, "查价失败，稍后再试")
+        await safe_reply(update.message, f"查价失败，稍后再试：{str(e)[:80]}")
         return
 
     lines = ["💼 *虚拟合约账户*\n"]

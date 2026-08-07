@@ -47,4 +47,4 @@ async def backup_now(update, context):
             await update.message.reply_text("✅ 备份完成")
     except Exception as e:
         logging.error(f"手动备份出错: {e}")
-        await update.message.reply_text("备份失败")
+        await update.message.reply_text(f"备份失败：{str(e)[:80]}")

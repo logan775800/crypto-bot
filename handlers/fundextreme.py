@@ -248,7 +248,7 @@ async def fex_from_btn(query, context):
         rows = await scan_all()
     except Exception as e:
         log.error(f"资金费榜按钮出错: {e}")
-        await safe_edit(query, "扫描失败，稍后再试")
+        await safe_edit(query, f"扫描失败，稍后再试：{str(e)[:80]}")
         return
     await safe_edit(query, build_text(rows), reply_markup=_kb(), parse_mode="Markdown")
 

@@ -49,7 +49,7 @@ async def funding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error(f"资金费率出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 # /oi BTC - 持仓量
 async def open_interest(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -72,7 +72,7 @@ async def open_interest(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error(f"持仓量出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 # /okxk BTC - OKX K线数据（最近几根）
 async def okx_kline(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -94,7 +94,7 @@ async def okx_kline(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error(f"OKX K线出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 
 import datetime
@@ -133,7 +133,7 @@ async def new_coins(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error(f"新币榜出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 # /gainers - OKX涨幅榜
 async def gainers(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -178,7 +178,7 @@ async def gainers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error(f"涨幅榜出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 # /swap - 合约涨幅榜
 async def swap_gainers(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -215,7 +215,7 @@ async def swap_gainers(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error(f"合约涨幅榜出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 
 # ===== 供按钮调用的文本版本 =====
@@ -315,7 +315,7 @@ async def depth(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error(f"订单簿出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 # /ratio BTC - 多空比
 async def long_short(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -347,7 +347,7 @@ async def long_short(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logging.error(f"多空比出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 
 # /liq BTC - 爆仓数据
@@ -396,7 +396,7 @@ async def liquidation(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error(f"爆仓数据出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 
 async def build_ratio_text(symbol):
@@ -479,7 +479,7 @@ async def funding_rank(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         logging.error(f"资金费率榜出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 
 # /fprice BTC - 合约行情卡（价格+资金费率+持仓量一站式）
@@ -531,7 +531,7 @@ async def fprice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
     except Exception as e:
         logging.error(f"合约行情出错: {e}")
-        await update.message.reply_text("查询失败")
+        await update.message.reply_text(f"查询失败：{str(e)[:80]}")
 
 
 

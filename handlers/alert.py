@@ -60,7 +60,7 @@ async def alert_pct(update: Update, context: ContextTypes.DEFAULT_TYPE):
         base = result["price"]
     except Exception as e:
         logging.error(f"获取基准价出错: {e}")
-        await update.message.reply_text("获取当前价格失败")
+        await update.message.reply_text(f"获取当前价格失败：{str(e)[:80]}")
         return
     data["alerts"].append({
         "type": "pct", "chat_id": update.effective_chat.id,

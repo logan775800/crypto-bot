@@ -84,7 +84,7 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     except Exception as e:
         logging.error(f"分析出错: {e}")
-        await update.message.reply_text("分析失败，请稍后再试")
+        await update.message.reply_text(f"分析失败，请稍后再试：{str(e)[:80]}")
 
 
 # B：多周期分析 /multi BTC
@@ -143,7 +143,7 @@ async def multi_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error(f"多周期分析出错: {e}")
-        await update.message.reply_text("分析失败")
+        await update.message.reply_text(f"分析失败：{str(e)[:80]}")
 
 
 # C：KDJ + 成交量 /indicators BTC
@@ -190,7 +190,7 @@ async def indicators_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("\n".join(lines))
     except Exception as e:
         logging.error(f"指标计算出错: {e}")
-        await update.message.reply_text("计算失败，请稍后再试")
+        await update.message.reply_text(f"计算失败，请稍后再试：{str(e)[:80]}")
 
 
 async def build_analysis_text(symbol):

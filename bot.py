@@ -28,7 +28,9 @@ HELP_TEXT = (
     "/cond BTC <60000 rsi15m<30 🎯 条件提醒：价格+指标**同时**满足才叫（/conds 管理）\n"
     "/fex 💵 资金费率极端榜（全市场跨所，按结算周期归一日化，标出1h高频费率）\n"
     "/achart BTC 1h 📐 标注图表：EMA/摆动高低点/前高前低/1.5×ATR止损带**画在图上**\n"
-    "/datacheck BANK 🔎 数据体检：各维度取不取得到、数据几点的、延迟多少、有没有插针\n"
+    "/datacheck 🩺 系统体检：行情源/AI/**账户链路**/订阅状态 —— 查「地基通没通电」\n"
+    "　└ /datacheck BANK 查单个币各维度取不取得到、延迟多少、有没有插针\n"
+    "/restore 💾 从备份恢复订阅与配置（先发 /restore 看有哪些备份）\n"
     "/sym LAB 🔎 合约身份：这代号在哪个所、面值倍数、按币还是按张、最小下单量\n"
     "　└ 同名不同币会全部列出并做价格偏离检测——下单前先确认是哪个\n"
     "/net BANK long 0.081 0.0795 0.086 2000 💰 净盈亏比：扣掉手续费/滑点/资金费还剩多少\n"
@@ -333,6 +335,7 @@ async def post_init(application):
         BotCommand("weekly", "📅 交易周报(行为画像)"),
         BotCommand("keycheck", "🔐 密钥权限体检"),
         BotCommand("killswitch", "🔴 一键禁用实盘下单"),
+        BotCommand("restore", "💾 从备份恢复订阅/配置"),
         BotCommand("plan", "📋 生成交易计划(会自动失效)"),
         BotCommand("plans", "📋 我的交易计划"),
     ]
@@ -417,6 +420,8 @@ def main():
     app.add_handler(CommandHandler("keycheck", keyguard.keycheck_cmd))
     app.add_handler(CommandHandler("killswitch", keyguard.killswitch_cmd))
     app.add_handler(CommandHandler("audit", keyguard.audit_cmd))
+    # 备份恢复：有自动备份却没有恢复入口，等于备份只在"我知道去翻文件"时才有用
+    app.add_handler(CommandHandler("restore", backup.restore_cmd))
     # 交易计划：一屏能执行 + 会自己失效
     app.add_handler(CommandHandler("plan", plan.plan_cmd))
     app.add_handler(CommandHandler("plans", plan.plans_cmd))

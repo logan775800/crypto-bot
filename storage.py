@@ -14,59 +14,69 @@ def load_data():
 
 # 全局数据
 data = load_data()
-# 确保新字段存在（兼容旧数据文件）
-data.setdefault("alerts", [])
-data.setdefault("holdings", {})
-data.setdefault("broadcast_chats", [])  # 订阅了定时播报的群/私聊id列表
-data.setdefault("market_watch", [])     # 订阅市场异动告警的chat_id
-data.setdefault("alerted_coins", {})    # 已告警的币 {symbol: 时间戳}（冷却用）
-data.setdefault("known_coins", [])      # 已知的OKX币种列表（检测新币用，旧版遗留）
-data.setdefault("known_coins_ex", {})   # 各所已知币 {交易所: [币]}（多所新币检测）
-data.setdefault("last_volumes_ex", {})  # 各所上轮成交额 {交易所: {币: 额}}（多所放量检测）
-data.setdefault("coin_tiers", {})       # 分级告警：每个币已告警的台阶
-data.setdefault("user_prefs", {})       # 用户偏好 {chat_id: {follows:[], threshold:20, quiet:[start,end]}}
-data.setdefault("last_surge", {})       # 上轮异动币
-data.setdefault("last_volumes", {})     # 上轮成交量（放量检测用）
-data.setdefault("news_subs", [])        # 订阅新闻推送的chat_id
-data.setdefault("pushed_news", [])      # 已推送的新闻链接（去重）
-data.setdefault("unlock_subs", [])      # 订阅解锁提醒的chat_id
-data.setdefault("alerted_unlocks", [])  # 已提醒的解锁事件（去重）
-data.setdefault("summary_subs", [])     # 订阅每日总结的chat_id
-data.setdefault("analysis_subs", [])    # 订阅每日分析推送的chat_id
-data.setdefault("holding_watch", {})    # 持仓异动提醒 {uid: chat_id}
-data.setdefault("holding_alerted", {})  # 持仓异动冷却记录
-data.setdefault("gas_subs", {})         # gas提醒订阅 {chat_id: {"threshold":gwei,"armed":bool}}
-data.setdefault("arb_subs", {})         # 套利监控订阅 {chat_id: {"threshold":pct}}
-data.setdefault("arb_alerted", {})      # 套利告警冷却 {sym: 时间戳}
-data.setdefault("whale_addr", {})       # 巨鲸地址追踪 {chat_id: {addr: {"label":..,"last":块高}}}
-data.setdefault("whale_min", {})        # 地址追踪最小美元阈值 {chat_id: usd}
-data.setdefault("ti_alerts", [])        # 技术指标告警订阅 [{chat_id,symbol,rsi_state,ma_state}]
-data.setdefault("contract_watch", [])   # 订阅全交易所合约异动告警的chat_id
-data.setdefault("contract_tiers", {})   # 合约分级告警记录 {交易所_币: {tier,dir,ts}}
-data.setdefault("contract_alerted", {}) # 合约告警推送冷却 {币:方向:档位 -> ts}（防同一异动刷屏）
-data.setdefault("grids", {})            # Bybit 永续网格 {chat_id:symbol: {区间/档位/挂单/成交/利润...}}
-data.setdefault("watchpct", [])         # 持续波动监控 [{chat_id,symbol,pct,base,src,last_ts}]
-data.setdefault("vtrade", {})           # 虚拟合约交易 {uid: {balance, positions{sym:{...}}, history[], chat_id}}
-data.setdefault("rtrade_alert", {})     # 实盘爆仓预警 {enabled, threshold, chat_id, cooldown{sym:ts}}
-data.setdefault("riskguard", {})        # 风险守护 {enabled, chat_id, checks{}, mmr/daily/conc/btc_drop 阈值, cooldown{}, day{date,start,fired}}
-data.setdefault("brief", {})            # AI盘前简报每日推送 {enabled, chat_id}
-data.setdefault("cond_alerts", [])      # 条件触发提醒 [{chat_id,symbol,conds[],last_ts}]
-data.setdefault("plans", [])            # 交易计划 [{id,chat_id,symbol,side,status,trigger,entry,stop,tps,invalid,...}]
-data.setdefault("plan_seq", 0)          # 计划自增号（按钮 callback_data 要短 id）
-data.setdefault("fex_subs", {})         # 资金费极值订阅 {chat_id: {threshold}}
-data.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:币:方向 -> ts}
-data.setdefault("ai_model_override", "")  # /aimodel 手动指定的AI模型（空=自动降级）
-data.setdefault("pump_watch", {})       # 15m急涨急跌订阅 {chat_id: {"pct": 阈值}}
-data.setdefault("pump_alerted", {})     # 急涨急跌去重 {chat_id: {币: {up,down,ts}}}
-data.setdefault("trading_disabled", False)  # 实盘下单总开关(killswitch)
-data.setdefault("audit_log", [])         # 实盘操作审计
-data.setdefault("risk_profile", {})      # 个性化风控参数 {uid: {...}}
-data.setdefault("weekly_subs", [])       # 周报订阅 chat_id
-data.setdefault("weekly_snap", {})       # 上周行为快照（算漂移用）
-data.setdefault("event_subs", {})        # 事件驱动预警订阅 {chat_id: {symbols:[]}}
-data.setdefault("event_state", {})       # 各币上一轮状态快照（判"切换"的基线）
-data.setdefault("event_cooldown", {})    # 事件推送冷却 {币:事件 -> ts}
-data.setdefault("contract_min_tier", {})  # 合约告警每群最低档 {chat_id: 20/30/50/100}
+
+
+def apply_defaults(d=None):
+    """补齐所有字段的默认值。**可重复调用** —— /restore 恢复老备份后
+    必须再跑一次，否则老文件缺的字段会让 handler 在 data[...] 上 KeyError。
+    """
+    d = data if d is None else d
+    d.setdefault("alerts", [])
+    d.setdefault("holdings", {})
+    d.setdefault("broadcast_chats", [])  # 订阅了定时播报的群/私聊id列表
+    d.setdefault("market_watch", [])     # 订阅市场异动告警的chat_id
+    d.setdefault("alerted_coins", {})    # 已告警的币 {symbol: 时间戳}（冷却用）
+    d.setdefault("known_coins", [])      # 已知的OKX币种列表（检测新币用，旧版遗留）
+    d.setdefault("known_coins_ex", {})   # 各所已知币 {交易所: [币]}（多所新币检测）
+    d.setdefault("last_volumes_ex", {})  # 各所上轮成交额 {交易所: {币: 额}}（多所放量检测）
+    d.setdefault("coin_tiers", {})       # 分级告警：每个币已告警的台阶
+    d.setdefault("user_prefs", {})       # 用户偏好 {chat_id: {follows:[], threshold:20, quiet:[start,end]}}
+    d.setdefault("last_surge", {})       # 上轮异动币
+    d.setdefault("last_volumes", {})     # 上轮成交量（放量检测用）
+    d.setdefault("news_subs", [])        # 订阅新闻推送的chat_id
+    d.setdefault("pushed_news", [])      # 已推送的新闻链接（去重）
+    d.setdefault("unlock_subs", [])      # 订阅解锁提醒的chat_id
+    d.setdefault("alerted_unlocks", [])  # 已提醒的解锁事件（去重）
+    d.setdefault("summary_subs", [])     # 订阅每日总结的chat_id
+    d.setdefault("analysis_subs", [])    # 订阅每日分析推送的chat_id
+    d.setdefault("holding_watch", {})    # 持仓异动提醒 {uid: chat_id}
+    d.setdefault("holding_alerted", {})  # 持仓异动冷却记录
+    d.setdefault("gas_subs", {})         # gas提醒订阅 {chat_id: {"threshold":gwei,"armed":bool}}
+    d.setdefault("arb_subs", {})         # 套利监控订阅 {chat_id: {"threshold":pct}}
+    d.setdefault("arb_alerted", {})      # 套利告警冷却 {sym: 时间戳}
+    d.setdefault("whale_addr", {})       # 巨鲸地址追踪 {chat_id: {addr: {"label":..,"last":块高}}}
+    d.setdefault("whale_min", {})        # 地址追踪最小美元阈值 {chat_id: usd}
+    d.setdefault("ti_alerts", [])        # 技术指标告警订阅 [{chat_id,symbol,rsi_state,ma_state}]
+    d.setdefault("contract_watch", [])   # 订阅全交易所合约异动告警的chat_id
+    d.setdefault("contract_tiers", {})   # 合约分级告警记录 {交易所_币: {tier,dir,ts}}
+    d.setdefault("contract_alerted", {}) # 合约告警推送冷却 {币:方向:档位 -> ts}（防同一异动刷屏）
+    d.setdefault("grids", {})            # Bybit 永续网格 {chat_id:symbol: {区间/档位/挂单/成交/利润...}}
+    d.setdefault("watchpct", [])         # 持续波动监控 [{chat_id,symbol,pct,base,src,last_ts}]
+    d.setdefault("vtrade", {})           # 虚拟合约交易 {uid: {balance, positions{sym:{...}}, history[], chat_id}}
+    d.setdefault("rtrade_alert", {})     # 实盘爆仓预警 {enabled, threshold, chat_id, cooldown{sym:ts}}
+    d.setdefault("riskguard", {})        # 风险守护 {enabled, chat_id, checks{}, mmr/daily/conc/btc_drop 阈值, cooldown{}, day{date,start,fired}}
+    d.setdefault("brief", {})            # AI盘前简报每日推送 {enabled, chat_id}
+    d.setdefault("cond_alerts", [])      # 条件触发提醒 [{chat_id,symbol,conds[],last_ts}]
+    d.setdefault("plans", [])            # 交易计划 [{id,chat_id,symbol,side,status,trigger,entry,stop,tps,invalid,...}]
+    d.setdefault("plan_seq", 0)          # 计划自增号（按钮 callback_data 要短 id）
+    d.setdefault("fex_subs", {})         # 资金费极值订阅 {chat_id: {threshold}}
+    d.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:币:方向 -> ts}
+    d.setdefault("ai_model_override", "")  # /aimodel 手动指定的AI模型（空=自动降级）
+    d.setdefault("pump_watch", {})       # 15m急涨急跌订阅 {chat_id: {"pct": 阈值}}
+    d.setdefault("pump_alerted", {})     # 急涨急跌去重 {chat_id: {币: {up,down,ts}}}
+    d.setdefault("trading_disabled", False)  # 实盘下单总开关(killswitch)
+    d.setdefault("audit_log", [])         # 实盘操作审计
+    d.setdefault("risk_profile", {})      # 个性化风控参数 {uid: {...}}
+    d.setdefault("weekly_subs", [])       # 周报订阅 chat_id
+    d.setdefault("weekly_snap", {})       # 上周行为快照（算漂移用）
+    d.setdefault("event_subs", {})        # 事件驱动预警订阅 {chat_id: {symbols:[]}}
+    d.setdefault("event_state", {})       # 各币上一轮状态快照（判"切换"的基线）
+    d.setdefault("event_cooldown", {})    # 事件推送冷却 {币:事件 -> ts}
+    d.setdefault("contract_min_tier", {})  # 合约告警每群最低档 {chat_id: 20/30/50/100}
+    return d
+
+
+apply_defaults()
 
 def prune_data(now=None):
     """治理 data.json 无限增长：清掉过期冷却/去重记录、给历史类列表封顶。

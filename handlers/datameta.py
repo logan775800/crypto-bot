@@ -347,6 +347,99 @@ async def probe(symbol, kline_ivs=KLINE_IVS, oi_ivs=OI_IVS):
     return rep
 
 
+# ── 系统体检：地基通没通电 ──────────────────────────────────
+# 2026-08-07 的教训：Bybit 密钥从来没配过，于是实盘台、驾驶舱、复盘、周报、
+# 组合风险、连亏降险这一整批功能一直是空的，却没有任何地方会说出来——
+# 只有等用户去点某个功能才发现。体检必须覆盖**依赖链**，不只是行情源。
+
+
+async def _check_market():
+    try:
+        r, srv = await md._get2("/v5/market/tickers",
+                               {"category": md.CAT, "symbol": "BTCUSDT"})
+        ok = bool((r.get("list") or []))
+        return ok, ("正常" if ok else "返回空"), srv
+    except Exception as e:
+        return False, str(e)[:50], None
+
+
+async def _check_account():
+    """账户链路：密钥配了没、能不能连上、有没有危险权限。"""
+    try:
+        from bybit_trade import BYBIT_API_KEY, _is_testnet
+    except Exception as e:
+        return False, f"模块加载失败：{str(e)[:40]}", {}
+    if not BYBIT_API_KEY:
+        return False, ("**未配置密钥** —— 实盘台/驾驶舱/复盘/周报/组合风险/"
+                       "连亏降险全部无数据"), {}
+    env = "🧪模拟盘" if _is_testnet() else "🔴实盘"
+    try:
+        from handlers.rtrade import _client
+        bal = await _client().wallet_balance("USDT")
+        eq = bal.get("totalEquity")
+        return True, f"{env}｜权益 {eq} USDT", {"env": env}
+    except Exception as e:
+        return False, f"{env}｜连接失败：{str(e)[:50]}", {"env": env}
+
+
+async def _check_ai():
+    from config import AI_API_KEY, AI_BASE_URL
+    if not (AI_API_KEY and AI_BASE_URL):
+        return False, "未配置（AI 分析/交易计划不可用）"
+    try:
+        from handlers.ai import current_model
+        return True, f"模型 {current_model()}"
+    except Exception as e:
+        return False, str(e)[:50]
+
+
+def _check_subs():
+    """订阅状态：清空了却没人知道，是这次事故最贵的部分。"""
+    from storage import data as _d
+    rows = []
+    for key, label in (("contract_watch", "合约异动"), ("pump_watch", "急涨急跌"),
+                       ("event_subs", "事件预警"), ("market_watch", "市场异动"),
+                       ("weekly_subs", "周报")):
+        n = len(_d.get(key) or [])
+        rows.append(f"{label} {n}" if n else f"{label} ⚠️0")
+    killed = _d.get("trading_disabled")
+    return rows, killed
+
+
+async def system_health():
+    """不带币名的 /datacheck：整条依赖链的体检。"""
+    market, account, ai = await asyncio.gather(
+        _check_market(), _check_account(), _check_ai(), return_exceptions=True)
+
+    def unpack(x, n=3):
+        if isinstance(x, Exception):
+            return (False, str(x)[:50]) + ((None,) if n == 3 else ({},))
+        return x
+
+    m_ok, m_msg, _srv = unpack(market)
+    a_ok, a_msg, _extra = unpack(account, 3)
+    ai_ok, ai_msg = unpack(ai, 2)[:2]
+    subs, killed = _check_subs()
+
+    lines = ["🩺 *系统体检*", "━━━━━━━━━━━━━━",
+             f"{'✅' if m_ok else '❌'} 行情源(Bybit)　{m_msg}",
+             f"{'✅' if ai_ok else '❌'} AI 中转站　{ai_msg}",
+             f"{'✅' if a_ok else '❌'} 账户链路　{a_msg}",
+             "━━━━━━━━━━━━━━",
+             "订阅：" + "｜".join(subs)]
+    if killed:
+        lines.append("🔴 *实盘下单已被 killswitch 禁用* —— 恢复发 `/killswitch off`")
+    if not a_ok:
+        lines.append("")
+        lines.append("_账户链路不通时，以下功能返回的是空数据而不是报错，"
+                     "很容易被误认为「没交易记录」：_")
+        lines.append("_/trade /rpos /cockpit /rstats /weekly、组合风险、亏损归因、"
+                     "计划vs成交、连亏自动降险_")
+    lines.append("")
+    lines.append("查单个币的数据维度：`/datacheck BTC`")
+    return "\n".join(lines)
+
+
 # ── /datacheck 命令 ────────────────────────────────────────
 async def datacheck(update, context):
     """/datacheck BANK —— 这个币现在到底哪些数据取得到。
@@ -354,10 +447,15 @@ async def datacheck(update, context):
     from handlers.util import safe_reply
     args = context.args or []
     if not args:
-        await safe_reply(update.message,
-            "🔎 *数据体检*\n\n`/datacheck BANK` —— 查这个币各维度现在取不取得到\n"
-            "分析结论存疑、或怀疑「AI 说没数据其实是接口挂了」时用它。",
-            parse_mode="Markdown")
+        # 不带币名 = 整条依赖链的体检。行情源好好的但账户没配、订阅被清空
+        # 这类「地基没通电」，以前只能等某个功能返回空才发现
+        await safe_reply(update.message, "🩺 体检中…")
+        try:
+            txt = await system_health()
+        except Exception as e:
+            log.error(f"系统体检失败: {e}")
+            txt = f"体检失败：{str(e)[:80]}"
+        await safe_reply(update.message, txt, parse_mode="Markdown")
         return
     sym = args[0].upper().replace("USDT", "")
     await safe_reply(update.message, f"🔎 探测 {sym} 各数据源…")

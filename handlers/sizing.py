@@ -379,6 +379,24 @@ USAGE = (
 async def size_cmd(update, context, parsed):
     """/risk 带参数时走这里（不带参数是风险守护面板，见 riskguard.risk）。"""
     symbol, entry, stop, risk = parsed
+    # 个性化风控参数在这里**真的生效**：超过上限就压回去并说明，
+    # 连亏时自动降险。写在帮助文档里让人自己遵守的护栏等于没有护栏。
+    uid = update.effective_user.id if update.effective_user else 0
+    capped_note = ""
+    try:
+        from handlers import riskprofile as rp
+        streak = await rp._streak(uid)
+        eff, why = rp.effective_risk(uid, streak)
+        p = rp.profile(uid)
+        if risk > p["max_risk_pct"]:
+            capped_note = (f"\n⚠️ 你要的 {risk:g}% 超过自设上限 {p['max_risk_pct']:g}%，"
+                           f"已压回上限")
+            risk = p["max_risk_pct"]
+        if why:
+            capped_note += f"\n⚠️ {why}"
+            risk = min(risk, eff)
+    except Exception as e:
+        log.warning(f"风控参数应用失败: {e}")
     equity, pos = await _account(update)
     if not equity:
         await safe_reply(update.message,
@@ -395,7 +413,8 @@ async def size_cmd(update, context, parsed):
     s = apply_spec(s, await spec_for(symbol))
     exp = exposure(pos, s["side"]) if s else None
     from handlers.rtrade import _env_tag
-    await safe_reply(update.message, build_text(s, exp, symbol, _env_tag()),
+    await safe_reply(update.message,
+                     build_text(s, exp, symbol, _env_tag()) + capped_note,
                      reply_markup=_kb(entry, stop, symbol), parse_mode="Markdown")
 
 

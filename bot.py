@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -37,6 +37,12 @@ HELP_TEXT = (
     "　└ 不是涨幅榜——涨幅第一名往往是最不该碰的那个\n"
     "/events BTC ETH 🔔 事件预警：OI跳升/价OI结构切换/费率跨拥挤区/盘口翻转\n"
     "　└ 每条都带上下文和「这意味着什么」，不是干巴巴一句「价格到了」\n"
+    "/backtest BTC 1h trend 🧪 规则回测：不许前视、成本照扣，看**净期望**是正是负\n"
+    "　└ 规则 trend/pullback/breakout；结果以 R 计，不同币能直接比\n"
+    "/riskprofile ⚙️ 我的风控参数（单笔风险/同向上限/杠杆上限/连亏降险）\n"
+    "　└ `/riskset risk_pct 0.3` 改；参数会**真的挡住** /risk 的计算\n"
+    "/weekly 📅 交易周报：行为画像（持仓时长/杠杆/亏损离散度和上周比）\n"
+    "　└ `/weekly on` 每周一自动推；看行为漂移，不是看单周盈亏\n"
     "/plan BANK short 📋 交易计划：触发/入场/止损/分段止盈/**失效条件**，一屏能执行\n"
     "　└ 后台按5m收盘盯着：触发、止盈触及、**计划失效**、过期都会主动推给你\n"
     "　└ /plans 我的计划　/replan p3 重新校验（旧计划别硬做）\n"
@@ -318,6 +324,9 @@ async def post_init(application):
         BotCommand("net", "💰 净盈亏比(扣费/滑点/资金费)"),
         BotCommand("scan", "🔍 机会扫描(可交易性评分)"),
         BotCommand("events", "🔔 事件预警(OI/费率/盘口切换)"),
+        BotCommand("backtest", "🧪 规则回测(扣成本的净期望)"),
+        BotCommand("riskprofile", "⚙️ 我的风控参数"),
+        BotCommand("weekly", "📅 交易周报(行为画像)"),
         BotCommand("plan", "📋 生成交易计划(会自动失效)"),
         BotCommand("plans", "📋 我的交易计划"),
     ]
@@ -389,6 +398,13 @@ def main():
     app.add_handler(CommandHandler("scan", scan.scan_cmd))
     # 事件驱动预警：盯状态切换，每条带上下文
     app.add_handler(CommandHandler("events", events.events_cmd))
+    # 规则回测：扣掉成本之后这套打法历史上是正还是负
+    app.add_handler(CommandHandler("backtest", backtest.backtest_cmd))
+    # 个性化风控参数（会真的挡住仓位计算）+ 连亏自动降险
+    app.add_handler(CommandHandler("riskprofile", riskprofile.risk_profile_cmd))
+    app.add_handler(CommandHandler("riskset", riskprofile.risk_set_cmd))
+    # 周报：看行为漂移而不是单周盈亏
+    app.add_handler(CommandHandler("weekly", weekly.weekly_cmd))
     # 交易计划：一屏能执行 + 会自己失效
     app.add_handler(CommandHandler("plan", plan.plan_cmd))
     app.add_handler(CommandHandler("plans", plan.plans_cmd))
@@ -549,7 +565,10 @@ def main():
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))
-    jq.run_daily(summary.daily_summary, time=datetime.time(hour=0, minute=0))  # 每日总结，北京8点
+    jq.run_daily(summary.daily_summary, time=datetime.time(hour=0, minute=0))
+    # 周报：每周一北京 9 点（job 时间是 UTC）
+    jq.run_daily(weekly.weekly_report, time=datetime.time(hour=1, minute=0),
+                 days=(0,))  # 每日总结，北京8点
     jq.run_daily(brief.daily_brief, time=datetime.time(hour=0, minute=30))  # AI盘前简报，北京8:30（job时间是UTC）
     jq.run_daily(
         broadcast.daily_broadcast,

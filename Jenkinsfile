@@ -74,11 +74,17 @@ docker run --rm -v "$PWD":/app -w /app -e DATA_FILE=/tmp/pytest_data.json \
     exit 1
 }
 
-# 先杀掉所有由本镜像启动的容器（含游离在 compose 之外的僵尸），再重建。
+# 先杀掉所有残留容器（含游离在 compose 之外的僵尸），再重建。
 # 否则残留的旧容器会和新容器同时长轮询同一个 bot token，Telegram 把消息随机
 # 分给两边 → 新命令时灵时不灵（旧容器没有该 handler 就静默丢弃）。这是历史踩过的坑。
+#
+# 为什么按 name 也扫一遍：`--filter ancestor=crypto-bot:local` 会把这个 tag
+# 解析成**当前**镜像 ID，而 `docker compose build` 每次都生成新镜像并把 tag
+# 指过去——上一个容器的镜像 ID 从此不再匹配，这条过滤器就扫不到它了。
+# 2026-08-08 双实例复发就是这么漏的。两个过滤器取并集才扫得干净。
 echo "==== 清理残留容器（防双实例抢 token）===="
-docker ps -aq --filter ancestor=crypto-bot:local | xargs -r docker rm -f >/dev/null 2>&1 || true
+{ docker ps -aq --filter ancestor=crypto-bot:local
+  docker ps -aq --filter "name=^/crypto-bot"; } | sort -u | xargs -r docker rm -f >/dev/null 2>&1 || true
 # --force-recreate 保证重建容器、重新加载新代码；--remove-orphans 清掉孤儿服务容器
 SINCE=$(date -u +%Y-%m-%dT%H:%M:%S)
 docker compose up -d --force-recreate --remove-orphans
@@ -95,7 +101,8 @@ done
 if [ "$ok" != "1" ]; then
     echo "❌ 新版本未正常启动，自动回滚到 $PREV"
     git reset --hard "$PREV"
-    docker ps -aq --filter ancestor=crypto-bot:local | xargs -r docker rm -f >/dev/null 2>&1 || true
+    { docker ps -aq --filter ancestor=crypto-bot:local
+  docker ps -aq --filter "name=^/crypto-bot"; } | sort -u | xargs -r docker rm -f >/dev/null 2>&1 || true
     docker compose up -d --force-recreate --remove-orphans
     exit 1
 fi

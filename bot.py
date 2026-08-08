@@ -124,6 +124,33 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
     避免像以前那样「功能静默失效、只能靠用户截图才发现」。"""
     import traceback
     err = context.error
+
+    # 双实例抢 token：两个容器同时长轮询同一个 token 时，Telegram 对其中一个
+    # 返回 409 Conflict。这个症状在用户那边表现为「有的命令回、有的不回」，
+    # 前后靠人工猜过两次才定位。它其实是**可以被机器人自己检测到**的，
+    # 所以单独拦出来给一条能直接照做的提示，而不是混在通用异常里。
+    from telegram.error import Conflict
+    if isinstance(err, Conflict):
+        now = datetime.datetime.now().timestamp()
+        last = context.bot_data.get("conflict_notified", 0)
+        logging.error(f"检测到双实例抢 token（409 Conflict）: {err}")
+        if now - last < 1800:      # 半小时内只报一次，409 会持续刷
+            return
+        context.bot_data["conflict_notified"] = now
+        try:
+            from handlers.monitor import notify_admin
+            await notify_admin(context,
+                "🚨 *检测到双实例抢 token*\n\n"
+                "有**两个容器**在同时长轮询同一个 bot token，Telegram 会把消息"
+                "随机分给两边。旧容器没有新命令的 handler，收到就静默丢弃——"
+                "表现就是「有的命令回、有的不回」。\n\n"
+                "在宿主机 `/data/crypto-bot` 执行：\n"
+                "`docker ps` 看是不是有两个 crypto-bot\n"
+                "`docker compose down && docker compose up -d`")
+        except Exception as e:
+            logging.error(f"双实例告警发送失败: {e}")
+        return
+
     logging.error(f"未捕获异常: {err}", exc_info=err)
     try:
         where = ""

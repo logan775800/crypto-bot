@@ -62,16 +62,41 @@ def score_trend(tf):
     base = abs(agree) / n * 70                     # 全一致给满 70
     slope = sum(abs(v.get("slope", 0) or 0) for v in tf.values()) / n
     base += _clamp(slope * 8, 0, 30)               # 斜率越陡越像真趋势
-    direction = "多头" if agree > 0 else ("空头" if agree < 0 else "分歧")
-    if abs(agree) < n:
-        direction += "(周期不一致)"
+    # 方向要**过半**才敢叫。1 票多头 + 2 票缠绕就标「多头」是过度自信——
+    # 实测 ACE 24h 跌 22.6% 却被标成多头，正是这么来的。
+    if abs(agree) * 2 <= n:
+        direction = "分歧"
+    else:
+        direction = "多头" if agree > 0 else "空头"
+        if abs(agree) < n:
+            direction += "(周期不一致)"
     return _clamp(base), direction
 
 
+import math
+
+DEPTH_BAND = 0.5        # 深度统计的价格带：中价 ±0.5%
+
+
 def score_liquidity(turnover, depth):
-    """成交额 + 盘口深度。两者都要——成交额大但盘口薄的币照样进不去。"""
-    t = _clamp((turnover / 200_000_000) * 60, 0, 60) if turnover else 0
-    d = _clamp((depth / 500_000) * 40, 0, 40) if depth else 0
+    """成交额 + 盘口深度，**对数刻度**。
+
+    第一版用线性（÷2亿、÷50万），结果是除了 BTC 那几个，全市场都趴在 20 分
+    以下，于是 8 个候选里 6 个被「流动性不足」否决——而它们全都通过了 2000 万
+    的粗筛门槛。两套标准自相矛盾，扫描器实际输出的是"什么都别做"。
+
+    流动性天然跨数量级（2000 万到 25 亿差两个量级），只能用对数。
+    刻度按真实数据标定：门槛 2000 万给基础分，每涨一个量级加一档。
+    """
+    t = 0.0
+    if turnover and turnover > 0:
+        # 2000万→19分，2亿→37，20亿→55
+        rel = math.log10(max(turnover, MIN_TURNOVER) / MIN_TURNOVER) / 2
+        t = _clamp(55 * min(1.0, 0.35 + 0.65 * rel), 0, 55)
+    d = 0.0
+    if depth and depth > 0:
+        # 带内深度 1万→0分，10万→18，100万→36，250万以上→满 45
+        d = _clamp(45 * (math.log10(depth / 10_000) / 2.5), 0, 45)
     return _clamp(t + d)
 
 
@@ -246,8 +271,14 @@ async def _book_quality(sym):
         mid = (bids[0][0] + asks[0][0]) / 2
         spread = (asks[0][0] - bids[0][0]) / mid * 100
         s = econ.slippage(asks, REF_NOTIONAL, asks[0][0])
+        # 深度按**固定价格带**统计，不能按「200 档」——200 档覆盖多宽取决于
+        # 该币的 tickSize：实测 BTC 的 200 档只有 0.1% 宽，SNXX 却有 44%。
+        # 按档数汇总会把薄币高估、厚币低估，方向正好反了。
+        lo, hi = mid * (1 - DEPTH_BAND / 100), mid * (1 + DEPTH_BAND / 100)
+        band = (sum(p * q for p, q in bids if p >= lo)
+                + sum(p * q for p, q in asks if p <= hi))
         return {"spread": spread, "slip": s["pct"] or 0,
-                "partial": s["partial"], "depth": s["depth"]}
+                "partial": s["partial"], "depth": band}
     except Exception as e:
         log.debug(f"扫描取 {sym} 盘口失败: {e}")
         return None

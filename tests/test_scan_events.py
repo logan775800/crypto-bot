@@ -26,7 +26,25 @@ def test_all_timeframes_agree_scores_high():
 def test_conflicting_timeframes_score_low():
     """4h多/1h空/15m多——哪个方向进去都是猜，不是跟。"""
     s, d = scan.score_trend(_tf(1, -1, 1))
-    assert s < 45 and "不一致" in d
+    assert s < 45 and d == "分歧"
+
+
+def test_direction_needs_a_majority():
+    """1 票多头 + 2 票缠绕不能叫「多头」。
+
+    实测 ACE 24h 跌 22.6% 却被标成多头，就是因为只要 sum>0 就命名方向。
+    过半才敢叫，否则叫「分歧」。
+    """
+    assert scan.score_trend(_tf(1, 0, 0))[1] == "分歧"
+    assert scan.score_trend(_tf(-1, 0, 0))[1] == "分歧"
+    assert scan.score_trend(_tf(1, 1, 0))[1] == "多头(周期不一致)"
+    assert scan.score_trend(_tf(1, 1, 1))[1] == "多头"
+
+
+def test_depth_uses_a_price_band_not_a_level_count():
+    """按「200 档」汇总深度不可比：实测 BTC 的 200 档只覆盖 0.1%，
+    SNXX 却覆盖 44%——薄币被高估、厚币被低估，方向正好反了。"""
+    assert 0 < scan.DEPTH_BAND <= 1.0
 
 
 def test_no_kline_data_scores_zero_not_guess():
@@ -38,7 +56,35 @@ def test_liquidity_needs_both_turnover_and_depth():
     """成交额大但盘口薄的币照样进不去——不能只看成交额。"""
     only_turnover = scan.score_liquidity(500_000_000, 0)
     both = scan.score_liquidity(500_000_000, 800_000)
-    assert only_turnover <= 60 < both
+    assert only_turnover < both
+
+
+def test_passing_the_turnover_floor_is_not_auto_vetoed():
+    """粗筛门槛和评分不能自相矛盾。
+
+    第一版线性刻度下，刚过 2000 万门槛的币流动性只有 6 分、直接被否——
+    于是扫描器对几乎所有候选都说「不建议」，等于没有输出。
+    """
+    at_floor = scan.score_liquidity(scan.MIN_TURNOVER, 60_000)
+    assert at_floor >= 25, f"刚过门槛就只有 {at_floor:.0f} 分，评分和门槛对不上"
+
+
+def test_liquidity_is_log_scaled_across_magnitudes():
+    """流动性跨两个数量级，线性刻度会把中小市值全压成 0。"""
+    small = scan.score_liquidity(20_000_000, 30_000)     # 刚过门槛
+    mid = scan.score_liquidity(200_000_000, 300_000)
+    huge = scan.score_liquidity(2_500_000_000, 11_000_000)
+    assert small < mid < huge
+    assert mid - small > 15 and huge - mid > 15          # 每档都拉得开
+
+
+def test_real_world_ordering_matches_intuition():
+    """按 2026-08-08 实测数据标定：BTC ≫ SPCX > SNXX > BICO ≈ ACE > BLUAI。"""
+    s = scan.score_liquidity
+    btc, spcx, snxx = s(2510e6, 11647e3), s(231e6, 749e3), s(48e6, 245e3)
+    bico, bluai = s(68e6, 38e3), s(22e6, 29e3)
+    assert btc > spcx > snxx > bico > bluai
+    assert btc >= 95 and bluai < 30      # 两端要分得开
 
 
 def test_crowding_is_a_penalty_score():

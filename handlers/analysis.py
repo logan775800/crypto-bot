@@ -80,7 +80,14 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         lines.append("\n⚠️ 技术指标仅供参考，不构成投资建议")
 
-        await update.message.reply_text("\n".join(lines))
+        # 命令版也要有闭环按钮：否则用命令的人还得手工把币名和价位搬到下一步
+        try:
+            from handlers.menu import followup_kb
+            kb = followup_kb(symbol)
+        except Exception as e:
+            logging.warning(f"分析闭环按钮构建失败: {e}")
+            kb = None
+        await update.message.reply_text("\n".join(lines), reply_markup=kb)
 
     except Exception as e:
         logging.error(f"分析出错: {e}")

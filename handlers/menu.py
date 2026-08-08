@@ -36,32 +36,83 @@ def persistent_kb():
 
 # ============ 主菜单 ============
 def main_menu_kb():
+    """首页只放**一条交易动线**：看盘 → 找机会 → 算 → 下单/盯 → 复盘。
+
+    原来 20 个按钮视觉权重完全一样，等于没有主次；行情/OKX/币安/Bybit/资讯/
+    订阅这些低频入口挤在中间，把持仓和风险这种每天要看的挤到了最下面。
+    低频的收进「更多」，一级入口按使用频率排。
+    """
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 市场看板", callback_data="dash_refresh")],
-        [InlineKeyboardButton("💰 行情查询", callback_data="cat_price"),
+        [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
+         InlineKeyboardButton("🛡 风险中心", callback_data="cat_risk")],
+        [InlineKeyboardButton("🔍 发现机会", callback_data="cat_scan"),
          InlineKeyboardButton("📈 技术分析", callback_data="cat_analysis")],
-        [InlineKeyboardButton("📊 策略回测", callback_data="cat_strategy")],
+        [InlineKeyboardButton("🧮 交易工具", callback_data="cat_calc"),
+         InlineKeyboardButton("📅 复盘中心", callback_data="cat_review")],
+        [InlineKeyboardButton("🔔 预警订阅", callback_data="cat_alert"),
+         InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
+        [InlineKeyboardButton("💬 AI 交易助手", callback_data="ask_start")],
+        [InlineKeyboardButton("⋯ 更多", callback_data="cat_more"),
+         InlineKeyboardButton("❓ 帮助", callback_data="cat_help")],
+    ])
+
+
+def more_menu_kb():
+    """低频入口：行情查询、三个交易所专区、资讯、订阅推送、策略回测、实用工具。"""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💰 行情查询", callback_data="cat_price"),
+         InlineKeyboardButton("📊 策略回测", callback_data="cat_strategy")],
         [InlineKeyboardButton("🔥 OKX专区", callback_data="cat_okx"),
          InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance"),
          InlineKeyboardButton("🟡 Bybit专区", callback_data="cat_bybit")],
         [InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news"),
          InlineKeyboardButton("🔔 订阅推送", callback_data="cat_subs")],
-        [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
-         InlineKeyboardButton("🛠 实用工具", callback_data="cat_tools")],
-        [InlineKeyboardButton("💬 AI 助手（问我任何问题）", callback_data="ask_start")],
-        # 交易闭环的四块：找机会 → 算成本 → 控风险 → 回头看
-        [InlineKeyboardButton("🔍 机会扫描", callback_data="cat_scan"),
-         InlineKeyboardButton("🧮 交易工具", callback_data="cat_calc")],
-        [InlineKeyboardButton("🛡 风险中心", callback_data="cat_risk"),
-         InlineKeyboardButton("📅 复盘中心", callback_data="cat_review")],
-        [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
-         InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
-        [InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
+        [InlineKeyboardButton("🛠 实用工具", callback_data="cat_tools"),
+         InlineKeyboardButton("🩺 系统体检", callback_data="do:datacheck")],
+        [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
     ])
 
 
 def _back():
     return [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")]
+
+
+def followup_kb(symbol=None, back=None):
+    """分析结果底下的**闭环按钮**。
+
+    以前分析完是死胡同：你得自己记住币名和价位，再去打 /net、/risk、/plan。
+    中间这段手工搬运正是「看完就算了」的原因——闭环不是锦上添花，
+    它决定了这个分析会不会真的被用上。
+    带上 symbol 后续步骤就不用再问一遍币名。
+    """
+    s = (symbol or "").upper().replace("USDT", "") or "-"
+    rows = [
+        [InlineKeyboardButton("📋 生成计划", callback_data=f"fu:plan:{s}"),
+         InlineKeyboardButton("💰 净盈亏比", callback_data=f"fu:net:{s}")],
+        [InlineKeyboardButton("🧮 算仓位", callback_data=f"fu:risk:{s}"),
+         InlineKeyboardButton("🔔 设预警", callback_data=f"fu:alert:{s}")],
+        [InlineKeyboardButton("🎮 模拟开仓", callback_data=f"fu:vopen:{s}"),
+         InlineKeyboardButton("🩺 数据体检", callback_data=f"fu:check:{s}")],
+    ]
+    rows.append([InlineKeyboardButton("⬅️ 返回", callback_data=back or "menu_main")])
+    return InlineKeyboardMarkup(rows)
+
+
+# 闭环按钮 → (提示文案模板, 引导式命令名)。模板里的 {s} 会替换成币名，
+# 这样用户只需要补价位，不用重复输入币种。
+FOLLOWUP = {
+    "plan": ("📋 *生成 {s} 交易计划*　发方向：`{s} long` 或 `{s} short`", "plan"),
+    "net": ("💰 *{s} 净盈亏比*　发：`{s} long 入场 止损 止盈 名义USDT`\n"
+            "　例 `{s} long 0.081 0.0795 0.086 2000`", "net"),
+    "risk": ("🧮 *{s} 反推仓位*　发：`{s} 入场 止损 [风险%]`\n"
+             "　例 `{s} 0.081 0.0828 0.5%`", "risk"),
+    "alert": ("🔔 *{s} 持续波动监控*　发：`{s} 幅度%`\n"
+              "　例 `{s} 2` —— 涨跌超 ±2% 就提醒，报后自动续盯", "watchpct"),
+    "vopen": ("🎮 *{s} 模拟开仓*　发：`{s} long 保证金 杠杆`\n"
+              "　例 `{s} long 1000 10`（含真实滑点与费率）", "vopen"),
+    "check": ("🩺 直接体检 {s}", "datacheck"),
+}
 
 
 # 新功能一律要有按钮入口 —— 只能靠打命令的功能等于没做。
@@ -131,6 +182,15 @@ class _FakeCtx:
         self.application = getattr(real, "application", None)
 
 
+def _fake_update(query):
+    """用 query.message 冒充 update.message，让命令处理函数原样可用。"""
+    return type("U", (), {
+        "message": query.message,
+        "effective_chat": query.message.chat,
+        "effective_user": query.from_user,
+    })()
+
+
 async def _run_direct(query, context, name):
     """无参数功能：点按钮直接跑。用 query.message 冒充 update.message。"""
     handlers = {
@@ -141,6 +201,7 @@ async def _run_direct(query, context, name):
         "cockpit": ("handlers.cockpit", "cockpit", "🚗 读取持仓…"),
         "plans": ("handlers.plan", "plans_cmd", None),
         "checklist": ("handlers.checklist", "checklist", None),
+        "datacheck": ("handlers.datameta", "datacheck", "🩺 体检中…"),
     }
     if name not in handlers:
         await query.answer("未知功能")
@@ -155,13 +216,8 @@ async def _run_direct(query, context, name):
         await query.message.reply_text(f"这个功能暂时用不了：{str(e)[:60]}")
         return
     args = ["30"] if name == "rstats" else []
-    fake_update = type("U", (), {
-        "message": query.message,
-        "effective_chat": query.message.chat,
-        "effective_user": query.from_user,
-    })()
     try:
-        await fn(fake_update, _FakeCtx(args, context))
+        await fn(_fake_update(query), _FakeCtx(args, context))
     except Exception as e:
         logging.error(f"菜单直跑 {name} 出错: {e}")
         await query.message.reply_text(f"执行失败：{str(e)[:80]}")
@@ -391,6 +447,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import events as _events
         await _events.on_button(query, context)
 
+    # ---- 更多：低频入口收纳页 ----
+    elif d == "cat_more":
+        await safe_edit(query, "⋯ *更多功能*\n\n低频入口都收在这里，首页只留每天要用的。",
+                        parse_mode="Markdown", reply_markup=more_menu_kb())
+
     # ---- 新功能分类页（扫描/工具/风险/复盘）----
     elif d in CATS:
         text, rows = CATS[d]
@@ -408,6 +469,25 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, tip + "\n\n_直接发消息即可，发 /menu 取消_",
                         parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup([_back()]))
+
+    # ---- 分析结果的闭环按钮：带着币名进入下一步 ----
+    elif d.startswith("fu:"):
+        _p, key, sym = (d.split(":") + ["", ""])[:3]
+        if key not in FOLLOWUP:
+            await query.answer("未知操作")
+            return
+        tip, cmd = FOLLOWUP[key]
+        s = sym if sym and sym != "-" else "BTC"
+        if key == "check":          # 体检不需要补参数，直接跑
+            await query.answer("体检中…")
+            from handlers import datameta
+            await datameta.datacheck(_fake_update(query), _FakeCtx([s], context))
+            return
+        context.user_data["await_cmd"] = cmd
+        await query.answer()
+        await query.message.reply_text(
+            tip.format(s=s) + "\n\n_直接发消息即可，发 /menu 取消_",
+            parse_mode="Markdown")
 
     # ---- 无参数功能：点了直接跑 ----
     elif d.startswith("do:"):
@@ -637,11 +717,12 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.analysis import build_analysis_text
         try:
             text = await build_analysis_text(symbol)
-            await safe_edit(query, text, reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🤖 AI解读", callback_data=f"doai:{symbol}")],
-                [InlineKeyboardButton("⬅️ 返回", callback_data="cat_analysis"),
-                 InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")]
-            ]), parse_mode="Markdown")
+            # 分析完不该是死胡同：直接给出下一步，且带着币名，不用重新输
+            kb = followup_kb(symbol, back="cat_analysis")
+            rows = [[InlineKeyboardButton("🤖 AI解读", callback_data=f"doai:{symbol}")]]
+            rows += [list(r) for r in kb.inline_keyboard]
+            await safe_edit(query, text, reply_markup=InlineKeyboardMarkup(rows),
+                            parse_mode="Markdown")
         except Exception as e:
             logging.error(f"分析出错: {e}")
             await query.edit_message_text(f"分析失败：{str(e)[:80]}", reply_markup=back_to("cat_analysis"))
@@ -652,7 +733,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.ai import build_ai_text
         try:
             text = await build_ai_text(symbol)
-            await safe_edit(query, text, reply_markup=back_to("cat_analysis"), parse_mode="Markdown")
+            await safe_edit(query, text, reply_markup=followup_kb(symbol, "cat_analysis"),
+                            parse_mode="Markdown")
         except Exception as e:
             logging.error(f"AI出错: {e}")
             # 带上原因：只写日志的话，用户只能看到"AI分析失败"四个字，

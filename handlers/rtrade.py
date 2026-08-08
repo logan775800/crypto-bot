@@ -589,9 +589,57 @@ async def prepare_open(message, context, symbol_raw, side, margin, lev, price, t
         f"⚠️ *确认实盘下单* {_env_tag()}\n"
         f"{symbol} {dir_txt} {lev:g}x\n"
         f"限价 ${_fmt(price_s)}｜数量 {qty_s}\n"
-        f"保证金约 ${margin:,.2f}｜名义 ${notional:,.2f}{extra}\n\n"
-        f"确认后挂 GTC 限价单。",
+        f"保证金约 ${margin:,.2f}｜名义 ${notional:,.2f}{extra}"
+        + await _cost_block(symbol, side, float(price_s), sl_s, tp_s, notional, lev)
+        + f"\n\n确认后挂 GTC 限价单。",
         reply_markup=kb, parse_mode="Markdown")
+
+
+async def _cost_block(symbol, side, entry, sl, tp, notional, lev):
+    """确认卡上的「这一单的真实代价」。
+
+    确认页只写数量和保证金是不够的——用户点确认前真正该知道的是
+    **最坏亏多少、成本吃掉多少、爆仓价离止损多近**。这些数字 econ/sizing
+    早就能算，只是一直没接到这里。算不出来就整块省略，绝不因为它挂了而挡下单。
+    """
+    try:
+        from handlers import econ, sizing
+        lines = ["\n━━━━━━━━━━━━━━"]
+        if sl:
+            loss_pct = abs(entry - float(sl)) / entry * 100
+            lines.append(f"止损距离 {loss_pct:.2f}%｜"
+                         f"**最大亏损约 ${notional * loss_pct / 100:,.2f}**")
+        liq, liq_pct = sizing.liq_distance(entry, lev, side)
+        if liq_pct is not None:
+            warn = ""
+            if sl:
+                sl_pct = abs(entry - float(sl)) / entry * 100
+                if liq_pct <= sl_pct:
+                    warn = " ❌ 比止损还近，会先爆仓"
+                elif liq_pct < sl_pct * 1.5:
+                    warn = " ⚠️ 离止损太近，插针即爆"
+            lines.append(f"爆仓价约 ${_fmt(liq)}（{liq_pct:.1f}%）{warn}")
+        mi = await econ.market_inputs(symbol, side, notional)
+        fee = notional * mi["taker"] * 2
+        slip = notional * (mi["slip_in"] + mi["slip_out"]) / 100
+        lines.append(f"手续费(开+平) ≈ ${fee:,.2f}｜预估滑点 ≈ ${slip:,.2f}")
+        if mi.get("partial"):
+            lines.append("⚠️ 盘口深度不够这个名义，可能**部分成交**")
+        if sl and tp:
+            a = econ.analyze(entry, float(sl), float(tp), notional, side,
+                             fee_in=mi["taker"], fee_out=mi["taker"],
+                             slip_in_pct=mi["slip_in"], slip_out_pct=mi["slip_out"],
+                             funding_rate=mi["funding_rate"], hold_hours=8)
+            if a and a.get("net_rr") is not None:
+                flag = "" if a["net_rr"] >= 1.5 else "　⚠️ 偏低"
+                lines.append(f"净盈亏比 *{a['net_rr']:.2f}:1*"
+                             f"（毛 {a['gross_rr']:.2f}）{flag}")
+        elif not sl:
+            lines.append("⚠️ *没设止损* —— 这单的最大亏损是「到爆仓为止」")
+        return "\n".join(lines)
+    except Exception as e:
+        log.warning(f"确认卡成本估算失败 {symbol}: {e}")
+        return ""
 
 
 async def apply_sl(message, symbol_raw, price):

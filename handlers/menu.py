@@ -61,8 +61,9 @@ def main_menu_kb():
          InlineKeyboardButton("📅 复盘中心", callback_data="cat_review")],
         [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
          InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
-        [InlineKeyboardButton("🩺 系统体检", callback_data="do:datacheck"),
-         InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
+        [InlineKeyboardButton("⌨️ 全部命令", callback_data="cmd:home"),
+         InlineKeyboardButton("🩺 系统体检", callback_data="do:datacheck")],
+        [InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
     ])
 
 
@@ -438,6 +439,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("ev:"):
         from handlers import events as _events
         await _events.on_button(query, context)
+
+    # ---- 全部命令面板 ----
+    elif d.startswith("cmd:"):
+        from handlers import cmdpanel
+        await cmdpanel.on_button(query, context)
 
     # ---- 新功能分类页（扫描/工具/风险/复盘）----
     elif d in CATS:

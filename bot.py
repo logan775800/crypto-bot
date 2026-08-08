@@ -1,13 +1,13 @@
 import logging
 import datetime
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, CallbackQueryHandler,
     filters, ContextTypes, PicklePersistence
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -19,6 +19,7 @@ HELP_TEXT = (
     "*最快上手*：直接发币名就能查价，例如 `BTC`、`eth`、`pepe`\n\n"
     "*常用命令*\n"
     "/menu 打开功能菜单（推荐，点按钮即可）\n"
+    "/commands ⌨️ **全部命令按钮面板** —— 150 个命令按分类点开，点了直接执行\n"
     "/dashboard 市场看板\n"
     "/price BTC 查币价（/price BTC cny 看人民币）\n"
     "/top 涨跌榜　/analyze BTC 技术分析\n"
@@ -85,6 +86,95 @@ HELP_TEXT = (
     "*底部快捷键*：📋菜单 / 📊看板 / 💰查价 / ❓帮助\n"
     "⚠️ 所有数据仅供参考，不构成投资建议"
 )
+
+# 命令菜单（/setmycommands）。提到模块级是为了让命令面板复用这批中文说明——
+# 它们本来就是写给按钮看的，埋在函数体里读不到。
+BOT_COMMANDS = [
+    BotCommand("menu", "📋 功能菜单"),
+    BotCommand("help", "❓ 使用帮助"),
+    BotCommand("ask", "💬 问我任何问题(AI对话)"),
+    BotCommand("dashboard", "📊 市场看板"),
+    BotCommand("summary", "📰 每日市场总结"),
+    BotCommand("price", "💰 查币价"),
+    BotCommand("top", "🚀 涨跌榜"),
+    BotCommand("movers", "📸 异动快照"),
+    BotCommand("weak", "😴 弱势/横盘扫描"),
+    BotCommand("momentum", "📈 动量轮动回测"),
+    BotCommand("gridstart", "🔳 启动永续网格(管理员)"),
+    BotCommand("gridstatus", "🔳 网格状态/利润"),
+    BotCommand("gridstop", "🛑 停止网格"),
+    BotCommand("analyze", "📈 技术分析"),
+    BotCommand("ai", "🤖 AI分析"),
+    BotCommand("news", "📰 最新新闻"),
+    BotCommand("unlock", "🔓 代币解锁查询"),
+    BotCommand("unlocks", "🔓 近期解锁排行"),
+    BotCommand("new", "🆕 OKX新币榜"),
+    BotCommand("gainers", "🚀 OKX涨跌榜"),
+    BotCommand("funding", "💵 资金费率"),
+    BotCommand("fprice", "📊 合约行情"),
+    BotCommand("liq", "💥 爆仓数据"),
+    BotCommand("ratio", "⚖️ 多空比"),
+    BotCommand("fear", "😱 恐惧贪婪"),
+    BotCommand("gas", "⛽ Gas费"),
+    BotCommand("gasalert", "⛽ Gas提醒(跌破阈值)"),
+    BotCommand("whale", "🐋 巨鲸监控"),
+    BotCommand("track", "🐋 追踪地址"),
+    BotCommand("tracked", "🐋 我的追踪列表"),
+    BotCommand("arb", "💱 多所比价"),
+    BotCommand("arbwatch", "💱 套利监控告警"),
+    BotCommand("alert", "🔔 价格预警"),
+    BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
+    BotCommand("watchpct", "👁 持续波动监控(指定币±%)"),
+    BotCommand("watchpcts", "👁 我的波动监控列表"),
+    BotCommand("checklist", "📋 合约交易检查清单"),
+    BotCommand("upstreak", "📈 连续N天上涨的合约扫描"),
+    BotCommand("downstreak", "📉 连续N天下跌的合约扫描"),
+    BotCommand("watchmarket", "🚨 订阅市场异动告警"),
+    BotCommand("contract", "📊 合约异动告警面板(按钮:订阅/档位/榜)"),
+    BotCommand("pump", "⚡ 急涨急跌监控面板(按钮:订阅/阈值/榜)"),
+    BotCommand("subnews", "📰 订阅新闻推送"),
+    BotCommand("subunlock", "🔓 订阅解锁提醒"),
+    BotCommand("subsummary", "📊 订阅每日总结"),
+    BotCommand("setalert", "⚙️ 设置告警阈值"),
+    BotCommand("follow", "⭐ 关注币种"),
+    BotCommand("myalert", "⚙️ 我的设置"),
+    BotCommand("buy", "💼 买入(私聊)"),
+    BotCommand("portfolio", "💼 我的持仓(私聊)"),
+    BotCommand("ranking", "🏆 盈亏排行(私聊)"),
+    BotCommand("vopen", "🎮 虚拟开仓(模拟合约)"),
+    BotCommand("vpos", "🎮 虚拟持仓/账户"),
+    BotCommand("vclose", "🎮 虚拟平仓"),
+    BotCommand("vhistory", "🎮 虚拟交易胜率/历史"),
+    BotCommand("trade", "🎛 实盘交易台(点按钮操作)"),
+    BotCommand("ropen", "🔴 实盘限价开仓(Bybit)"),
+    BotCommand("rclose", "🔴 实盘平仓(Bybit)"),
+    BotCommand("rpos", "🔴 实盘持仓(Bybit)"),
+    BotCommand("rbal", "🔴 实盘合约余额(Bybit)"),
+    BotCommand("cockpit", "🚗 持仓驾驶舱(逐仓状态+建议)"),
+    BotCommand("rstats", "📊 实盘复盘成绩单(胜率/期望值)"),
+    BotCommand("risk", "🛡 风险守护｜带参数=按风险反推仓位"),
+    BotCommand("brief", "🌅 AI盘前简报(结合你的持仓)"),
+    BotCommand("cond", "🎯 条件触发提醒(价格+指标组合)"),
+    BotCommand("conds", "🎯 我的条件提醒"),
+    BotCommand("fex", "💵 资金费率极端榜(全市场跨所)"),
+    BotCommand("achart", "📐 标注图表(结构位+止损带画在图上)"),
+    BotCommand("datacheck", "🔎 数据体检(时间+完整度)"),
+    BotCommand("sym", "🔎 合约身份(哪个所/面值/单位)"),
+    BotCommand("net", "💰 净盈亏比(扣费/滑点/资金费)"),
+    BotCommand("scan", "🔍 机会扫描(可交易性评分)"),
+    BotCommand("events", "🔔 事件预警(OI/费率/盘口切换)"),
+    BotCommand("backtest", "🧪 规则回测(扣成本的净期望)"),
+    BotCommand("riskprofile", "⚙️ 我的风控参数"),
+    BotCommand("weekly", "📅 交易周报(行为画像)"),
+    BotCommand("keycheck", "🔐 密钥权限体检"),
+    BotCommand("killswitch", "🔴 一键禁用实盘下单"),
+    BotCommand("restore", "💾 从备份恢复订阅/配置"),
+    BotCommand("commands", "⌨️ 全部命令(按钮面板)"),
+    BotCommand("privacy", "🔒 AI外发账户数据脱敏"),
+    BotCommand("plan", "📋 生成交易计划(会自动失效)"),
+    BotCommand("plans", "📋 我的交易计划"),
+]
+
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 先发欢迎语并装上底部常驻键盘，再弹出分类菜单
@@ -285,90 +375,7 @@ async def post_init(application):
     except Exception as e:
         logging.error(f"加载币种列表失败，使用默认: {e}")
     # 设置 Telegram 原生命令菜单
-    commands = [
-        BotCommand("menu", "📋 功能菜单"),
-        BotCommand("help", "❓ 使用帮助"),
-        BotCommand("ask", "💬 问我任何问题(AI对话)"),
-        BotCommand("dashboard", "📊 市场看板"),
-        BotCommand("summary", "📰 每日市场总结"),
-        BotCommand("price", "💰 查币价"),
-        BotCommand("top", "🚀 涨跌榜"),
-        BotCommand("movers", "📸 异动快照"),
-        BotCommand("weak", "😴 弱势/横盘扫描"),
-        BotCommand("momentum", "📈 动量轮动回测"),
-        BotCommand("gridstart", "🔳 启动永续网格(管理员)"),
-        BotCommand("gridstatus", "🔳 网格状态/利润"),
-        BotCommand("gridstop", "🛑 停止网格"),
-        BotCommand("analyze", "📈 技术分析"),
-        BotCommand("ai", "🤖 AI分析"),
-        BotCommand("news", "📰 最新新闻"),
-        BotCommand("unlock", "🔓 代币解锁查询"),
-        BotCommand("unlocks", "🔓 近期解锁排行"),
-        BotCommand("new", "🆕 OKX新币榜"),
-        BotCommand("gainers", "🚀 OKX涨跌榜"),
-        BotCommand("funding", "💵 资金费率"),
-        BotCommand("fprice", "📊 合约行情"),
-        BotCommand("liq", "💥 爆仓数据"),
-        BotCommand("ratio", "⚖️ 多空比"),
-        BotCommand("fear", "😱 恐惧贪婪"),
-        BotCommand("gas", "⛽ Gas费"),
-        BotCommand("gasalert", "⛽ Gas提醒(跌破阈值)"),
-        BotCommand("whale", "🐋 巨鲸监控"),
-        BotCommand("track", "🐋 追踪地址"),
-        BotCommand("tracked", "🐋 我的追踪列表"),
-        BotCommand("arb", "💱 多所比价"),
-        BotCommand("arbwatch", "💱 套利监控告警"),
-        BotCommand("alert", "🔔 价格预警"),
-        BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
-        BotCommand("watchpct", "👁 持续波动监控(指定币±%)"),
-        BotCommand("watchpcts", "👁 我的波动监控列表"),
-        BotCommand("checklist", "📋 合约交易检查清单"),
-        BotCommand("upstreak", "📈 连续N天上涨的合约扫描"),
-        BotCommand("downstreak", "📉 连续N天下跌的合约扫描"),
-        BotCommand("watchmarket", "🚨 订阅市场异动告警"),
-        BotCommand("contract", "📊 合约异动告警面板(按钮:订阅/档位/榜)"),
-        BotCommand("pump", "⚡ 急涨急跌监控面板(按钮:订阅/阈值/榜)"),
-        BotCommand("subnews", "📰 订阅新闻推送"),
-        BotCommand("subunlock", "🔓 订阅解锁提醒"),
-        BotCommand("subsummary", "📊 订阅每日总结"),
-        BotCommand("setalert", "⚙️ 设置告警阈值"),
-        BotCommand("follow", "⭐ 关注币种"),
-        BotCommand("myalert", "⚙️ 我的设置"),
-        BotCommand("buy", "💼 买入(私聊)"),
-        BotCommand("portfolio", "💼 我的持仓(私聊)"),
-        BotCommand("ranking", "🏆 盈亏排行(私聊)"),
-        BotCommand("vopen", "🎮 虚拟开仓(模拟合约)"),
-        BotCommand("vpos", "🎮 虚拟持仓/账户"),
-        BotCommand("vclose", "🎮 虚拟平仓"),
-        BotCommand("vhistory", "🎮 虚拟交易胜率/历史"),
-        BotCommand("trade", "🎛 实盘交易台(点按钮操作)"),
-        BotCommand("ropen", "🔴 实盘限价开仓(Bybit)"),
-        BotCommand("rclose", "🔴 实盘平仓(Bybit)"),
-        BotCommand("rpos", "🔴 实盘持仓(Bybit)"),
-        BotCommand("rbal", "🔴 实盘合约余额(Bybit)"),
-        BotCommand("cockpit", "🚗 持仓驾驶舱(逐仓状态+建议)"),
-        BotCommand("rstats", "📊 实盘复盘成绩单(胜率/期望值)"),
-        BotCommand("risk", "🛡 风险守护｜带参数=按风险反推仓位"),
-        BotCommand("brief", "🌅 AI盘前简报(结合你的持仓)"),
-        BotCommand("cond", "🎯 条件触发提醒(价格+指标组合)"),
-        BotCommand("conds", "🎯 我的条件提醒"),
-        BotCommand("fex", "💵 资金费率极端榜(全市场跨所)"),
-        BotCommand("achart", "📐 标注图表(结构位+止损带画在图上)"),
-        BotCommand("datacheck", "🔎 数据体检(时间+完整度)"),
-        BotCommand("sym", "🔎 合约身份(哪个所/面值/单位)"),
-        BotCommand("net", "💰 净盈亏比(扣费/滑点/资金费)"),
-        BotCommand("scan", "🔍 机会扫描(可交易性评分)"),
-        BotCommand("events", "🔔 事件预警(OI/费率/盘口切换)"),
-        BotCommand("backtest", "🧪 规则回测(扣成本的净期望)"),
-        BotCommand("riskprofile", "⚙️ 我的风控参数"),
-        BotCommand("weekly", "📅 交易周报(行为画像)"),
-        BotCommand("keycheck", "🔐 密钥权限体检"),
-        BotCommand("killswitch", "🔴 一键禁用实盘下单"),
-        BotCommand("restore", "💾 从备份恢复订阅/配置"),
-        BotCommand("privacy", "🔒 AI外发账户数据脱敏"),
-        BotCommand("plan", "📋 生成交易计划(会自动失效)"),
-        BotCommand("plans", "📋 我的交易计划"),
-    ]
+    commands = BOT_COMMANDS
     try:
         await application.bot.set_my_commands(commands)
         logging.info("命令菜单已设置")
@@ -454,6 +461,8 @@ def main():
     app.add_handler(CommandHandler("restore", backup.restore_cmd))
     # AI 外发账户数据脱敏开关（AI 走第三方中转站，金额默认只给百分比）
     app.add_handler(CommandHandler("privacy", privacy.privacy_cmd))
+    # 全部命令的按钮面板（从已注册 handler 自动生成，不手工维护清单）
+    app.add_handler(CommandHandler("commands", cmdpanel.commands_cmd))
     # 交易计划：一屏能执行 + 会自己失效
     app.add_handler(CommandHandler("plan", plan.plan_cmd))
     app.add_handler(CommandHandler("plans", plan.plans_cmd))
@@ -623,6 +632,9 @@ def main():
         broadcast.daily_broadcast,
         time=datetime.time(hour=BROADCAST_HOUR, minute=BROADCAST_MINUTE)
     )
+
+    # 命令索引：必须在所有 add_handler 之后建
+    cmdpanel.build_index(app)
 
     logging.info("Bot 启动中...")
     app.run_polling()

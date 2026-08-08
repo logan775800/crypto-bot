@@ -36,41 +36,33 @@ def persistent_kb():
 
 # ============ 主菜单 ============
 def main_menu_kb():
-    """首页只放**一条交易动线**：看盘 → 找机会 → 算 → 下单/盯 → 复盘。
+    """首页全平铺，不做「更多」收纳。
 
-    原来 20 个按钮视觉权重完全一样，等于没有主次；行情/OKX/币安/Bybit/资讯/
-    订阅这些低频入口挤在中间，把持仓和风险这种每天要看的挤到了最下面。
-    低频的收进「更多」，一级入口按使用频率排。
+    v1.8.0 曾按使用频率精简到 12 个 + 「更多」，用户实际用下来更习惯全平铺——
+    多一层点击比多几个按钮更烦。功能入口一个不藏。
     """
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📊 市场看板", callback_data="dash_refresh")],
-        [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
-         InlineKeyboardButton("🛡 风险中心", callback_data="cat_risk")],
-        [InlineKeyboardButton("🔍 发现机会", callback_data="cat_scan"),
-         InlineKeyboardButton("📈 技术分析", callback_data="cat_analysis")],
-        [InlineKeyboardButton("🧮 交易工具", callback_data="cat_calc"),
-         InlineKeyboardButton("📅 复盘中心", callback_data="cat_review")],
-        [InlineKeyboardButton("🔔 预警订阅", callback_data="cat_alert"),
-         InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
-        [InlineKeyboardButton("💬 AI 交易助手", callback_data="ask_start")],
-        [InlineKeyboardButton("⋯ 更多", callback_data="cat_more"),
-         InlineKeyboardButton("❓ 帮助", callback_data="cat_help")],
-    ])
-
-
-def more_menu_kb():
-    """低频入口：行情查询、三个交易所专区、资讯、订阅推送、策略回测、实用工具。"""
-    return InlineKeyboardMarkup([
         [InlineKeyboardButton("💰 行情查询", callback_data="cat_price"),
-         InlineKeyboardButton("📊 策略回测", callback_data="cat_strategy")],
+         InlineKeyboardButton("📈 技术分析", callback_data="cat_analysis")],
+        [InlineKeyboardButton("📊 策略回测", callback_data="cat_strategy")],
         [InlineKeyboardButton("🔥 OKX专区", callback_data="cat_okx"),
          InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance"),
          InlineKeyboardButton("🟡 Bybit专区", callback_data="cat_bybit")],
         [InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news"),
          InlineKeyboardButton("🔔 订阅推送", callback_data="cat_subs")],
-        [InlineKeyboardButton("🛠 实用工具", callback_data="cat_tools"),
-         InlineKeyboardButton("🩺 系统体检", callback_data="do:datacheck")],
-        [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+        [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
+         InlineKeyboardButton("🛠 实用工具", callback_data="cat_tools")],
+        [InlineKeyboardButton("💬 AI 助手（问我任何问题）", callback_data="ask_start")],
+        # 交易闭环的四块：找机会 → 算成本 → 控风险 → 回头看
+        [InlineKeyboardButton("🔍 机会扫描", callback_data="cat_scan"),
+         InlineKeyboardButton("🧮 交易工具", callback_data="cat_calc")],
+        [InlineKeyboardButton("🛡 风险中心", callback_data="cat_risk"),
+         InlineKeyboardButton("📅 复盘中心", callback_data="cat_review")],
+        [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
+         InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
+        [InlineKeyboardButton("🩺 系统体检", callback_data="do:datacheck"),
+         InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
     ])
 
 
@@ -446,11 +438,6 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("ev:"):
         from handlers import events as _events
         await _events.on_button(query, context)
-
-    # ---- 更多：低频入口收纳页 ----
-    elif d == "cat_more":
-        await safe_edit(query, "⋯ *更多功能*\n\n低频入口都收在这里，首页只留每天要用的。",
-                        parse_mode="Markdown", reply_markup=more_menu_kb())
 
     # ---- 新功能分类页（扫描/工具/风险/复盘）----
     elif d in CATS:

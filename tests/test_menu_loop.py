@@ -12,40 +12,28 @@ def _cbs(kb):
     return [b.callback_data for row in kb.inline_keyboard for b in row]
 
 
-# ── 首页精简 ─────────────────────────────────────────────────────
-def test_home_is_compact():
-    """20 个按钮视觉权重全一样等于没有主次。"""
-    n = len(_cbs(menu.main_menu_kb()))
-    assert n <= 13, f"首页按钮 {n} 个，太多了"
-
-
-def test_daily_use_features_are_on_home():
-    """每天要看的必须在一级：持仓、风险、机会、复盘。"""
+# ── 首页：全平铺，不藏入口 ───────────────────────────────────────
+# v1.8.0 曾精简到 12 个 + 「更多」，用户实际用下来更习惯全平铺：
+# 多一层点击比多几个按钮更烦。这几条锁死「一个入口都不藏」。
+def test_every_entry_is_on_the_home_page():
     cbs = _cbs(menu.main_menu_kb())
-    for must in ("cat_holding", "cat_risk", "cat_scan", "cat_review"):
+    for must in ("dash_refresh", "cat_price", "cat_analysis", "cat_strategy",
+                 "cat_okx", "cat_binance", "cat_bybit", "cat_news", "cat_subs",
+                 "cat_alert", "cat_tools", "ask_start", "cat_scan", "cat_calc",
+                 "cat_risk", "cat_review", "cat_holding", "cat_vtrade",
+                 "cat_help"):
         assert must in cbs, f"{must} 不在首页"
 
 
-def test_low_frequency_moved_to_more():
-    """行情查询、三个交易所专区、资讯这些低频的收进「更多」。"""
-    home = _cbs(menu.main_menu_kb())
-    more = _cbs(menu.more_menu_kb())
-    for k in ("cat_okx", "cat_binance", "cat_bybit", "cat_news", "cat_price"):
-        assert k not in home and k in more, f"{k} 应该在「更多」里"
+def test_no_more_layer():
+    """不该再有「更多」这一层——它是被否掉的方案。"""
+    assert "cat_more" not in _cbs(menu.main_menu_kb())
+    assert not hasattr(menu, "more_menu_kb")
 
 
-def test_more_has_a_way_back():
-    assert "menu_main" in _cbs(menu.more_menu_kb())
-
-
-def test_nothing_lost_between_home_and_more():
-    """精简不等于砍功能——原来的入口必须都还在。"""
-    all_cbs = set(_cbs(menu.main_menu_kb())) | set(_cbs(menu.more_menu_kb()))
-    for old in ("cat_price", "cat_analysis", "cat_strategy", "cat_okx",
-                "cat_binance", "cat_bybit", "cat_news", "cat_subs",
-                "cat_alert", "cat_tools", "cat_holding", "cat_vtrade",
-                "cat_help", "ask_start", "dash_refresh"):
-        assert old in all_cbs, f"{old} 精简后不见了"
+def test_system_health_reachable_by_button():
+    """系统体检不该只能靠打命令。"""
+    assert "do:datacheck" in _cbs(menu.main_menu_kb())
 
 
 # ── 分析结果闭环 ─────────────────────────────────────────────────

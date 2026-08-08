@@ -232,6 +232,59 @@ def _hour_bucket(t):
     return f"{h:02d}:00-{h:02d}:59"
 
 
+# ── 虚拟盘数据源 ────────────────────────────────────────────────
+# 复盘这一整层（亏损归因、行为画像、计划vs实际、周报）本来只认实盘，
+# 于是「先用虚拟盘练手」的阶段，最有价值的诊断反而一个都用不上——
+# 而那个阶段恰恰最需要诊断，因为习惯就是在那时候养成的。
+# 虚拟盘的成交记录字段够齐，转成同一套结构就能复用全部分析。
+
+
+def load_virtual(uid, days=DEFAULT_DAYS):
+    """虚拟盘成交 → 与实盘同构的 trade 列表。不联网。"""
+    from storage import data as _d
+    a = (_d.get("vtrade") or {}).get(str(uid)) or {}
+    cutoff = time.time() - int(days) * 86400
+    out = []
+    for h in a.get("history") or []:
+        ts = float(h.get("ts") or 0)
+        if ts < cutoff:
+            continue
+        margin = float(h.get("margin") or 0)
+        lev = float(h.get("lev") or 0)
+        sym = str(h.get("sym") or "?").upper()
+        out.append({
+            # 归因里的 MAJORS 用的是 BTCUSDT 这种写法，这里统一补上后缀
+            "symbol": sym if sym.endswith("USDT") else sym + "USDT",
+            "side": h.get("side") or "long",
+            "pnl": float(h.get("pnl") or 0),
+            "entry": float(h.get("entry") or 0),
+            "exit": float(h.get("exit") or 0),
+            "qty": (margin * lev / float(h["entry"])) if h.get("entry") else 0.0,
+            "value": float(h.get("value") or margin * lev),
+            "lev": lev,
+            "ts": int(ts * 1000),        # 实盘那边是毫秒，口径要统一
+            "dur": h.get("dur"),
+        })
+    out.sort(key=lambda t: t["ts"])
+    return out
+
+
+def virtual_funding(uid, days=DEFAULT_DAYS):
+    """虚拟盘资金费净支出 {币: USDT}，口径与实盘的 funding_cost 一致。"""
+    from storage import data as _d
+    a = (_d.get("vtrade") or {}).get(str(uid)) or {}
+    cutoff = time.time() - int(days) * 86400
+    tot = {}
+    for h in a.get("history") or []:
+        if float(h.get("ts") or 0) < cutoff:
+            continue
+        f = float(h.get("funding") or 0)
+        if f:
+            sym = str(h.get("sym") or "?").upper()
+            tot[sym] = tot.get(sym, 0.0) + f
+    return tot
+
+
 # ── 计划 vs 实际 ────────────────────────────────────────────────
 # 「是否追单」以前只能靠"单笔亏损放大"这类间接标签去猜。有了 /plan 的历史计划，
 # 就能直接比对：计划的入场区在哪、实际成交在哪、差多少。
@@ -614,21 +667,42 @@ def _kb(days):
 
 
 async def rstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/rstats [天数] —— 实盘成绩单。加 ai 直接出 AI 诊断：/rstats 30 ai"""
+    """/rstats [天数] [ai] [v] —— 成绩单。加 v 看虚拟盘，加 ai 出 AI 诊断。"""
     from handlers.rtrade import _guard, _env_tag
-    if not await _guard(update):
-        return
     days = DEFAULT_DAYS
     want_ai = False
+    virtual = False
     for a in (context.args or []):
         low = a.lower()
         if low in ("ai", "复盘", "诊断"):
             want_ai = True
             continue
+        if low in ("v", "虚拟", "vtrade", "模拟"):
+            virtual = True
+            continue
         try:
             days = max(1, min(int(a), MAX_DAYS))
         except ValueError:
             pass
+
+    # 虚拟盘不碰实盘接口，也就不需要密钥和管理员——练手阶段本来就该能用
+    if virtual:
+        uid = update.effective_user.id
+        trades = load_virtual(uid, days)
+        fund = virtual_funding(uid, days)
+        if not trades:
+            await safe_reply(update.message,
+                f"近 {days} 天没有虚拟盘平仓记录。\n"
+                f"先用 `/vopen BTC long 1000 10` 开一单练练。", parse_mode="Markdown")
+            return
+        text = build_stats_text(trades, days, fund, "🎮虚拟盘")
+        await safe_reply(update.message, text, parse_mode="Markdown")
+        if want_ai:
+            await _send_ai(update.message, trades, days, fund)
+        return
+
+    if not await _guard(update):
+        return
     await safe_reply(update.message,
         f"📊 正在拉取近 {days} 天实盘记录…（按 7 天切片翻页，稍等）")
     try:

@@ -2,7 +2,9 @@
 
 面向永续杠杆玩法：开多/开空、指定保证金+杠杆、实时浮动盈亏、理论爆仓价、
 平仓结算回账户、胜率/历史统计，后台自动监控爆仓。
-纯记账，价格取自 CoinGecko 现货价做 mark（现货≈永续标记价，够练手用）。
+价格取 **Bybit USDT 永续**（和实盘同源），该币没有永续才退回 CoinGecko 现货。
+开仓含真实滑点/账户费率/合约最小下单量校验，持仓扣资金费，止盈止损挂单——
+刻意做成和实盘同构：模拟盘的意义是手感能迁移，零摩擦练出来的直觉到实盘全是错的。
 """
 import time
 import logging
@@ -139,6 +141,20 @@ async def get_prices(symbols):
     return out
 
 
+async def _tradable(symbol):
+    """Bybit 上有没有这个币的 USDT 永续。查不到清单时放行——
+    合约清单接口挂了不该连练手都不让练，真开不了 get_price 那步自然会拦。"""
+    try:
+        from handlers import symbols as sy
+        insts, _under = await sy.resolve(symbol)
+        if not insts:
+            return False
+        return sy.preferred(insts) is not None or bool(insts)
+    except Exception as e:
+        logging.warning(f"虚拟盘校验币种失败 {symbol}: {e}")
+        return True
+
+
 def fmt(p):
     """自适应价格精度：大币两位小数，小币多给几位有效数字。"""
     if p is None:
@@ -218,8 +234,14 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown")
         return
     symbol = args[0].upper()
-    if symbol not in COIN_IDS:
-        await safe_reply(update.message, f"不支持的币种：{symbol}")
+    # 判定标准是「Bybit 有没有这个永续」，不是「COIN_IDS 里有没有」。
+    # COIN_IDS 是 CoinGecko 的主流币映射，卡在这儿等于把中小市值币全挡在门外——
+    # 而那恰恰是最该练手、也最容易亏钱的地方。
+    if not await _tradable(symbol):
+        await safe_reply(update.message,
+            f"❌ Bybit 没有 {symbol} 的 USDT 永续（代号写错？或该币无永续）\n"
+            f"用 `/sym {symbol}` 查它在哪个所、叫什么名字",
+            parse_mode="Markdown")
         return
     side_raw = args[1].lower()
     if side_raw in ("long", "多", "buy", "l"):
@@ -383,6 +405,10 @@ async def vclose(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "sym": symbol, "side": pos["side"], "lev": pos["lev"],
         "entry": pos["entry"], "exit": mark, "margin": close_margin,
         "pnl": net, "roe": roe, "ts": time.time(),
+        # 下面几个是给复盘层用的：没有 dur 就算不出「持仓超一天」这类行为标签
+        "dur": time.time() - (pos.get("open_ts") or time.time()),
+        "value": close_margin * pos["lev"], "fee": close_fee, "funding": fund,
+        "exit_kind": "manual",
     })
     save_data()
     emoji = "🟢" if net >= 0 else "🔴"
@@ -595,6 +621,9 @@ async def _auto_close(a, sym, pos, price, kind):
         "sym": sym, "side": pos["side"], "lev": pos["lev"],
         "entry": pos["entry"], "exit": price, "margin": pos["margin"],
         "pnl": net, "roe": roe, "ts": time.time(), "auto": kind,
+        "dur": time.time() - (pos.get("open_ts") or time.time()),
+        "value": pos["margin"] * pos["lev"], "fee": fee, "funding": fund,
+        "exit_kind": "止盈" if kind == "止盈" else "止损",
     })
     a["positions"].pop(sym, None)
     save_data()
@@ -718,6 +747,9 @@ async def check_liquidations(context: ContextTypes.DEFAULT_TYPE):
                 "sym": sym, "side": pos["side"], "lev": pos["lev"],
                 "entry": pos["entry"], "exit": mark, "margin": pos["margin"],
                 "pnl": -pos["margin"], "roe": -100.0, "ts": time.time(),
+                "dur": time.time() - (pos.get("open_ts") or time.time()),
+                "value": pos["margin"] * pos["lev"], "fee": 0.0,
+                "funding": pos.get("funding_paid", 0.0), "exit_kind": "爆仓",
             })
             del a["positions"][sym]
             changed = True

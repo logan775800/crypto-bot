@@ -507,18 +507,33 @@ AI_SYSTEM = (
 
 
 def build_ai_digest(trades, days, fund=None):
-    """给 AI 的紧凑摘要——不丢原始几百笔，只丢统计结论（省 token 且模型不会算错）。"""
+    """给 AI 的紧凑摘要——不丢原始几百笔，只丢统计结论（省 token 且模型不会算错）。
+
+    这份会经中转站，所以脱敏时把所有金额换算成 **R 倍数**（1R = 平均亏损）。
+    这不只是遮挡：R 本来就比 USDT 更适合复盘——它把不同时期、不同仓位大小
+    的交易拉到同一把尺子上，"期望值 +0.35R" 比 "+12.4 USDT" 信息量更大。
+    """
+    from handlers import privacy
     s = compute_stats(trades)
     if not s:
         return None
+    red = privacy.enabled()
+    unit = abs(s["avg_loss"]) or 1.0        # 1R = 平均亏损
+
+    def m(x, signed=True):
+        if not red:
+            return f"{x:+.2f} USDT" if signed else f"{x:.2f}"
+        return f"{x/unit:+.2f}R" if signed else f"{x/unit:.2f}R"
+
     rr = "无穷(未亏过)" if s["rr"] == float("inf") else f"{s['rr']:.2f}"
     out = [
-        f"统计窗口: 近{days}天, 共{s['n']}笔已平仓",
-        f"总盈亏 {s['total']:+.2f} USDT, 胜率 {s['win_rate']:.1f}% ({s['wins']}胜{s['losses']}负)",
-        f"均盈 {s['avg_win']:.2f} / 均亏 {s['avg_loss']:.2f}, 盈亏比 {rr}",
-        f"每笔期望值 {s['expectancy']:+.2f} USDT",
-        f"最大回撤 {s['max_dd']:.2f}, 最长连亏 {s['max_loss_streak']}笔, 当前连亏 {s['cur_loss_streak']}笔",
-        f"最赚一笔 {s['best']:+.2f}, 最亏一笔 {s['worst']:+.2f}",
+        f"统计窗口: 近{days}天, 共{s['n']}笔已平仓"
+        + ("（金额已脱敏为 R 倍数，1R = 平均亏损）" if red else ""),
+        f"总盈亏 {m(s['total'])}, 胜率 {s['win_rate']:.1f}% ({s['wins']}胜{s['losses']}负)",
+        f"均盈 {m(s['avg_win'], False)} / 均亏 {m(s['avg_loss'], False)}, 盈亏比 {rr}",
+        f"每笔期望值 {m(s['expectancy'])}",
+        f"最大回撤 {m(s['max_dd'], False)}, 最长连亏 {s['max_loss_streak']}笔, 当前连亏 {s['cur_loss_streak']}笔",
+        f"最赚一笔 {m(s['best'])}, 最亏一笔 {m(s['worst'])}",
     ]
 
     def _dump(title, rows, limit=8):
@@ -526,13 +541,13 @@ def build_ai_digest(trades, days, fund=None):
             return
         out.append(title)
         for k, n, p, wr in rows[:limit]:
-            out.append(f"  {k}: {p:+.2f} USDT, {n}笔, 胜率{wr:.0f}%")
+            out.append(f"  {k}: {m(p)}, {n}笔, 胜率{wr:.0f}%")
 
     rows, tot_loss = attribution(trades)
     if rows:
-        out.append(f"亏损归因(总亏损 {tot_loss:.2f} USDT，一笔可命中多个标签):")
+        out.append(f"亏损归因(总亏损 {m(tot_loss, False)}，一笔可命中多个标签):")
         for tag, n, amt in rows[:6]:
-            out.append(f"  {tag}: {amt:.2f} USDT, {n}笔 ({amt/tot_loss*100:.0f}%)")
+            out.append(f"  {tag}: {m(amt, False)}, {n}笔 ({amt/tot_loss*100:.0f}%)")
     _dump("按币种(最亏在前):", _agg(trades, lambda t: t["symbol"].replace("USDT", "")))
     _dump("按方向:", _agg(trades, lambda t: "做多" if t["side"] == "long" else "做空"))
     by_dur = _agg(trades, _dur_bucket)
@@ -553,7 +568,7 @@ def build_ai_digest(trades, days, fund=None):
     if fund:
         tf = sum(fund.values())
         if abs(tf) > 0.01:
-            out.append(f"资金费净{'支出' if tf > 0 else '收入'} {abs(tf):.2f} USDT")
+            out.append(f"资金费净{'支出' if tf > 0 else '收入'} {m(abs(tf), False)}")
     return "\n".join(out)
 
 

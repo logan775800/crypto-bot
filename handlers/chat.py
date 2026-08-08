@@ -414,14 +414,30 @@ async def _tool_exec(name, args):
 
 
 async def _account_snapshot():
-    """只读账户快照：权益 + 持仓（给 AI 算真实仓位/风险用）。"""
+    """只读账户快照：权益 + 持仓（给 AI 算真实仓位/风险用）。
+
+    这份数据会经中转站，所以默认脱敏：金额一律换成占权益的百分比。
+    **价格不脱敏**（均价/标记/爆仓价都是公开行情，藏了反而没法分析），
+    但**数量必须一起藏掉**——给了「名义占权益 40%」又给数量，
+    数量×价格÷40% 就把权益反推出来了，那样的脱敏是自欺欺人。
+    """
     from handlers.rtrade import _client, _fmt, _env_tag
+    from handlers import privacy
     client = _client()
+    red = privacy.enabled()
     out = [f"【真实账户 {_env_tag()}】"]
+    equity = 0.0
     try:
         bal = await client.wallet_balance("USDT")
-        out.append(f"总权益 {bal.get('totalEquity','?')} USDT｜可用 {bal.get('totalAvailableBalance','?')} USDT"
-                   f"｜未实现盈亏 {bal.get('totalPerpUPL','?')}")
+        equity = float(bal.get("totalEquity") or 0)
+        avail = float(bal.get("totalAvailableBalance") or 0)
+        upl = float(bal.get("totalPerpUPL") or 0)
+        if red:
+            out.append(f"总权益 100%（基准，绝对值不外发）｜可用 {privacy.pct(avail, equity)}"
+                       f"｜未实现盈亏 {privacy.pct(upl, equity)}")
+        else:
+            out.append(f"总权益 {equity:,.2f} USDT｜可用 {avail:,.2f} USDT"
+                       f"｜未实现盈亏 {upl:+,.2f}")
     except Exception as e:
         out.append(f"查余额失败：{str(e)[:60]}")
     try:
@@ -434,13 +450,21 @@ async def _account_snapshot():
                 upnl = float(p.get("unrealisedPnl", 0) or 0)
                 total += upnl
                 side = "多" if p.get("side") == "Buy" else "空"
-                out.append(f"{p.get('symbol')} {side} {p.get('leverage')}x｜数量 {p.get('size')}"
-                           f"｜均价 {_fmt(p.get('avgPrice'))}｜标记 {_fmt(p.get('markPrice'))}"
-                           f"｜浮盈 {upnl:+.2f}｜爆仓价 {_fmt(p.get('liqPrice')) if p.get('liqPrice') else '—'}")
-            out.append(f"合计浮盈 {total:+.2f} USDT")
+                liq = _fmt(p.get("liqPrice")) if p.get("liqPrice") else "—"
+                base = (f"{p.get('symbol')} {side} {p.get('leverage')}x"
+                        f"｜均价 {_fmt(p.get('avgPrice'))}｜标记 {_fmt(p.get('markPrice'))}"
+                        f"｜爆仓价 {liq}")
+                if red:
+                    val = float(p.get("positionValue") or 0)
+                    out.append(base + f"｜名义 {privacy.pct(val, equity)}权益"
+                                      f"｜浮盈 {privacy.pct(upnl, equity)}权益")
+                else:
+                    out.append(base + f"｜数量 {p.get('size')}｜浮盈 {upnl:+.2f}")
+            out.append("合计浮盈 " + (f"{privacy.pct(total, equity)}权益" if red
+                                    else f"{total:+.2f} USDT"))
     except Exception as e:
         out.append(f"查持仓失败：{str(e)[:60]}")
-    return "\n".join(out)
+    return "\n".join(out) + privacy.note()
 
 
 async def _risk_snapshot(symbol=""):
@@ -452,20 +476,26 @@ async def _risk_snapshot(symbol=""):
     from handlers.rtrade import _client, _env_tag
     from handlers import sizing as sz
     from handlers import marketdata as md
+    from handlers import privacy
+    red = privacy.enabled()
     c = _client()
     bal = await c.wallet_balance("USDT")
     equity = float(bal.get("totalEquity") or 0)
     poss = await c.positions_all()
     r = sz.portfolio_risk(poss, equity)
-    out = [f"【组合风险 {_env_tag()}】总权益 {equity:,.2f} USDT"]
+    out = [f"【组合风险 {_env_tag()}】总权益 "
+           + ("100%（基准，绝对值不外发）" if red else f"{equity:,.2f} USDT")]
     if not r["positions"]:
         out.append("当前无持仓 —— 没有敞口，任何新单都是第一笔风险。")
         return "\n".join(out)
     for x in r["positions"]:
         tag = "⚠️裸奔(无止损)" if x["naked"] else ""
-        out.append(f"{x['symbol']} {'多' if x['side']=='long' else '空'}｜"
+        # 这里本来就有百分比，脱敏时只需把绝对值那两项去掉
+        amounts = (f"名义 {privacy.pct(x['value'], equity)}权益"
+                   f"｜风险 {x['risk']/equity*100:.2f}%" if red else
                    f"名义 {x['value']:,.0f}｜风险 {x['risk']:,.2f} USDT"
-                   f"（{x['risk']/equity*100:.2f}%）{tag}")
+                   f"（{x['risk']/equity*100:.2f}%）")
+        out.append(f"{x['symbol']} {'多' if x['side']=='long' else '空'}｜{amounts}{tag}")
     out.append(f"同向合计：多 {r['long_pct']:.2f}%｜空 {r['short_pct']:.2f}%")
     out.append(f"**最坏情况回撤 {r['worst_pct']:.2f}%**"
                f"（同向仓位按完全相关计——BTC 破位时山寨是一起走的，不存在分散）")
@@ -480,11 +510,17 @@ async def _risk_snapshot(symbol=""):
             continue
         out.append(f"\n{p.get('symbol')} 减仓推演：")
         for row in rows:
-            out.append(f"　减{row['pct']}% → 落袋 {row['realized']:+,.2f}｜"
-                       f"剩余名义 {row['left_value']:,.0f}｜"
-                       f"剩余风险 {row['left_risk']:,.2f} USDT"
-                       + (f"（{row['left_risk_pct']:.2f}%）" if row['left_risk_pct'] is not None else ""))
-    return "\n".join(out)
+            if red:
+                out.append(f"　减{row['pct']}% → 落袋 {privacy.pct(row['realized'], equity)}权益"
+                           f"｜剩余名义 {privacy.pct(row['left_value'], equity)}权益"
+                           f"｜剩余风险 "
+                           + (f"{row['left_risk_pct']:.2f}%" if row['left_risk_pct'] is not None else "?"))
+            else:
+                out.append(f"　减{row['pct']}% → 落袋 {row['realized']:+,.2f}｜"
+                           f"剩余名义 {row['left_value']:,.0f}｜"
+                           f"剩余风险 {row['left_risk']:,.2f} USDT"
+                           + (f"（{row['left_risk_pct']:.2f}%）" if row['left_risk_pct'] is not None else ""))
+    return "\n".join(out) + privacy.note()
 
 
 async def _stats_snapshot(days=30):

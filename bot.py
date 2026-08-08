@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -31,6 +31,8 @@ HELP_TEXT = (
     "/datacheck 🩺 系统体检：行情源/AI/**账户链路**/订阅状态 —— 查「地基通没通电」\n"
     "　└ /datacheck BANK 查单个币各维度取不取得到、延迟多少、有没有插针\n"
     "/restore 💾 从备份恢复订阅与配置（先发 /restore 看有哪些备份）\n"
+    "/privacy 🔒 AI 外发账户数据脱敏：AI 走第三方中转站，账户金额默认只给百分比\n"
+    "　└ 密钥和 token 从不进 prompt；想看真实数字用 /rbal /cockpit（不经中转站）\n"
     "/sym LAB 🔎 合约身份：这代号在哪个所、面值倍数、按币还是按张、最小下单量\n"
     "　└ 同名不同币会全部列出并做价格偏离检测——下单前先确认是哪个\n"
     "/net BANK long 0.081 0.0795 0.086 2000 💰 净盈亏比：扣掉手续费/滑点/资金费还剩多少\n"
@@ -363,6 +365,7 @@ async def post_init(application):
         BotCommand("keycheck", "🔐 密钥权限体检"),
         BotCommand("killswitch", "🔴 一键禁用实盘下单"),
         BotCommand("restore", "💾 从备份恢复订阅/配置"),
+        BotCommand("privacy", "🔒 AI外发账户数据脱敏"),
         BotCommand("plan", "📋 生成交易计划(会自动失效)"),
         BotCommand("plans", "📋 我的交易计划"),
     ]
@@ -449,6 +452,8 @@ def main():
     app.add_handler(CommandHandler("audit", keyguard.audit_cmd))
     # 备份恢复：有自动备份却没有恢复入口，等于备份只在"我知道去翻文件"时才有用
     app.add_handler(CommandHandler("restore", backup.restore_cmd))
+    # AI 外发账户数据脱敏开关（AI 走第三方中转站，金额默认只给百分比）
+    app.add_handler(CommandHandler("privacy", privacy.privacy_cmd))
     # 交易计划：一屏能执行 + 会自己失效
     app.add_handler(CommandHandler("plan", plan.plan_cmd))
     app.add_handler(CommandHandler("plans", plan.plans_cmd))

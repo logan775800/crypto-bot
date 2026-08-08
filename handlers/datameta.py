@@ -163,7 +163,7 @@ class Report:
         if self.missing:
             lines.append(f"⚠️ *数据完整度 {self.completeness:.0f}%*"
                          f"（{self.ok_count}/{self.total}）—— 缺：{'、'.join(self.missing)}")
-            lines.append("_相关维度的结论已降级，不要按满信心执行_")
+            lines.append("相关维度的结论已降级，不要按满信心执行")
         return "\n".join(lines)
 
     def reasons(self):

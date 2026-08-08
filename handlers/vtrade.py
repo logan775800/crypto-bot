@@ -306,7 +306,7 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"理论爆仓价 ${fmt(liq)}\n"
         f"剩余可用 ${a['balance']:,.2f}\n\n"
         f"平仓 `/vclose {symbol}`｜查仓 `/vpos`\n"
-        f"_模拟盘，不构成投资建议_",
+        f"模拟盘，不构成投资建议",
         parse_mode="Markdown")
 
 
@@ -730,7 +730,7 @@ async def check_liquidations(context: ContextTypes.DEFAULT_TYPE):
                               f"{sym} {dir_txt} {pos['lev']:g}x 触及爆仓价 ${fmt(liq)}\n"
                               f"现价 ${fmt(mark)}，保证金 ${pos['margin']:,.2f} 全损 (-100%)\n"
                               f"可用余额 ${a['balance']:,.2f}\n"
-                              f"_模拟盘，高杠杆爆仓就是这么快_"),
+                              f"模拟盘，高杠杆爆仓就是这么快"),
                         parse_mode="Markdown")
                 except Exception as e:
                     logging.error(f"爆仓通知失败: {e}")

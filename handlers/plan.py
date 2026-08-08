@@ -131,7 +131,7 @@ def card(p, with_meta=True):
             f"*执行守卫*　追价≤{chase:g}%｜滑点≤{g.get('max_slip_pct', MAX_SLIP_PCT):g}%"
             + ("｜BTC破位取消" if g.get("btc_abort") else "")
             + ("｜费率拥挤取消" if g.get("funding_abort") else ""))
-        lines.append(f"_错过入场区就不追了——追进去的每一分都从盈亏比里扣_")
+        lines.append(f"错过入场区就不追了——追进去的每一分都从盈亏比里扣")
 
     # 净盈亏比：毛的那个是价格距离，净的才是到手的钱。两者差距大时必须点出来，
     # 否则用户会按毛值做决定——止损窄的短线单上这个差距能让 1.2:1 变成 0.98:1
@@ -153,12 +153,12 @@ def card(p, with_meta=True):
         lines.append(f"⚠️ *末段盈亏比只有 {p['rr_final']:.2f}* —— 冒 "
                      f"{md.f(abs(mid - p['stop']))} 去赚 "
                      f"{md.f(abs(p['tps'][-1]['price'] - mid))}。")
-        lines.append("_即使胜率 60% 这单的期望也是负的。要么等更好的入场位，要么放弃。_")
+        lines.append("即使胜率 60% 这单的期望也是负的。要么等更好的入场位，要么放弃。")
 
     if p.get("status") == "invalid":
         lines.append("━━━━━━━━━━━━━━")
         lines.append(f"❌ *此计划已失效*：{escape_md(p.get('invalid_reason') or '条件已破坏')}")
-        lines.append("_不要再按这份计划挂单_")
+        lines.append("不要再按这份计划挂单")
     elif p.get("status") == "expired":
         lines.append("━━━━━━━━━━━━━━")
         lines.append("🕘 *已过期*（超过有效期，行情已变）。要用请 `/replan` 重新生成")
@@ -634,7 +634,7 @@ async def check_plans(context):
                         chat_id=p["chat_id"], parse_mode="Markdown",
                         text=(f"❌ *计划取消*　`{p['id']}` {escape_md(p['symbol'])}\n"
                               f"{escape_md(why)}\n"
-                              f"_价格还没走到失效位，但进场前提已经变了。_"),
+                              f"价格还没走到失效位，但进场前提已经变了。"),
                         reply_markup=kb(p))
                 except Exception as e:
                     log.error(f"计划环境取消推送失败 {p.get('chat_id')}: {e}")

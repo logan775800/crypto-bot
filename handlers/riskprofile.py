@@ -112,14 +112,14 @@ def render(uid, streak=0):
         name, unit, desc = LABELS[k]
         mark = "" if k in ((data.get("risk_profile") or {}).get(str(uid)) or {}) else "（默认）"
         lines.append(f"`{k}`　{name} *{p[k]:g}{unit}*{mark}")
-        lines.append(f"　_{desc}_")
+        lines.append(f"　{desc}")
     lines.append("━━━━━━━━━━━━━━")
     lines.append(f"当前生效单笔风险：*{eff:g}%*")
     if why:
         lines.append(f"⚠️ {why}")
     lines.append("")
     lines.append("改：`/riskset risk_pct 0.3`　重置：`/riskset reset`")
-    lines.append("_参数会真的挡住仓位计算，不是印在文档里让你自己遵守_")
+    lines.append("参数会真的挡住仓位计算，不是印在文档里让你自己遵守")
     return "\n".join(lines)
 
 

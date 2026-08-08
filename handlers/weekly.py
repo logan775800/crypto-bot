@@ -75,7 +75,7 @@ def compare(cur, prev):
         if val is None:
             return
         mark, d = _arrow(val, prev_val, lower_better)
-        rows.append(f"　{label} {fmt(val)}　{mark} {d}" + (f"　_{note}_" if note else ""))
+        rows.append(f"　{label} {fmt(val)}　{mark} {d}" + (f"　{note}" if note else ""))
 
     line("交易笔数", cur["n"], (prev or {}).get("n"), lambda x: f"{x:.0f}笔",
          lower_better=True, note="笔数暴涨常伴随质量下降")
@@ -110,7 +110,7 @@ def build(trades, prev_snap, days=7):
         return "\n".join(lines), cur
     lines.append("*行为画像*（和上周比）")
     if not prev_snap:
-        lines.append("　_第一周，只有基线没有趋势。下周这里会显示变化。_")
+        lines.append("　第一周，只有基线没有趋势。下周这里会显示变化。")
     lines += compare(cur, prev_snap)
     lines.append("")
     rows, tot = attribution(trades)
@@ -126,7 +126,7 @@ def build(trades, prev_snap, days=7):
                      f"总盈亏 {s['total']:+,.2f} USDT")
         lines.append(f"　期望值 {s['expectancy']:+,.2f}/笔")
         if s["n"] < 20:
-            lines.append("　_样本 <20 笔，胜率和期望值都不稳，别据此改打法_")
+            lines.append("　样本 <20 笔，胜率和期望值都不稳，别据此改打法")
     lines.append("")
     lines.append("_周报看的是**行为漂移**而不是单周盈亏——"
                  "行为你能控制，盈亏你不能。_")

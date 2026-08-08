@@ -354,7 +354,7 @@ def render(rows, limit=8):
         if r["missing"]:
             lines.append(f"　⚠️ 缺 {'、'.join(r['missing'])}，该维度未计入")
         lines.append("")
-    lines.append("_拥挤分越高越危险。流动性或执行不及格会直接否决，趋势再好也不算_")
+    lines.append("拥挤分越高越危险。流动性或执行不及格会直接否决，趋势再好也不算")
     lines.append("⚠️ 只是可交易性排序，不是买入建议")
     return "\n".join(lines)
 

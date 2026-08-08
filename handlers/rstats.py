@@ -317,7 +317,7 @@ def build_chase_text(trades, plans):
         d = s["disciplined"]["avg"] - s["chased"]["avg"]
         if d > 0:
             lines.append(f"　→ 守纪律的单每笔多赚 {_money(d)}——追进去的钱是从盈亏比里扣的")
-    lines.append("_只统计能配上历史计划的成交，配不上的不猜_")
+    lines.append("只统计能配上历史计划的成交，配不上的不猜")
     return "\n".join(lines)
 
 

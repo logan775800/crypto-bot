@@ -132,7 +132,7 @@ async def restore_cmd(update, context):
                   "整份覆盖（危险）：`/restore 20260806 full confirm`", "",
                   "_默认只恢复订阅与配置类字段。虚拟盘历史、审计日志这些是只增的，"
                   "用老备份盖回去等于倒退，所以不在默认范围内。_",
-                  "_恢复前会自动把当前状态另存一份，恢复错了还能回头。_"]
+                  "恢复前会自动把当前状态另存一份，恢复错了还能回头。"]
         await safe_reply(update.message, "\n".join(lines), parse_mode="Markdown")
         return
 

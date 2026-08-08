@@ -202,7 +202,7 @@ def render(s, symbol, interval, rule, bars, rr, cost_pct):
     pf = "∞" if s["profit_factor"] == float("inf") else f"{s['profit_factor']:.2f}"
     return "\n".join([
         f"🧪 *规则回测*　{symbol} {interval}",
-        f"_{RULE_DESC.get(rule, rule)}_",
+        f"{RULE_DESC.get(rule, rule)}",
         f"止损 1.5×ATR｜止盈 {rr:g}R｜单边成本 {cost_pct:g}%",
         f"样本 {bars} 根K线，共 *{s['n']}* 笔",
         "━━━━━━━━━━━━━━",

@@ -227,7 +227,7 @@ async def conds(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if r.get("last_ts"):
             left = COOLDOWN - (time.time() - r["last_ts"])
             if left > 0:
-                cd = f"　_(冷却中 {left/60:.0f}分)_"
+                cd = f"　(冷却中 {left/60:.0f}分)"
         lines.append(f"{i}. {escape_md(rule_text(r))}{cd}")
     lines.append("\n删除：`/delcond 2`")
     await safe_reply(update.message, "\n".join(lines), parse_mode="Markdown")

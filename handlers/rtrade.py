@@ -713,7 +713,7 @@ async def _panel_content(client):
                 InlineKeyboardButton("改止损", callback_data=f"tsl:{sym}"),
             ])
     else:
-        lines.append("_当前无持仓_")
+        lines.append("当前无持仓")
     rows.append([
         InlineKeyboardButton("➕ 开仓", callback_data="topen"),
         InlineKeyboardButton("🔔 爆仓预警", callback_data="tliq"),

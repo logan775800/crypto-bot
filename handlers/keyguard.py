@@ -124,7 +124,7 @@ async def killswitch_cmd(update, context):
             f"🔴 *实盘下单开关*\n\n当前：{'✅ 开启' if trading_enabled() else '🔴 已禁用'}\n\n"
             "`/killswitch on` 禁用下单（查询/平仓不受影响）\n"
             "`/killswitch off` 恢复\n\n"
-            "_禁用后开仓类操作会被直接拒绝，不需要登服务器改配置重启_",
+            "禁用后开仓类操作会被直接拒绝，不需要登服务器改配置重启",
             parse_mode="Markdown")
         return
     if a[0] in ("on", "禁用"):

@@ -160,7 +160,7 @@ def render(sym, title, ctx, price=None):
     if price:
         lines.append(f"现价 {md.f(price)}")
     lines += [f"　{escape_md(c)}" for c in ctx]
-    lines.append("_事件提醒带上下文——没有上下文的「价格到了」没法据以决策_")
+    lines.append("事件提醒带上下文——没有上下文的「价格到了」没法据以决策")
     return "\n".join(lines)
 
 

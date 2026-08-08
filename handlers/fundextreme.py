@@ -120,7 +120,7 @@ def _hi(r):
 
 def _line(r):
     return (f"　{escape_md(r['sym'])} `{r['rate']:+.4f}%`/期 → 日化 `{r['daily']:+.3f}%`"
-            f"{_hi(r)}　_{r['ex']}_")
+            f"{_hi(r)}　{r['ex']}")
 
 
 def build_text(rows, n=8):
@@ -130,7 +130,7 @@ def build_text(rows, n=8):
     neg = [r for r in rows if r["daily"] < 0][:n]
     pos = [r for r in rows[::-1] if r["daily"] > 0][:n]
     lines = [f"💵 *资金费率极端榜*（{len(rows)} 个永续，24h额≥${MIN_TURNOVER/1e6:g}M）",
-             "_按**日化**排序——1h结算的币抽血是常规8倍，只看每期费率会看漏_", ""]
+             "按**日化**排序——1h结算的币抽血是常规8倍，只看每期费率会看漏", ""]
     if neg:
         lines.append("🟢 *空头付费最多*（轧空风险 / 做多收费率）")
         lines += [_line(r) for r in neg]

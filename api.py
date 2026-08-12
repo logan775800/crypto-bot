@@ -41,34 +41,81 @@ async def _get(path, params):
         _cache[key] = (now, data)
         return data
 
+# ── CoinGecko 挂掉时的兜底 ────────────────────────────────────────
+# CoinGecko 是这个项目里最脆的一环（免费额度被十几个定时任务共用，429 是常态）。
+# 而挂掉的后果不是报错，是**静默失效**：价格预警不响、持仓不更新——
+# 用户会以为"价格没到"，而不是"系统没查到"。这类错觉比报错危险得多。
+#
+# 所以在 api 层统一兜底：一处改，17 个依赖模块全受益。
+# 兜底源是 Bybit 永续（现货没有的币它也有），和现货有基差但通常 <0.1%，
+# 对预警/持仓这类用途完全够，总比不响强。
+_LAST_FALLBACK = [0.0]      # 上次用兜底的时间，给健康检查参考
+
+
+async def _bybit_usd(symbols):
+    """{符号: {price, change}}。取不到就返回空 dict，绝不抛。"""
+    try:
+        from handlers.marketdata import simple_prices
+        raw = await simple_prices(symbols)
+        _LAST_FALLBACK[0] = time.time()
+        return {s: {"price": v["usd"], "change": v["change"]} for s, v in raw.items()}
+    except Exception as e:
+        import logging
+        logging.warning(f"Bybit 兜底取价也失败: {e}")
+        return {}
+
+
+def fallback_recent(within=600):
+    """最近是不是用过兜底源。健康检查用它区分「源挂了但功能还在」。"""
+    return bool(_LAST_FALLBACK[0]) and (time.time() - _LAST_FALLBACK[0]) < within
+
+
 async def get_price(symbol: str, vs: str = "usd"):
     coin_id = COIN_IDS.get(symbol.upper())
-    if not coin_id:
-        return None
-    raw = await _get("/simple/price", {
-        "ids": coin_id, "vs_currencies": vs, "include_24hr_change": "true"
-    })
-    info = raw.get(coin_id)
-    if not info or vs not in info:
-        return None
-    return {"price": info[vs], "change": info.get(f"{vs}_24h_change", 0)}
+    if coin_id:
+        try:
+            raw = await _get("/simple/price", {
+                "ids": coin_id, "vs_currencies": vs, "include_24hr_change": "true"
+            })
+            info = raw.get(coin_id)
+            if info and vs in info:
+                return {"price": info[vs], "change": info.get(f"{vs}_24h_change", 0)}
+        except Exception as e:
+            import logging
+            logging.warning(f"CoinGecko 取价失败 {symbol}，转 Bybit 兜底: {str(e)[:60]}")
+    # 没有 CoinGecko 映射、或它挂了 —— 两种情况都退到 Bybit 永续
+    if vs != "usd":
+        return None            # 非美元计价 Bybit 给不了，如实返回空
+    return (await _bybit_usd([symbol.upper()])).get(symbol.upper())
 
 async def get_prices(symbols, vs: str = "usd"):
-    """批量查：返回 {symbol: {price, change}}"""
-    ids = [COIN_IDS[s] for s in symbols if s in COIN_IDS]
-    if not ids:
-        return {}
-    raw = await _get("/simple/price", {
-        "ids": ",".join(ids), "vs_currencies": vs, "include_24hr_change": "true"
-    })
-    id_to_sym = {v: k for k, v in COIN_IDS.items()}
+    """批量查：返回 {symbol: {price, change}}。
+
+    CoinGecko 挂了或漏了某些币时，用 Bybit 永续把缺口补上——
+    价格预警、持仓监控这些「不响=以为没到」的功能不能因为单一源抖动就停摆。
+    """
+    want = [str(s).upper() for s in symbols]
     result = {}
-    for cid, info in raw.items():
-        sym = id_to_sym.get(cid)
-        # 缺 symbol 映射或缺该计价货币字段的跳过，避免整批 KeyError
-        if sym is None or vs not in info:
-            continue
-        result[sym] = {"price": info[vs], "change": info.get(f"{vs}_24h_change", 0)}
+    ids = [COIN_IDS[s] for s in want if s in COIN_IDS]
+    if ids:
+        try:
+            raw = await _get("/simple/price", {
+                "ids": ",".join(ids), "vs_currencies": vs,
+                "include_24hr_change": "true"})
+            id_to_sym = {v: k for k, v in COIN_IDS.items()}
+            for cid, info in raw.items():
+                sym = id_to_sym.get(cid)
+                # 缺 symbol 映射或缺该计价货币字段的跳过，避免整批 KeyError
+                if sym is None or vs not in info:
+                    continue
+                result[sym] = {"price": info[vs],
+                               "change": info.get(f"{vs}_24h_change", 0)}
+        except Exception as e:
+            import logging
+            logging.warning(f"CoinGecko 批量取价失败，转 Bybit 兜底: {str(e)[:60]}")
+    missing = [s for s in want if s not in result]
+    if missing and vs == "usd":
+        result.update(await _bybit_usd(missing))
     return result
 
 # 兼容旧代码：保留返回 usd 字段的版本（alert/portfolio/broadcast 用）

@@ -116,6 +116,7 @@ CATS = {
         "按**可交易性**排序，不是按涨幅——涨幅第一名往往是最不该碰的那个。\n"
         "四维打分：趋势 / 流动性 / 拥挤 / 执行，任一项不及格直接否决。",
         [[InlineKeyboardButton("🔍 全市场扫描（约20秒）", callback_data="do:scan")],
+         [InlineKeyboardButton("🌱 缓步增长（稳中有升）", callback_data="do:steady")],
          [InlineKeyboardButton("📊 合约涨跌榜", callback_data="ctr:top"),
           InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")]]),
     "cat_calc": (
@@ -188,6 +189,7 @@ async def _run_direct(query, context, name):
     """无参数功能：点按钮直接跑。用 query.message 冒充 update.message。"""
     handlers = {
         "scan": ("handlers.scan", "scan_cmd", "🔍 扫描中…"),
+        "steady": ("handlers.steady", "steady_cmd", "🌱 扫描中…"),
         "riskprofile": ("handlers.riskprofile", "risk_profile_cmd", None),
         "weekly": ("handlers.weekly", "weekly_cmd", "📅 生成周报…"),
         "rstats": ("handlers.rstats", "rstats", "📊 拉取成绩单…"),

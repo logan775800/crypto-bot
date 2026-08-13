@@ -199,11 +199,21 @@ async def _pool():
     这不会让它退化成涨幅榜——涨幅只决定谁被看一眼，最终排序由四维打分决定，
     拥挤/执行不及格照样被否决。
     """
-    r = await md._get("/v5/market/tickers", {"category": md.CAT})
+    r, types = await asyncio.gather(
+        md._get("/v5/market/tickers", {"category": md.CAT}),
+        md.symbol_types(), return_exceptions=True)
+    if isinstance(r, Exception):
+        raise r
+    types = {} if isinstance(types, Exception) else types
     rows = []
     for t in (r.get("list") or []):
         s = t.get("symbol") or ""
         if not s.endswith("USDT"):
+            continue
+        # 代币化美股/大宗商品（AAPL、XAU 这类）对做加密永续的人是噪音，
+        # 而且风险特征不同（跟着美股开收盘跳空、周末流动性枯竭）。
+        # 靠 instruments-info 的 symbolType 识别：加密是空串。
+        if types.get(s, "") != "":
             continue
         try:
             turnover = float(t.get("turnover24h") or 0)

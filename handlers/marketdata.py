@@ -485,6 +485,42 @@ async def market_context():
 
 
 # ── 8) 简易批量报价（CoinGecko 的备用源）─────────────────────────────
+# ── 合约品类：加密 / 代币化股票 / 大宗商品 ──────────────────────────
+# Bybit 的 linear 永续里混着 184 个代币化美股（AAPL/MSFT/NBIS/SPCX…）和
+# 4 个大宗商品（XAU/XAG/CL/BZ）。对做加密永续的人这些是噪音，而且风险特征
+# 完全不同（跟着美股开收盘跳空、周末流动性枯竭）。
+#
+# 判定靠 instruments-info 的 **symbolType** 字段：加密是空字符串，
+# 股票是 "stock"，商品是 "commodity"。之前一度以为没法可靠识别——那是因为
+# 只查了 copyTrading（它把新上市的加密币也标成 none，不能用），
+# 没把两类合约的全部字段 diff 一遍。
+_TYPES = {"ts": 0, "map": {}}
+_TYPE_TTL = 6 * 3600
+
+
+async def symbol_types():
+    """{symbol: symbolType}。'' = 加密，'stock'/'commodity' = 非加密。"""
+    import time as _t
+    if _TYPES["map"] and _t.time() - _TYPES["ts"] < _TYPE_TTL:
+        return _TYPES["map"]
+    try:
+        r = await _get("/v5/market/instruments-info",
+                       {"category": CAT, "limit": 1000})
+        m = {x["symbol"]: (x.get("symbolType") or "")
+             for x in (r.get("list") or [])}
+        if m:
+            _TYPES.update({"ts": _t.time(), "map": m})
+    except Exception as e:
+        log.warning(f"取合约品类失败: {e}")
+    return _TYPES["map"]
+
+
+async def is_crypto(symbol):
+    """这个合约是不是加密币（而非代币化股票/商品）。查不到时按加密处理——
+    宁可多列一个，也不要因为清单接口抖动就把正经币过滤掉。"""
+    return (await symbol_types()).get(norm(symbol), "") == ""
+
+
 async def simple_prices(symbols):
     """{符号: {"usd": 价, "change": 24h涨跌%}}，字段与 api.get_prices_usd 一致。
 

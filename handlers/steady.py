@@ -237,6 +237,51 @@ def render(good, bad, scanned, days, skipped=0):
     return "\n".join(lines)
 
 
+# ── 按钮面板 ────────────────────────────────────────────────────
+# 窗口长度是这个功能最需要调的参数：30 天看的是当下这波，90 天看的是
+# 能不能一直磨。只给默认值等于只给了一半功能，所以结果卡上直接带切换按钮，
+# 换窗口不用退回菜单重来。
+DAY_CHOICES = (14, 30, 60, 90)
+
+
+def days_kb(current=DEFAULT_DAYS, show_all=False):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    row = [InlineKeyboardButton(f"{'✅' if d == current else ''}{d}天",
+                                callback_data=f"stdy:{d}:{1 if show_all else 0}")
+           for d in DAY_CHOICES]
+    toggle = ("🪙 仅加密（点此含股票）" if not show_all
+              else "📈 含股票商品（点此仅加密）")
+    return InlineKeyboardMarkup([
+        row,
+        [InlineKeyboardButton(toggle,
+                              callback_data=f"stdy:{current}:{0 if show_all else 1}")],
+        [InlineKeyboardButton("⬅️ 返回", callback_data="cat_scan")],
+    ])
+
+
+async def on_button(query, context):
+    """处理 stdy:<天数>:<是否含股票>。由 menu.button_handler 转发。"""
+    from handlers.util import safe_edit
+    try:
+        _p, d, allf = query.data.split(":")
+        days = max(MIN_DAYS, min(int(d), MAX_DAYS))
+        show_all = allf == "1"
+    except (ValueError, IndexError):
+        await query.answer("参数看不懂")
+        return
+    await query.answer(f"扫描近 {days} 天…")
+    await safe_edit(query, f"🌱 扫描近 {days} 天走势最稳的币…（约 20~40 秒）")
+    try:
+        good, bad, scanned, skipped = await run(days, crypto_only=not show_all)
+    except Exception as e:
+        log.error(f"缓涨面板扫描失败: {e}")
+        await safe_edit(query, f"扫描失败：{str(e)[:80]}",
+                        reply_markup=days_kb(days, show_all))
+        return
+    await safe_edit(query, render(good, bad, scanned, days, skipped),
+                    reply_markup=days_kb(days, show_all), parse_mode="Markdown")
+
+
 USAGE = (
     "🌱 *缓步增长扫描*\n\n"
     "`/steady`　默认近 30 天\n"
@@ -274,4 +319,4 @@ async def steady_cmd(update, context):
         await safe_reply(update.message, f"扫描失败：{str(e)[:80]}")
         return
     await safe_reply(update.message, render(good, bad, scanned, days, skipped),
-                     parse_mode="Markdown")
+                     reply_markup=days_kb(days, show_all), parse_mode="Markdown")

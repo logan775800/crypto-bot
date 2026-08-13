@@ -116,7 +116,7 @@ CATS = {
         "按**可交易性**排序，不是按涨幅——涨幅第一名往往是最不该碰的那个。\n"
         "四维打分：趋势 / 流动性 / 拥挤 / 执行，任一项不及格直接否决。",
         [[InlineKeyboardButton("🔍 全市场扫描（约20秒）", callback_data="do:scan")],
-         [InlineKeyboardButton("🌱 缓步增长（稳中有升）", callback_data="do:steady")],
+         [InlineKeyboardButton("🌱 缓步增长（可选天数）", callback_data="stdy:30:0")],
          [InlineKeyboardButton("📊 合约涨跌榜", callback_data="ctr:top"),
           InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")]]),
     "cat_calc": (

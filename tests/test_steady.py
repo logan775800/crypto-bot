@@ -140,6 +140,47 @@ def test_liquidity_floor_is_lower_than_scan():
     assert st.MIN_TURNOVER < scan.MIN_TURNOVER
 
 
+# ── 天数按钮 ─────────────────────────────────────────────────────
+# 窗口长度是这个功能最需要调的参数（30 天看当下这波，90 天看能不能一直磨）。
+# 第一版菜单按钮直接跑默认 30 天，等于只给了一半功能。
+def _cbs(kb):
+    return [b.callback_data for row in kb.inline_keyboard for b in row]
+
+
+def test_all_day_choices_are_offered():
+    cbs = _cbs(st.days_kb())
+    for d in st.DAY_CHOICES:
+        assert f"stdy:{d}:0" in cbs
+
+
+def test_current_window_is_marked():
+    texts = [b.text for row in st.days_kb(60).inline_keyboard for b in row]
+    assert any(t.startswith("✅") and "60" in t for t in texts)
+    assert sum(1 for t in texts if t.startswith("✅")) == 1
+
+
+def test_toggle_flips_the_crypto_only_flag():
+    """按钮要能在「仅加密」和「含股票商品」之间来回切。"""
+    assert "stdy:30:1" in _cbs(st.days_kb(30, show_all=False))
+    assert "stdy:30:0" in _cbs(st.days_kb(30, show_all=True))
+
+
+def test_switching_days_keeps_the_all_flag():
+    """换窗口不该把「含股票」的选择丢掉。"""
+    for cb in _cbs(st.days_kb(30, show_all=True)):
+        if cb.startswith("stdy:") and cb != "stdy:30:0":
+            assert cb.endswith(":1")
+
+
+def test_has_a_way_back():
+    assert "cat_scan" in _cbs(st.days_kb())
+
+
+def test_callback_data_within_telegram_limit():
+    for cb in _cbs(st.days_kb()):
+        assert len(cb.encode()) <= 64
+
+
 def test_symbol_type_classification():
     """「稳」这个筛选天然会把代币化股票和贵金属顶到前面——
     它们本来就比加密币稳。靠 instruments-info 的 symbolType 区分。"""

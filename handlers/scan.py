@@ -117,7 +117,24 @@ def score_execution(spread_pct, slip_pct, partial):
     return _clamp(total)
 
 
-def overall(trend, liq, crowd, exec_q, atr_pct=None, net_rr=None, btc_conflict=False):
+# 单期资金费到这个量级 = 极端，单项就该否决，不必等 OI 也暴增。
+# 0.2%/期 ≈ 年化 219%，持有拥挤那一边一天就要付掉 0.6% 的名义。
+FUNDING_EXTREME = 0.002
+
+
+def crowded_side(funding, threshold=FUNDING_HOT):
+    """资金费告诉你**哪一边挤**：为正是多头在付钱=多头拥挤，为负则反之。
+
+    必须带阈值：+0.005%/期 是常态噪音，不是拥挤。不设阈值的话，
+    几乎每个币都会被判成「顺势方向恰是拥挤方」，这条否决就废了。
+    """
+    if not funding or abs(funding) < threshold:
+        return None
+    return "多头" if funding > 0 else "空头"
+
+
+def overall(trend, liq, crowd, exec_q, atr_pct=None, net_rr=None, btc_conflict=False,
+            direction=None, funding=None):
     """综合分 + 一句话结论。**带否决**：流动性/执行不及格时趋势不算数。
 
     后三个参数是「结果导向」的否决，跟前四维不同——它们不打分，只否决：
@@ -141,14 +158,32 @@ def overall(trend, liq, crowd, exec_q, atr_pct=None, net_rr=None, btc_conflict=F
         vetoes.append(f"净盈亏比仅{net_rr:.2f}")
     if btc_conflict:
         vetoes.append("与BTC方向冲突")
+    # 单项极端也要能否决。原来费率项封顶 60、OI 项封顶 40，
+    # 单靠费率永远够不到 80 的拥挤否决线——最该拦的情况反而拦不住。
+    if funding is not None and abs(funding) >= FUNDING_EXTREME:
+        vetoes.append(f"费率极端({funding*100:+.3f}%/期)")
+    # 你要做的方向，正好是已经挤满人的那一边
+    crowd_side = crowded_side(funding)
+    if direction and crowd_side and crowd_side in direction:
+        vetoes.append(f"顺势方向恰是拥挤方({crowd_side}在付费率)")
     if vetoes:
         raw = min(raw, 35)
-    if raw >= 70 and not vetoes:
+    # 方向不明时不给 ✅。综合分把「能不能做」（流动性/执行）和「该不该做」
+    # （趋势/拥挤）加权平均了，于是一个盘口厚但周期打架的币能排到前面——
+    # 可"没方向"意味着那里根本没有机会，只有流动性。
+    no_direction = direction == "分歧"
+    if no_direction and not vetoes:
+        raw = min(raw, 55)
+    if raw >= 70 and not vetoes and not no_direction:
         verdict = "✅ 可交易性好"
-    elif raw >= 50 and not vetoes:
+    elif vetoes:
+        verdict = "❌ 不建议（" + "、".join(vetoes) + "）"
+    elif no_direction:
+        verdict = "🟡 只有流动性，没有方向——多周期打架，等它选边"
+    elif raw >= 50:
         verdict = "🟡 可以看，但要控仓"
     else:
-        verdict = "❌ 不建议" + ("（" + "、".join(vetoes) + "）" if vetoes else "")
+        verdict = "❌ 不建议"
     return _clamp(raw), verdict
 
 
@@ -320,7 +355,8 @@ async def _deep(sym, ticker, turnover, sem, btc_move=0.0):
     agree = sum(v.get("align", 0) for v in tf.values())
     btc_conflict = (abs(btc_move) >= BTC_ALIGN_PCT and agree != 0
                     and (btc_move > 0) != (agree > 0))
-    total, verdict = overall(trend, liq, crowd, ex, atr_pct, net_rr, btc_conflict)
+    total, verdict = overall(trend, liq, crowd, ex, atr_pct, net_rr, btc_conflict,
+                             direction=direction, funding=funding)
     missing = []
     if not tf:
         missing.append("K线")
@@ -385,7 +421,11 @@ def render(rows, limit=8):
         if r["missing"]:
             lines.append(f"　⚠️ 缺 {'、'.join(r['missing'])}，该维度未计入")
         lines.append("")
-    lines.append("拥挤分越高越危险。流动性或执行不及格会直接否决，趋势再好也不算")
+    lines.append("拥挤分越高越危险。流动性/执行不及格、费率极端、"
+                 "或顺势方向恰是拥挤方，都会直接否决")
+    lines.append("「分歧」= 多周期打架，没方向就没机会，只有流动性")
+    lines.append(f"净RR 是按 1.5×ATR 止损、{PROBE_RR:g}R 目标试算的**门槛检查**"
+                 f"（<{MIN_NET_RR:g} 直接否），不是排序依据——它在宽止损的币上普遍偏高")
     lines.append("⚠️ 只是可交易性排序，不是买入建议")
     return "\n".join(lines)
 

@@ -122,14 +122,56 @@ def test_btc_conflict_vetoed():
 
 
 def test_all_filters_pass_keeps_high_score():
-    t, v = scan.overall(85, 80, 20, 80, atr_pct=2.0, net_rr=3.0)
+    t, v = scan.overall(85, 80, 20, 80, atr_pct=2.0, net_rr=3.0, direction="多头")
     assert t >= 70 and "✅" in v
 
 
 def test_missing_optional_metrics_do_not_veto():
     """ATR/净RR 取不到时不该误杀——缺数据不是坏数据。"""
-    _t, v = scan.overall(85, 80, 20, 80, atr_pct=None, net_rr=None)
+    _t, v = scan.overall(85, 80, 20, 80, atr_pct=None, net_rr=None, direction="多头")
     assert "✅" in v
+
+
+# ── 「有流动性」≠「有机会」──────────────────────────────────────
+def test_no_direction_never_gets_a_green_light():
+    """综合分把「能不能做」（流动性/执行）和「该不该做」（趋势/拥挤）加权
+    平均了，于是盘口厚但周期打架的币能排到前面。可没方向 = 那里没有机会，
+    只有流动性。实测 KORU 趋势 53(分歧) 排到第二并标 ✅，就是这么来的。"""
+    total, verdict = scan.overall(53, 90, 2, 100, atr_pct=2.0, net_rr=3.0,
+                                  direction="分歧")
+    assert "✅" not in verdict and "没有方向" in verdict
+    assert total <= 55
+
+
+def test_extreme_funding_alone_vetoes():
+    """费率项封顶 60、OI 项封顶 40 —— 单靠费率永远够不到 80 的拥挤否决线，
+    最该拦的「极端费率」反而拦不住。实测 KAITO -0.445%/期 就漏过去了。"""
+    _t, v = scan.overall(90, 90, 66, 95, atr_pct=2.0, net_rr=3.0,
+                         direction="空头(周期不一致)", funding=-0.00445)
+    assert "费率极端" in v
+
+
+def test_going_with_the_crowded_side_is_flagged():
+    """费率符号说明哪边挤。顺势方向恰好是挤满人的那一边，该拦。"""
+    _t, v = scan.overall(90, 90, 40, 95, atr_pct=2.0, net_rr=3.0,
+                         direction="空头", funding=-0.0008)
+    assert "拥挤方" in v
+
+
+def test_against_the_crowd_is_not_flagged():
+    """做多而空头拥挤——那是被挤的另一边，不该拦。"""
+    _t, v = scan.overall(90, 90, 40, 95, atr_pct=2.0, net_rr=3.0,
+                         direction="多头", funding=-0.0008)
+    assert "拥挤方" not in v
+
+
+def test_normal_funding_is_not_crowding():
+    """+0.005%/期 是常态噪音。不设阈值的话几乎每个币都会被判成拥挤方，
+    这条否决当场作废。"""
+    assert scan.crowded_side(0.00005) is None
+    assert scan.crowded_side(-0.00048) is None
+    assert scan.crowded_side(0.0008) == "多头"
+    assert scan.crowded_side(-0.00445) == "空头"
 
 
 # ── 虚拟盘止盈止损 ───────────────────────────────────────────────

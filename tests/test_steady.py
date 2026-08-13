@@ -72,12 +72,45 @@ def test_single_day_pump_is_rejected():
     assert "拉盘" in st.reject_reason(st.profile(closes))
 
 
+# ── 短窗口自动切 4h ──────────────────────────────────────────────
+# 7 根日线做回归站不住：7 个点算出来的 R² 噪音里随便抽都能到 0.85。
+# 同样 7 天用 4h 是 42 根，点数够，还能看出周内结构。
+def test_short_window_uses_4h():
+    iv, need, per_year, unit, lim = st.bar_spec(7)
+    assert iv == "240" and need == 42 and per_year == 365 * 6
+    assert "4h" in unit
+
+
+def test_long_window_uses_daily():
+    iv, need, per_year, _u, _l = st.bar_spec(30)
+    assert iv == "D" and need == 30 and per_year == 365
+
+
+def test_intraday_pump_threshold_is_tighter():
+    """日线 25% 才算暴拉，4h 15% 就已经是了——阈值不跟着周期变就等于没设。"""
+    assert st.bar_spec(7)[4] < st.bar_spec(30)[4]
+
+
+def test_annualization_follows_the_timeframe():
+    """同样的每根涨幅，4h 的年化必须比日线高得多——
+    per_year 用错的话会把 4h 窗口的年化算低 6 倍。"""
+    line = [100 * 1.005 ** i for i in range(42)]
+    daily = st.profile(line, per_year=365)
+    intraday = st.profile(line, per_year=365 * 6)
+    assert intraday["ann"] > daily["ann"]
+
+
+def test_seven_days_is_a_menu_choice():
+    """用户主要做合约，7 天是默认窗口。"""
+    assert 7 in st.DAY_CHOICES and st.DEFAULT_DAYS == 7
+
+
 def test_most_of_the_gain_from_one_day_is_rejected():
     """单日没超过硬上限，但贡献了大半涨幅——同样不算缓涨。"""
     closes = [100 + i * 0.05 for i in range(20)] + [122.0 + i * 0.05 for i in range(10)]
     p = st.profile(closes)
     r = st.reject_reason(p)
-    assert r and ("单日" in r or "拉盘" in r)
+    assert r and ("单根" in r or "拉盘" in r)
 
 
 def test_deep_drawdown_is_rejected():

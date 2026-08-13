@@ -31,9 +31,14 @@ from handlers import scan
 
 log = logging.getLogger(__name__)
 
-DEFAULT_DAYS = 30       # 回看窗口（自然日）
-MIN_DAYS = 14
+DEFAULT_DAYS = 7        # 做合约的默认窗口：一周
+MIN_DAYS = 3
 MAX_DAYS = 120
+# 短窗口自动切 4h K 线。7 根日线做回归是站不住的——7 个点算出来的 R²
+# 噪音里随便抽都能到 0.85。同样 7 天用 4h 是 42 根，点数够，还能看出周内结构。
+# 14 天以上用日线：点数已经够，日线更能滤掉盘中噪音。
+INTRADAY_BELOW_DAYS = 14
+MIN_POINTS = 14         # 无论哪种周期，样本点少于这个数就不给结论
 POOL = 150              # 细算多少个币（按成交额取前 N —— 缓涨要的是能拿住的币）
 CONCURRENCY = 8
 # 流动性门槛比 /scan 低一档。/scan 找的是"此刻能不能进出"，需要厚盘口；
@@ -43,9 +48,18 @@ MIN_TURNOVER = 5_000_000
 
 MIN_R2 = 0.60           # 低于此说明不是趋势，是噪音
 MAX_DD = 25.0           # 窗口内最大回撤上限（%）
-MAX_SINGLE_DAY = 25.0   # 单日涨幅上限（%）——超了就是拉盘不是磨
-MAX_DAY_SHARE = 0.5     # 单日涨幅占总涨幅的比例上限
+MAX_DAY_SHARE = 0.5     # 单根涨幅占总涨幅的比例上限
 TOP_SHOW = 10
+
+
+def bar_spec(days):
+    """(Bybit interval, 需要几根, 一年多少根, 单位名)。
+
+    日线 vs 4h 的单根暴涨阈值必须不同：日线 25% 是拉盘，4h 15% 就已经是了。
+    """
+    if days < INTRADAY_BELOW_DAYS:
+        return "240", days * 6, 365 * 6, "根4h", 15.0
+    return "D", days, 365, "天", 25.0
 
 
 def linfit_log(closes):
@@ -54,7 +68,7 @@ def linfit_log(closes):
     数据不足或价格非正时返回 (None, None) —— 不猜。
     """
     n = len(closes)
-    if n < MIN_DAYS or any(c <= 0 for c in closes):
+    if n < MIN_POINTS or any(c <= 0 for c in closes):
         return None, None
     ys = [math.log(c) for c in closes]
     xs = list(range(n))
@@ -83,15 +97,19 @@ def max_drawdown(closes):
     return dd
 
 
-def profile(closes):
-    """一段日线 → 走势质量画像。纯函数，方便测。"""
-    if len(closes) < MIN_DAYS:
+def profile(closes, per_year=365, max_single=25.0):
+    """一段 K 线收盘价 → 走势质量画像。纯函数，方便测。
+
+    per_year：一年多少根（日线 365，4h 是 2190）——年化斜率要按它折算，
+    用错的话 4h 窗口会把年化算高 6 倍。
+    """
+    if len(closes) < MIN_POINTS:
         return None
     slope, r2 = linfit_log(closes)
     if slope is None:
         return None
     # 日斜率 → 年化涨幅%。exp(slope*365)-1，超大值截断避免展示成天文数字
-    ann = (math.exp(slope * 365) - 1) * 100
+    ann = (math.exp(slope * per_year) - 1) * 100
     ann = max(-99.0, min(ann, 100_000.0))
     rets = [(closes[i] / closes[i - 1] - 1) * 100 for i in range(1, len(closes))]
     ups = sum(1 for r in rets if r > 0)
@@ -107,6 +125,7 @@ def profile(closes):
         # 单日涨幅占总涨幅的比重：接近 1 说明整段涨幅几乎是某一天拉出来的
         "day_share": (best / total) if total > 0 else None,
         "days": len(closes),
+        "max_single": max_single,
     }
 
 
@@ -120,36 +139,40 @@ def reject_reason(p):
         return "趋势向下"
     if p["r2"] < MIN_R2:
         return f"不成趋势(R²{p['r2']:.2f})"
-    if p["best_day"] > MAX_SINGLE_DAY:
-        return f"单日暴涨{p['best_day']:.0f}%，是拉盘不是磨"
+    lim = p.get("max_single", 25.0)
+    if p["best_day"] > lim:
+        return f"单根暴涨{p['best_day']:.0f}%，是拉盘不是磨"
     if p["day_share"] is not None and p["day_share"] > MAX_DAY_SHARE:
-        return f"涨幅{p['day_share']*100:.0f}%来自单日，不算缓涨"
+        return f"涨幅{p['day_share']*100:.0f}%来自单根，不算缓涨"
     if p["dd"] > MAX_DD:
         return f"最大回撤{p['dd']:.0f}%，过程不平滑"
     return None
 
 
 # ── 取数 ────────────────────────────────────────────────────────
-async def _daily(sym, days):
+async def _series(sym, days):
+    """取该窗口对应的收盘价序列。短窗口用 4h，长窗口用日线。"""
+    iv, need, _py, _unit, _lim = bar_spec(days)
     try:
         r = await md._get("/v5/market/kline", {
-            "category": md.CAT, "symbol": sym, "interval": "D",
-            "limit": min(days + 2, 200)})
+            "category": md.CAT, "symbol": sym, "interval": iv,
+            "limit": min(need + 2, 1000)})
         rows = (r.get("list") or [])[::-1]
-        # 最后一根是**当天未走完**的日线，丢掉——半天的涨跌会污染整段拟合
+        # 最后一根是**还没走完**的，丢掉——半根的涨跌会污染整段拟合
         closes = [float(x[4]) for x in rows][:-1]
-        return closes[-days:] if len(closes) > days else closes
+        return closes[-need:] if len(closes) > need else closes
     except Exception as e:
-        log.debug(f"缓涨扫描取 {sym} 日线失败: {e}")
+        log.debug(f"缓涨扫描取 {sym} {iv} K线失败: {e}")
         return []
 
 
 async def _one(sym, turnover, days, sem):
+    _iv, _need, per_year, _unit, lim = bar_spec(days)
     async with sem:
-        closes = await _daily(sym, days)
-    if len(closes) < MIN_DAYS:
+        closes = await _series(sym, days)
+    if len(closes) < MIN_POINTS:
         return None
-    p = profile(closes)
+    p = profile(closes, per_year, lim)
     if not p:
         return None
     p["symbol"] = sym
@@ -201,14 +224,16 @@ async def run(days=DEFAULT_DAYS, limit=POOL, crypto_only=True):
 
 
 def render(good, bad, scanned, days, skipped=0):
+    iv, need, _py, unit, lim = bar_spec(days)
+    tf = "4h K线" if iv == "240" else "日线"
     if not good:
-        return (f"📉 近 {days} 天没有符合「缓步增长」的币（扫了 {scanned} 个）。\n"
+        return (f"📉 近 {days} 天没有符合「缓步增长」的币（扫了 {scanned} 个，{tf}）。\n"
                 f"要求：趋势向上、R²≥{MIN_R2}、最大回撤<{MAX_DD:g}%、"
-                f"无单日暴涨>{MAX_SINGLE_DAY:g}%。\n"
+                f"无单根暴涨>{lim:g}%。\n"
                 f"整体震荡或普涨普跌的市场里选不出来是正常的——"
-                f"这时候没有「稳」可言。")
+                f"这时候没有「稳」可言。换个窗口试试。")
     lines = [f"🌱 *缓步增长*　近 {days} 天走得最稳的（扫了 {scanned} 个）",
-             f"排序 = 年化斜率 × R²（涨得快 × 走得稳），不是按涨幅",
+             f"用 {tf}（{need} 根）｜排序 = 年化斜率 × R²，不是按涨幅",
              "━━━━━━━━━━━━━━"]
     from handlers.util import escape_md
     for p in good[:TOP_SHOW]:
@@ -218,9 +243,9 @@ def render(good, bad, scanned, days, skipped=0):
             f"{days}天 {p['total']:+.1f}%　*{p['score']:.0f}分*")
         lines.append(
             f"　R² {p['r2']:.2f}（越接近1越像一条直线）｜"
-            f"上涨天数 {p['up_ratio']:.0f}%｜最大回撤 {p['dd']:.1f}%")
+            f"上涨{unit} {p['up_ratio']:.0f}%｜最大回撤 {p['dd']:.1f}%")
         lines.append(
-            f"　最大单日 {p['best_day']:+.1f}%｜年化斜率 {p['ann']:+.0f}%｜"
+            f"　最大单{unit} {p['best_day']:+.1f}%｜年化斜率 {p['ann']:+.0f}%｜"
             f"成交额 {p['turnover']/1e6:.0f}M")
         lines.append("")
     if bad:
@@ -229,8 +254,11 @@ def render(good, bad, scanned, days, skipped=0):
         for p in near:
             lines.append(f"　{p['symbol'].replace('USDT','')}　{p['reject']}")
         lines.append("")
-    lines.append(f"口径：日线**已收盘**的最近 {days} 天（当天那根不算，"
-                 f"半天的涨跌会污染拟合）；对数价格做最小二乘。")
+    lines.append(f"口径：**已收盘**的最近 {need} 根{tf}（进行中那根不算，"
+                 f"半根的涨跌会污染拟合）；对数价格做最小二乘。")
+    if iv == "240":
+        lines.append("短窗口用 4h 而不是日线：7 根日线做回归站不住，"
+                     "7 个点的 R² 噪音里随便抽都能到 0.85；4h 有 42 根。")
     lines.append("为什么不按涨幅排：涨幅只看首尾两点，"
                  "「跌20%再拉50%」和「每天磨1%」算出来一样，但前者你拿不住。")
     lines.append("⚠️ 走势稳 ≠ 会继续稳，只是筛选起点，不是买入建议")
@@ -241,7 +269,7 @@ def render(good, bad, scanned, days, skipped=0):
 # 窗口长度是这个功能最需要调的参数：30 天看的是当下这波，90 天看的是
 # 能不能一直磨。只给默认值等于只给了一半功能，所以结果卡上直接带切换按钮，
 # 换窗口不用退回菜单重来。
-DAY_CHOICES = (14, 30, 60, 90)
+DAY_CHOICES = (7, 14, 30, 60)
 
 
 def days_kb(current=DEFAULT_DAYS, show_all=False):

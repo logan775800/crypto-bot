@@ -1,7 +1,9 @@
 """群内 @机器人 自由对话（复用现有 AI 中转站，多轮上下文）。
 
 触发：
-  • 群里 @机器人 或 回复机器人的任意消息 → 自由对话（自动阻止后续当币名查价）
+  • 群里 @机器人 或 回复 **AI 自己的回复** → 自由对话（自动阻止后续当币名查价）
+    ——「回复机器人的任意消息」不行：告警/播报也是机器人发的，大家会在告警下面
+      接龙、@人讨论行情，那些不是在跟机器人说话（见 _is_ai_msg）
   • 群里/私聊发图片（截图看盘、持仓截图）→ 走视觉，让 AI 直接看图
   • 任意场景 /ask 你的问题
 每个会话保留最近若干轮上下文，做到连续对话。纯对话，不查实时数据（会引导用命令查）。
@@ -32,14 +34,53 @@ def _strip_md(t):
     return _HDR.sub(r'\1', t).replace('**', '').replace('*', '')
 
 
-async def _send(msg, text):
-    """发 AI 回复：不引用原消息(直接发群里)，markdown 渲染失败则降级为去标记纯文本。"""
+AI_MSG_MEMO = 50      # 每个会话记住最近这么多条 AI 回复的 message_id
+
+
+def _remember_ai_msg(context, message):
+    """登记「这条是 AI 说的话」，供回复触发判定。
+
+    为什么要登记：群里回复机器人会唤醒 AI，但告警/播报也是机器人发的消息。
+    大家习惯在告警下面接龙讨论行情、@别人，那些全都不是在跟机器人说话 ——
+    只认这里登记过的消息，就不会再被误唤醒。
+
+    存 chat_data 而不是模块级变量：chat_data 走 PicklePersistence，
+    部署重启后还能接着上一条 AI 回复继续聊。
+    """
+    if context is None or not message:
+        return
     try:
-        await msg.reply_text(_md_to_tg(text), parse_mode="Markdown", do_quote=False)
+        ids = context.chat_data.setdefault("ai_msgs", [])
+    except Exception:      # chat_data 在某些非会话场景不可用，登记失败不该影响发消息
+        return
+    ids.append(message.message_id)
+    if len(ids) > AI_MSG_MEMO:
+        del ids[:-AI_MSG_MEMO]
+
+
+def _is_ai_msg(context, message_id):
+    try:
+        return message_id in (context.chat_data.get("ai_msgs") or [])
+    except Exception:
+        return False
+
+
+async def _send(msg, text, context=None):
+    """发 AI 回复：不引用原消息(直接发群里)，markdown 渲染失败则降级为去标记纯文本。
+
+    传了 context 才登记为「AI 的话」。brief/rstats 等复用本函数的地方是命令输出或
+    主动播报，不该让人回复它们就唤醒 AI，所以它们不传。
+    """
+    try:
+        sent = await msg.reply_text(_md_to_tg(text), parse_mode="Markdown", do_quote=False)
+        _remember_ai_msg(context, sent)
+        return sent
     except Exception as e:
         log.warning(f"AI回复Markdown渲染失败，降级纯文本: {e}")
         try:
-            await msg.reply_text(_strip_md(text), do_quote=False)
+            sent = await msg.reply_text(_strip_md(text), do_quote=False)
+            _remember_ai_msg(context, sent)
+            return sent
         except Exception as e2:
             log.error(f"AI回复发送失败: {e2}")
 
@@ -768,7 +809,7 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
     if images:
         user_msg["content"] = user_text + "\n（用户此轮附了一张图片，见上文你的解读）"
     hist.append({"role": "assistant", "content": reply})
-    await _send(update.message, reply)
+    await _send(update.message, reply, context)
 
 
 async def handle_ask_text(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
@@ -801,8 +842,26 @@ async def reset_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await safe_reply(update.message, f"🧹 已清空对话记忆与交易上下文，重新开始。{extra}")
 
 
+def _mentions_other_user(msg, bot_username, caption=False):
+    """正文里 @ 了别人（而不是机器人）—— 这话是说给那个人听的，机器人别插嘴。
+
+    用 parse_entity 而不是自己按 offset 切片：Telegram 的 entity 偏移量按
+    UTF-16 码元算，消息里有 emoji 时 Python 的字符串下标会错位。
+    """
+    at_bot = ("@" + (bot_username or "")).lower()
+    ents = (msg.caption_entities if caption else msg.entities) or []
+    for ent in ents:
+        if ent.type == "text_mention":
+            return True                       # @ 的是没设用户名的人
+        if ent.type == "mention":
+            name = msg.parse_caption_entity(ent) if caption else msg.parse_entity(ent)
+            if name.lower() != at_bot:
+                return True
+    return False
+
+
 async def mention_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """群里 @机器人 或 回复机器人的消息时触发自由对话。私聊不自动触发（用 /ask）。"""
+    """群里 @机器人 或 回复 AI 自己的回复时触发自由对话。私聊不自动触发（用 /ask）。"""
     msg = update.message
     if not msg or not msg.text:
         return
@@ -813,17 +872,22 @@ async def mention_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if any(k.startswith("await_") for k in context.user_data):
         return
     text = msg.text
-    triggered = False
-    # 1) 回复机器人的消息
+    triggered = by_reply = False
+    # 1) 回复 AI 自己说过的话（只认这个，不认告警/播报——见 _remember_ai_msg）
     rt = msg.reply_to_message
-    if rt and rt.from_user and rt.from_user.id == context.bot.id:
-        triggered = True
+    if (rt and rt.from_user and rt.from_user.id == context.bot.id
+            and _is_ai_msg(context, rt.message_id)):
+        triggered = by_reply = True
     # 2) @机器人
     uname = context.bot.username
-    if uname and ("@" + uname) in text:
+    at_bot = bool(uname) and ("@" + uname) in text
+    if at_bot:
         triggered = True
         text = text.replace("@" + uname, "").strip()
     if not triggered:
+        return
+    # 回复 AI 那条、却在正文里 @ 了别人：是拉人来看 AI 说了啥，不是在问机器人
+    if by_reply and not at_bot and _mentions_other_user(msg, uname):
         return
     if not text:
         text = "你好"
@@ -837,7 +901,7 @@ async def mention_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def photo_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """收到图片：私聊直接看图；群里需 @机器人 或 回复机器人（和文字对话同规则）。
+    """收到图片：私聊直接看图；群里需 @机器人 或 回复 AI 的回复（和文字对话同规则）。
 
     群里没触发的图也会暂存 PHOTO_TTL 秒——用户常常先甩图、下一条才 @机器人提问。
     """
@@ -857,14 +921,19 @@ async def photo_chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_chat.type == "private":
         triggered = True
     else:
-        triggered = False
+        triggered = by_reply = False
         rt = msg.reply_to_message
-        if rt and rt.from_user and rt.from_user.id == context.bot.id:
-            triggered = True
+        if (rt and rt.from_user and rt.from_user.id == context.bot.id
+                and _is_ai_msg(context, rt.message_id)):
+            triggered = by_reply = True
         uname = context.bot.username
-        if uname and ("@" + uname) in caption:
+        at_bot = bool(uname) and ("@" + uname) in caption
+        if at_bot:
             triggered = True
             caption = caption.replace("@" + uname, "").strip()
+        # 和文字同一条规则：回复 AI 那条却 @ 了别人，是给人看的，别插嘴
+        if by_reply and not at_bot and _mentions_other_user(msg, uname, caption=True):
+            return
     if not triggered:
         return   # 群里没点名，安静收着，别刷屏
 

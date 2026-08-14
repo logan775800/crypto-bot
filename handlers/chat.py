@@ -65,6 +65,44 @@ def _is_ai_msg(context, message_id):
         return False
 
 
+def _looks_missing(txt):
+    return (not txt) or ("未找到" in txt) or ("查不到" in txt) or ("不存在" in txt)
+
+
+async def _contract_overview(sym):
+    """合约概览。**必须优先 Bybit** —— 这不是偏好，是一致性问题。
+
+    K线/OI/盘口/逐笔/资金费全部走 marketdata（Bybit V5）。这里原来按
+    okx→binance→bybit 取第一个成功的，于是同一轮分析里合约价来自 OKX、
+    指标来自 Bybit：山寨币两个所的价格能差出一截，资金费率更是各算各的，
+    而模型把它们当成同一个市场往下推，得出的位置和拥挤度都是错的。
+
+    真取不到 Bybit 才回退，且必须把「换所了」这件事明说出来 —— 悄悄回退
+    比取不到更危险，因为结论看起来一样可信。
+    """
+    from handlers.bybit import build_fprice_text_by
+    try:
+        txt = await build_fprice_text_by(sym)
+        if not _looks_missing(txt):
+            return f"[Bybit 永续]\n{txt}"
+    except Exception as e:
+        log.warning(f"get_contract Bybit 失败 {sym}: {e}")
+    for label, mod, fn in (("OKX", "handlers.okx", "build_fprice_text"),
+                           ("币安", "handlers.binance", "build_fprice_text_bn")):
+        try:
+            m = __import__(mod, fromlist=[fn])
+            txt = await getattr(m, fn)(sym)
+        except Exception:
+            continue
+        if _looks_missing(txt):
+            continue
+        return (f"[{label} 永续 —— 注意：不是 Bybit]\n{txt}\n"
+                f"⚠️ 本轮的 K线/OI/盘口/逐笔/资金费都取自 Bybit，只有这条概览来自其他所。"
+                f"两个所的价格、资金费率、深度都不同，不要把它们当成同一个市场推断；"
+                f"涉及具体价位、费率一律以 Bybit 的那几项为准。")
+    return f"{sym}: 三个所都查不到永续合约"
+
+
 def _ctx_kb(context):
     """带着上下文时给两个出口：换币种、清掉。
 
@@ -429,20 +467,7 @@ async def _tool_exec(name, args):
             return f"{sym}: 查不到该币现货价"
         return f"{sym} 现货 ${r['price']:,.6g}，24h {r['change']:+.2f}%"
     if name == "get_contract":
-        sym = str(args.get("symbol", "")).upper()
-        for src in ("okx", "binance", "bybit"):
-            try:
-                if src == "okx":
-                    from handlers.okx import build_fprice_text
-                    return await build_fprice_text(sym)
-                if src == "binance":
-                    from handlers.binance import build_fprice_text_bn
-                    return await build_fprice_text_bn(sym)
-                from handlers.bybit import build_fprice_text_by
-                return await build_fprice_text_by(sym)
-            except Exception:
-                continue
-        return f"{sym}: 三个所都查不到永续合约"
+        return await _contract_overview(str(args.get("symbol", "")).upper())
     if name == "get_top_movers":
         from api import get_top_movers
         gainers, losers = await get_top_movers(15)

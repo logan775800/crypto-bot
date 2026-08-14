@@ -64,12 +64,20 @@ class Manifest:
         self.calls = []              # [(工具名, ok, 摘要)]
         self.ivs = {}                # {周期: ok}  K线专用
         self.identity = None         # 合约身份（symbols.for_ai 的结果）
+        self.kline_ok = False        # 这一轮到底拿到过 K 线没有（与周期名无关）
+        self.times = []              # 每次取数的时刻，用来算这批数据是不是同一时点的
 
     # ── 记账 ────────────────────────────────────────────────
     def record(self, name, args, result):
+        import time as _t
         ok = not any(w in (result or "") for w in _DEGRADED)
         self.calls.append((name, ok, (result or "")[:80]))
+        self.times.append(_t.time())
         if name == "get_klines":
+            # 拿到过 K 线这件事本身要单独记：周期名只是锦上添花。
+            # 只靠 self.ivs 判断的话，没带 interval 的调用会让「市场数据」整块显示成
+            # 未取——K 线明明成功了，用户却以为分析没有地基。
+            self.kline_ok = getattr(self, "kline_ok", False) or ok
             iv = str((args or {}).get("interval") or "").lower()
             if iv:
                 # 同一周期多次调用，只要有一次成功就算有
@@ -117,6 +125,15 @@ class Manifest:
         for k, (cn, _t, _kw, _r) in DIMENSIONS.items():
             if self._got(k):
                 lines.append(f"{cn}：可用")
+        if self._got("book") and self._got("trades"):
+            # 挂单是「打算成交」，逐笔是「已经成交」，两者本来就常打架。
+            # 挑一边讲成单边结论，是这套数据最容易出的错。
+            lines.append("盘口(挂单意图)与逐笔(已成交)方向不一致时，必须写明"
+                         "「信号冲突」并说清各自指向，不得只挑一边给单边结论。")
+        sp = self.spread()
+        if sp >= self.SPREAD_WARN:
+            lines.append(f"注意：本轮各项数据前后相隔 {sp:.0f} 秒，不是同一时点的快照。"
+                         f"盘口和逐笔时效最短，不要拿它们和更早取的 K 线当作同时发生。")
         miss = [DIMENSIONS[k] for k in self.unavailable]
         if miss:
             lines.append("")
@@ -161,20 +178,41 @@ class Manifest:
                   "不要为了凑完整而编造，宁可短。")
 
     # ── 给用户看的 ──────────────────────────────────────────
+    # 维度归类。「19/21 项可用」这种总分看着完整，其实把两件性质不同的事混成了
+    # 一个数：市场数据缺了是结论没地基，账户数据缺了是仓位不能按真实权益算。
+    # 分开报，用户一眼知道哪一层能信。
+    MARKET_DIMS = ("oi", "book", "trades", "liq", "funding", "btc")
+    ACCOUNT_DIMS = ("account",)
+
+    SPREAD_WARN = 90        # 秒。首尾取数间隔超过这个值就不算「同一时点的快照」
+
+    def spread(self):
+        """本轮第一次和最后一次取数相隔多久（秒）。"""
+        return (self.times[-1] - self.times[0]) if len(self.times) >= 2 else 0.0
+
+    def _group(self, dims):
+        got = [DIMENSIONS[k][0] for k in dims if self._got(k)]
+        miss = [DIMENSIONS[k][0] for k in dims if self._called(k) and not self._got(k)]
+        return got, miss
+
     def header(self):
-        """贴在回答顶部的一行清单，让用户自己能核对结论的地基。"""
+        """贴在回答顶部的清单，让用户自己能核对结论的地基。"""
         if not self.calls:
             return ""
-        ok_n = sum(1 for _, ok, _ in self.calls if ok)
-        got = [DIMENSIONS[k][0] for k in self.available]
-        miss = [DIMENSIONS[k][0] for k in self.unavailable if self._called(k)]
-        parts = [f"`数据 {ok_n}/{len(self.calls)} 项可用`"]
-        if self.ivs:
-            ivs = "/".join(iv for iv, ok in self.ivs.items() if ok)
-            if ivs:
-                parts.append(f"K线 {ivs}")
-        if got:
-            parts.append("｜".join(got))
+        lines = []
+        mk_got, mk_miss = self._group(self.MARKET_DIMS)
+        ivs = "/".join(iv for iv, ok in self.ivs.items() if ok) if self.ivs else ""
+        kl = [f"K线 {ivs}" if ivs else "K线"] if self.kline_ok else []
+        mk = "｜".join(kl + mk_got)
+        lines.append(f"`市场数据` {mk or '未取'}")
+        ac_got, ac_miss = self._group(self.ACCOUNT_DIMS)
+        lines.append(f"`账户数据` {'｜'.join(ac_got) if ac_got else '未取（仓位只能给公式，不能给具体金额）'}")
+        miss = mk_miss + ac_miss
         if miss:
-            parts.append(f"⚠️ 缺：{'、'.join(miss)}")
-        return "　".join(parts)
+            lines.append(f"`缺失维度` ⚠️ {'、'.join(miss)}")
+        # 取数跨度：这批数据不是同一瞬间的快照。盘口几秒就变样，跨度大的时候
+        # 拿盘口和几分钟前的 K 线互相印证是会出错的，必须让用户看见。
+        sp = self.spread()
+        if sp >= self.SPREAD_WARN:
+            lines.append(f"`取数跨度` ⚠️ {sp:.0f} 秒，非同一时点快照——盘口/逐笔可能已过期")
+        return "\n".join(lines)

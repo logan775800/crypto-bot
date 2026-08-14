@@ -104,10 +104,13 @@ def test_fix_prompt_enumerates_violations():
     assert "宁可短" in fix        # 别为了凑完整而编造
 
 
-def test_header_shows_counts_and_missing():
+def test_header_separates_layers_and_lists_missing():
+    """header 改成分层显示（市场/账户/缺失）——「N/M 项可用」这个总分
+    把「结论没地基」和「仓位不能按真实权益算」混成了一个数。"""
     m = _mf(("get_klines", "ok"), ("get_orderbook", "⚠️ 未返回订单簿"))
     h = m.header()
-    assert "1/2" in h and "订单簿" in h
+    assert "`市场数据`" in h and "K线" in h, "K线成功了就该显示，别管有没有带周期名"
+    assert "缺失维度" in h and "订单簿" in h
 
 
 def test_header_empty_when_no_tool_calls():

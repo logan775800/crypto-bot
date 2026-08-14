@@ -16,8 +16,10 @@ async def notify_admin(context, text):
 
 # 启动告警（post_init后发一次）
 async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
+    """启动播报带上本版改了什么——光一个版本号对使用者没有信息量。"""
     from config import VERSION
-    await notify_admin(context, f"🟢 Bot 已启动/重启（版本 {VERSION}）\n所有功能已加载，开始运行")
+    from handlers.changelog import startup_text
+    await notify_admin(context, startup_text(VERSION))
 
 # 数据源健康检查（定时调用）
 async def health_check(context: ContextTypes.DEFAULT_TYPE):

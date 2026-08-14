@@ -452,6 +452,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import events as _events
         await _events.on_button(query, context)
 
+    # ---- 更新日志（这一版改了什么）----
+    elif d.startswith("cl:"):
+        from handlers import changelog as _cl
+        await _cl.on_button(query, context)
+
     # ---- 数据源选择（默认 / 单条预警 / 单个监控 共用同一个面板）----
     elif d.startswith("src:"):
         from handlers import source as _source
@@ -1768,6 +1773,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ============ 帮助 ============
     elif d == "cat_help":
+        from config import VERSION as _V
         await query.edit_message_text(
             "❓ *使用帮助*\n\n"
             "📊 行情 - 几百种币实时价格\n"
@@ -1776,5 +1782,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "🛠 工具 - 比价/情绪/Gas/巨鲸\n"
             "💼 持仓 - 记录盈亏(私聊)\n\n"
             "💡 随时发 /menu 打开\n"
+            f"📦 当前版本 `{_V}`\n"
             "⚠️ 数据仅供参考，不构成投资建议",
-            reply_markup=back_kb(), parse_mode="Markdown")
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"📋 {_V} 更新了什么", callback_data="cl:cur")],
+                [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+            ]), parse_mode="Markdown")

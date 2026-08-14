@@ -142,3 +142,18 @@ def startup_text(version):
     body = "\n".join(f"• {it}" for it in items[:8])
     more = f"\n…共 {len(items)} 条，/changelog 看全部" if len(items) > 8 else ""
     return f"{head}\n\n本次更新：\n{body}{more}\n\n所有功能已加载，开始运行"
+
+
+def update_text(version):
+    """发给订阅会话的更新播报。
+
+    和 startup_text 分开写：管理员要的是「进程起来了」这个运维信号，每次重启都该发；
+    群里的人不关心容器重启，只关心**行为变了什么** —— 拿「已启动/重启」去刷群，
+    几次之后大家就不看了。没有更新说明就返回空，宁可不播报也不发一句废话。
+    """
+    items = notes_for(version)
+    if not items:
+        return ""
+    body = "\n".join(f"• {it}" for it in items[:8])
+    more = f"\n…共 {len(items)} 条，/changelog 看全部" if len(items) > 8 else ""
+    return f"🆕 机器人已更新到 {version}\n\n{body}{more}"

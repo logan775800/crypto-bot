@@ -20,6 +20,40 @@ async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
     from config import VERSION
     from handlers.changelog import startup_text
     await notify_admin(context, startup_text(VERSION))
+    await announce_update(context, VERSION)
+
+
+async def announce_update(context, version):
+    """版本变了就通知所有订阅会话——不然群里只看得到行为变了，不知道为什么变。
+
+    两条克制：
+    • 只在**版本号变化**时发。容器重启、崩溃拉起、改个 .env 都会走 startup_notify，
+      拿这些去刷群，几次之后大家就不看播报了。管理员那条不受此限（运维要知道进程起没起）。
+    • 没写更新说明就不发（update_text 返回空），宁可不播报也不发一句废话。
+    """
+    from storage import data, save_data, subscribed_chats
+    from handlers.changelog import update_text
+    if data.get("announced_version") == version:
+        return
+    text = update_text(version)
+    if not text:
+        return
+    # 管理员刚在私聊收过 startup_text，别再让他收一遍几乎一样的
+    admins = {int(a) for a in ADMIN_IDS if str(a).lstrip("-").isdigit()}
+    sent = 0
+    for cid in subscribed_chats():
+        if cid in admins:
+            continue
+        try:
+            await context.bot.send_message(chat_id=cid, text=text)
+            sent += 1
+        except Exception as e:
+            # 单个会话发失败（被踢、群解散）不能挡住其余会话，也不该让版本标记不落地
+            logging.warning(f"更新播报发送失败 {cid}: {e}")
+    # 无论发成功几个都记下来：否则一个死会话会让每次重启都重播一遍
+    data["announced_version"] = version
+    save_data()
+    logging.info(f"更新播报 {version}：已通知 {sent} 个会话")
 
 # 数据源健康检查（定时调用）
 async def health_check(context: ContextTypes.DEFAULT_TYPE):

@@ -73,6 +73,7 @@ def apply_defaults(d=None):
     d.setdefault("event_state", {})       # 各币上一轮状态快照（判"切换"的基线）
     d.setdefault("event_cooldown", {})    # 事件推送冷却 {币:事件 -> ts}
     d.setdefault("contract_min_tier", {})  # 合约告警每群最低档 {chat_id: 20/30/50/100}
+    d.setdefault("announced_version", "")   # 已经向订阅会话播报过更新的版本（防每次重启都刷屏）
     return d
 
 
@@ -144,6 +145,59 @@ def prune_data(now=None):
     return removed
 
 
+# chat_id 都存在哪儿——按结构分四类。migrate_chat（搬家）和 subscribed_chats（找人）
+# 必须看同一份清单：以前只有 migrate_chat 知道，再写一个就会漏掉后加的订阅类型，
+# 而漏掉的表现是「某个群搬完家收不到推送」或「更新播报少一个群」，都很难查。
+_ID_LISTS = ("broadcast_chats", "market_watch", "news_subs", "unlock_subs",
+             "summary_subs", "analysis_subs", "contract_watch", "weekly_subs")
+_DICT_LISTS = ("watchpct", "alerts", "ti_alerts", "cond_alerts", "plans")
+_ID_KEYED = ("gas_subs", "arb_subs", "whale_addr", "whale_min", "fex_subs",
+             "pump_watch", "event_subs", "contract_min_tier")
+_EMBEDDED = ("rtrade_alert", "riskguard", "brief")
+
+
+def subscribed_chats():
+    """所有订阅过本机器人任意推送的会话 id（去重）。
+
+    用来做「有事要通知所有人」的目标集合，比如版本更新播报 ——
+    以前只发管理员私聊，群里的人根本不知道机器人换了行为。
+    """
+    out = []
+    seen = set()
+
+    def add(cid):
+        try:
+            cid = int(cid)
+        except (TypeError, ValueError):
+            return
+        if cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+
+    for key in _ID_LISTS:
+        for x in data.get(key) or []:
+            add(x)
+    for key in _DICT_LISTS:
+        for w in data.get(key) or []:
+            if isinstance(w, dict):
+                add(w.get("chat_id"))
+    for key in _ID_KEYED:
+        d = data.get(key)
+        if isinstance(d, dict):
+            for k in d:
+                add(k)
+    for key in _EMBEDDED:
+        d = data.get(key)
+        if isinstance(d, dict):
+            add(d.get("chat_id"))
+    for acct in (data.get("vtrade") or {}).values():
+        if isinstance(acct, dict):
+            add(acct.get("chat_id"))
+    for cid in (data.get("holding_watch") or {}).values():
+        add(cid)
+    return out
+
+
 def migrate_chat(old, new):
     """群升级为超级群时 chat_id 会变（旧 id 从此推送 400），把所有订阅从旧 id 搬到新 id。
     覆盖各类结构：id列表 / 带chat_id的字典列表 / 以chat_id为键的字典 / 值是chat_id的字段。
@@ -152,8 +206,7 @@ def migrate_chat(old, new):
     moved = 0
 
     # 1) 纯 id 列表
-    for key in ("broadcast_chats", "market_watch", "news_subs", "unlock_subs",
-                "summary_subs", "analysis_subs", "contract_watch"):
+    for key in _ID_LISTS:
         lst = data.get(key)
         if isinstance(lst, list):
             for i, x in enumerate(lst):
@@ -162,14 +215,14 @@ def migrate_chat(old, new):
                     moved += 1
 
     # 2) 元素是 {chat_id: ...} 的列表
-    for key in ("watchpct", "alerts", "ti_alerts", "cond_alerts", "plans"):
+    for key in _DICT_LISTS:
         for w in data.get(key, []):
             if isinstance(w, dict) and w.get("chat_id") in old_set:
                 w["chat_id"] = new
                 moved += 1
 
     # 3) 以 chat_id(字符串) 为键的字典
-    for key in ("gas_subs", "arb_subs", "whale_addr", "whale_min", "fex_subs"):
+    for key in _ID_KEYED:
         d = data.get(key)
         if isinstance(d, dict):
             for ov in (str(old), old):
@@ -185,7 +238,7 @@ def migrate_chat(old, new):
             moved += 1
 
     # 5) 内嵌 chat_id 字段
-    for key in ("rtrade_alert", "riskguard", "brief"):
+    for key in _EMBEDDED:
         ra = data.get(key, {})
         if isinstance(ra, dict) and ra.get("chat_id") in old_set:
             ra["chat_id"] = new

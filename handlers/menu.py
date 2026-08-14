@@ -7,6 +7,7 @@ from telegram.ext import ContextTypes
 from api import get_price, get_fear_greed, get_gas_price, get_market_data, get_top_movers
 from config import COIN_IDS
 from handlers.util import sanitize_link_text, safe_edit, escape_md
+from handlers.steady import DEFAULT_DAYS as STEADY_DEFAULT_DAYS
 
 POPULAR = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "LINK", "AVAX", "DOT"]
 
@@ -116,7 +117,8 @@ CATS = {
         "按**可交易性**排序，不是按涨幅——涨幅第一名往往是最不该碰的那个。\n"
         "四维打分：趋势 / 流动性 / 拥挤 / 执行，任一项不及格直接否决。",
         [[InlineKeyboardButton("🔍 全市场扫描（约20秒）", callback_data="do:scan")],
-         [InlineKeyboardButton("🌱 缓步增长（可选天数）", callback_data="stdy:30:0")],
+         [InlineKeyboardButton("🌱 缓步增长（可选天数）",
+                               callback_data=f"stdy:{STEADY_DEFAULT_DAYS}:0")],
          [InlineKeyboardButton("📊 合约涨跌榜", callback_data="ctr:top"),
           InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")]]),
     "cat_calc": (
@@ -441,6 +443,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("ev:"):
         from handlers import events as _events
         await _events.on_button(query, context)
+
+    # ---- 缓步增长面板（切窗口天数 / 仅加密↔含股票商品）----
+    elif d.startswith("stdy:"):
+        from handlers import steady
+        await steady.on_button(query, context)
 
     # ---- 全部命令面板 ----
     elif d.startswith("cmd:"):

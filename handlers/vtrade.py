@@ -14,7 +14,7 @@ from telegram.ext import ContextTypes
 from api import get_price as _cg_price, get_prices as _cg_prices
 from config import COIN_IDS
 from storage import data, save_data
-from handlers.util import safe_reply
+from handlers.util import safe_reply, safe_edit
 
 START_BALANCE = 10000.0   # 初始虚拟本金（USDT）
 FEE_RATE = 0.0005         # 单边吃单手续费兜底值（取不到真实费率时用）
@@ -542,7 +542,7 @@ async def render_vpos(query):
     positions = a["positions"]
     from handlers.menu import back_to
     if not positions:
-        await query.edit_message_text(
+        await safe_edit(query, 
             f"💼 *虚拟合约账户*\n可用余额 ${a['balance']:,.2f}（初始 ${START_BALANCE:,.0f}）\n"
             f"当前无持仓。\n\n用命令开仓：`/vopen BTC long 1000 10`",
             reply_markup=back_to("cat_vtrade"), parse_mode="Markdown")
@@ -571,7 +571,6 @@ async def render_vpos(query):
         InlineKeyboardButton("🔄 刷新", callback_data="vpos_refresh"),
         InlineKeyboardButton("📜 历史", callback_data="vhist_show"),
     ], [InlineKeyboardButton("⬅️ 返回", callback_data="cat_vtrade")]])
-    from handlers.util import safe_edit
     await safe_edit(query, "\n".join(lines), reply_markup=kb, parse_mode="Markdown")
 
 

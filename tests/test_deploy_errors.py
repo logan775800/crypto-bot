@@ -91,6 +91,6 @@ def test_network_error_says_the_code_did_not_move(monkeypatch):
 def test_failure_card_explains_nothing_was_deployed():
     import inspect
     from handlers import menu
-    src = inspect.getsource(menu.button_handler)
+    src = inspect.getsource(menu._dispatch)
     start = src.index("部署触发失败")
     assert "线上仍是旧版本" in src[start:start + 600]

@@ -107,14 +107,14 @@ def test_render_says_so_when_a_version_has_nothing():
 def test_button_is_routed():
     import inspect
     from handlers import menu
-    assert 'startswith("cl:")' in inspect.getsource(menu.button_handler)
+    assert 'startswith("cl:")' in inspect.getsource(menu._dispatch)
 
 
 def test_help_panel_links_to_it():
     """新功能要有按钮入口，光有命令不算做完。"""
     import inspect
     from handlers import menu
-    src = inspect.getsource(menu.button_handler)
+    src = inspect.getsource(menu._dispatch)
     assert "cl:cur" in src
 
 

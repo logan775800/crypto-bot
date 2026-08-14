@@ -3,11 +3,14 @@ from telegram import (
     Update, InlineKeyboardButton, InlineKeyboardMarkup,
     ReplyKeyboardMarkup, KeyboardButton,
 )
+from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 from api import get_price, get_fear_greed, get_gas_price, get_market_data, get_top_movers
 from config import COIN_IDS
 from handlers.util import sanitize_link_text, safe_edit, escape_md
 from handlers.steady import DEFAULT_DAYS as STEADY_DEFAULT_DAYS
+
+log = logging.getLogger(__name__)
 
 POPULAR = ["BTC", "ETH", "BNB", "SOL", "XRP", "DOGE", "ADA", "LINK", "AVAX", "DOT"]
 
@@ -314,7 +317,7 @@ async def render_my_alerts(query):
     chat_id = query.message.chat_id
     mine = [(gi, a) for gi, a in enumerate(_ad.get("alerts", [])) if a.get("chat_id") == chat_id]
     if not mine:
-        await query.edit_message_text(
+        await safe_edit(query, 
             "📋 *我的价格预警*\n\n你还没有设置任何预警。\n返回上一步选币即可添加👇",
             reply_markup=back_to("cat_alert"), parse_mode="Markdown")
         return
@@ -329,7 +332,7 @@ async def render_my_alerts(query):
                      change_btn(f"al|{n - 1}")])
     rows.append([InlineKeyboardButton("🔄 刷新", callback_data="my_alerts"),
                  InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")])
-    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+    await safe_edit(query, "\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
 
 
 async def render_my_watchpct(query):
@@ -339,7 +342,7 @@ async def render_my_watchpct(query):
     chat_id = query.message.chat_id
     mine = [w for w in _ad.get("watchpct", []) if w["chat_id"] == chat_id]
     if not mine:
-        await query.edit_message_text(
+        await safe_edit(query, 
             "👁 *我的波动监控*\n\n还没有。点【👁 持续波动监控】添加👇",
             reply_markup=back_to("cat_alert"), parse_mode="Markdown")
         return
@@ -353,7 +356,7 @@ async def render_my_watchpct(query):
                      change_btn(f"wp|{w['symbol']}")])
     rows.append([InlineKeyboardButton("🔄 刷新", callback_data="my_watchpct"),
                  InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")])
-    await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+    await safe_edit(query, "\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
 
 
 def _short_addr(a):
@@ -430,13 +433,32 @@ def track_panel(chat_id):
 
 # ============ 按钮处理 ============
 async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """所有按钮回调的总入口。
+
+    外面这层 try 只拦一件事：「Message is not modified」。
+    面板普遍带「🔄 刷新」，数据没变时重渲染出的内容和原消息一字不差，Telegram
+    就报 BadRequest。它冒到全局错误处理器，会变成一条带 traceback 的「机器人异常」
+    推给管理员——用户那边什么事都没有，管理员却被一条正常操作刷屏。
+
+    刷新出一样的内容本来就不是错误，是**无事发生**。这里咽掉它。
+    其余异常照旧往上抛，别把真问题一起藏了。
+    """
+    try:
+        await _dispatch(update, context)
+    except BadRequest as e:
+        if "not modified" not in str(e).lower():
+            raise
+        log.debug(f"按钮重渲染内容未变，忽略：{update.callback_query.data}")
+
+
+async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     d = query.data
 
     # ---- 主菜单 ----
     if d == "menu_main":
-        await query.edit_message_text(
+        await safe_edit(query, 
             "🤖 *加密货币助手*\n\n点击下方分类，按钮直接出结果，无需记命令👇",
             reply_markup=main_menu_kb(), parse_mode="Markdown")
 
@@ -574,13 +596,13 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if action == "alertcoin":
             # 预警场景：记下"等用户发币名来设预警"，quickprice 会接住
             context.user_data["await_alert_coin"] = True
-            await query.edit_message_text(
+            await safe_edit(query, 
                 "🔍 *给其他币设预警*\n\n发送币名即可，例如 `pepe`、`arb`\n"
                 "（发完会让你选涨破/跌破；取消发 /menu）",
                 parse_mode="Markdown")
         else:
             # 查价/详情/分析等：直接发币名即可，纯文字查价会接住
-            await query.edit_message_text(
+            await safe_edit(query, 
                 "🔍 *查其他币*\n\n直接发送币名即可，例如：`pepe`、`wif`、`arb`\n"
                 "（几百种币都支持，大小写都行）",
                 reply_markup=back_kb(), parse_mode="Markdown")
@@ -588,7 +610,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ---- 刷新看板 ----
     elif d == "dash_refresh":
         from handlers.dashboard import build_dashboard
-        await query.edit_message_text("🔄 刷新中...")
+        await safe_edit(query, "🔄 刷新中...")
         try:
             text = await build_dashboard()
             kb = InlineKeyboardMarkup([
@@ -598,7 +620,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
         except Exception as e:
             logging.error(f"看板刷新出错: {e}")
-            await query.edit_message_text(f"刷新失败：{str(e)[:80]}", reply_markup=back_kb())
+            await safe_edit(query, f"刷新失败：{str(e)[:80]}", reply_markup=back_kb())
 
     # ============ 行情查询 ============
     elif d == "cat_price":
@@ -608,18 +630,18 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🚀 涨跌榜", callback_data="do_top")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text("📊 *行情查询*\n选择功能：", reply_markup=kb, parse_mode="Markdown")
+        await safe_edit(query, "📊 *行情查询*\n选择功能：", reply_markup=kb, parse_mode="Markdown")
 
     elif d == "sub_price":
-        await query.edit_message_text("💰 *查币价* - 点币种：\n(更多币用 `/price 币名`)",
+        await safe_edit(query, "💰 *查币价* - 点币种：\n(更多币用 `/price 币名`)",
             reply_markup=coin_grid("getprice", "cat_price"), parse_mode="Markdown")
 
     elif d == "sub_info":
-        await query.edit_message_text("📋 *币详情* - 点币种：",
+        await safe_edit(query, "📋 *币详情* - 点币种：",
             reply_markup=coin_grid("getinfo", "cat_price"), parse_mode="Markdown")
 
     elif d == "do_top":
-        await query.edit_message_text("🚀 正在获取涨跌榜...")
+        await safe_edit(query, "🚀 正在获取涨跌榜...")
         try:
             gainers, losers = await get_top_movers(15)
             lines = ["🚀 *24h涨幅榜 TOP15*"]
@@ -631,7 +653,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(query, "\n".join(lines), reply_markup=back_to("cat_price"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"涨跌榜出错: {e}")
-            await query.edit_message_text(f"获取失败：{str(e)[:80]}", reply_markup=back_to("cat_price"))
+            await safe_edit(query, f"获取失败：{str(e)[:80]}", reply_markup=back_to("cat_price"))
 
     elif d.startswith("getprice:"):
         symbol = d.split(":")[1]
@@ -642,7 +664,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"{emoji} *{escape_md(symbol)}*\n价格: ${r['price']:,.2f}\n24h: {r['change']:+.2f}%",
                 reply_markup=back_to("sub_price"), parse_mode="Markdown")
         except Exception:
-            await query.edit_message_text("查询失败", reply_markup=back_to("sub_price"))
+            await safe_edit(query, "查询失败", reply_markup=back_to("sub_price"))
 
     elif d.startswith("getinfo:"):
         symbol = d.split(":")[1]
@@ -656,9 +678,9 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"24h: {x['change_24h']:+.2f}% | 7d: {x['change_7d']:+.2f}% | 30d: {x['change_30d']:+.2f}%",
                     reply_markup=back_to("sub_info"), parse_mode="Markdown")
             else:
-                await query.edit_message_text("无数据", reply_markup=back_to("sub_info"))
+                await safe_edit(query, "无数据", reply_markup=back_to("sub_info"))
         except Exception:
-            await query.edit_message_text("查询失败", reply_markup=back_to("sub_info"))
+            await safe_edit(query, "查询失败", reply_markup=back_to("sub_info"))
 
     # ============ 策略回测 ============
     elif d == "cat_strategy":
@@ -672,7 +694,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📋 合约交易检查清单", callback_data="show_checklist")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text(
+        await safe_edit(query, 
             "📊 *策略回测 / 合约扫描*\n"
             "• 弱势/横盘扫描：找最横盘/最弱/相对抗跌的主流币\n"
             "• 动量轮动回测：只追最强K个币，对比死拿BTC\n"
@@ -685,7 +707,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("streak:"):
         _, direction, exch = d.split(":")
         word = "连涨" if direction == "up" else "连跌"
-        await query.edit_message_text(
+        await safe_edit(query, 
             f"⏳ 扫描 {exch.upper()} 永续{word}中（连续3天），约需十几秒…")
         from handlers.streak import build_streak_text
         try:
@@ -693,7 +715,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(query, txt, reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单连涨/连跌扫描出错: {e}")
-            await query.edit_message_text(f"扫描失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_strategy"))
+            await safe_edit(query, f"扫描失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_strategy"))
 
     # 合约交易检查清单
     elif d == "show_checklist":
@@ -701,24 +723,24 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, CHECKLIST, reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
 
     elif d == "do_weak":
-        await query.edit_message_text("🔎 扫描市值前 50 主流币...")
+        await safe_edit(query, "🔎 扫描市值前 50 主流币...")
         from handlers.strategy import build_weak_text
         try:
             await safe_edit(query, await build_weak_text(50),
                             reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单弱势扫描出错: {e}")
-            await query.edit_message_text(f"扫描失败：{str(e)[:80]}", reply_markup=back_to("cat_strategy"))
+            await safe_edit(query, f"扫描失败：{str(e)[:80]}", reply_markup=back_to("cat_strategy"))
 
     elif d == "do_momentum":
-        await query.edit_message_text("⏳ 动量轮动回测中，需逐个拉日线，约 30~60 秒，请稍候…")
+        await safe_edit(query, "⏳ 动量轮动回测中，需逐个拉日线，约 30~60 秒，请稍候…")
         from handlers.strategy import build_momentum_text
         try:
             await safe_edit(query, await build_momentum_text(),
                             reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单动量回测出错: {e}")
-            await query.edit_message_text(f"回测失败：{str(e)[:80]}", reply_markup=back_to("cat_strategy"))
+            await safe_edit(query, f"回测失败：{str(e)[:80]}", reply_markup=back_to("cat_strategy"))
 
     # ============ 技术分析 ============
     elif d == "cat_analysis":
@@ -727,7 +749,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows = list(kb.inline_keyboard)
         rows.insert(0, [InlineKeyboardButton("📐 标注图表(结构位+止损带画在图上)",
                                             callback_data="ac_help")])
-        await query.edit_message_text(
+        await safe_edit(query, 
             "📈 *技术分析* - 点币种做综合分析：\n(RSI+均线+MACD+布林带)",
             reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
 
@@ -743,7 +765,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif d.startswith("doanalyze:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"🔍 正在分析 {symbol}...")
+        await safe_edit(query, f"🔍 正在分析 {symbol}...")
         from handlers.analysis import build_analysis_text
         try:
             text = await build_analysis_text(symbol)
@@ -755,11 +777,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             parse_mode="Markdown")
         except Exception as e:
             logging.error(f"分析出错: {e}")
-            await query.edit_message_text(f"分析失败：{str(e)[:80]}", reply_markup=back_to("cat_analysis"))
+            await safe_edit(query, f"分析失败：{str(e)[:80]}", reply_markup=back_to("cat_analysis"))
 
     elif d.startswith("doai:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"🤖 AI分析 {symbol} 中...")
+        await safe_edit(query, f"🤖 AI分析 {symbol} 中...")
         from handlers.ai import build_ai_text
         try:
             text = await build_ai_text(symbol)
@@ -769,7 +791,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"AI出错: {e}")
             # 带上原因：只写日志的话，用户只能看到"AI分析失败"四个字，
             # 到底是行情源限流还是模型挂了根本无从判断
-            await query.edit_message_text(f"AI分析失败：{str(e)[:100]}",
+            await safe_edit(query, f"AI分析失败：{str(e)[:100]}",
                                           reply_markup=back_to("cat_analysis"))
 
     # ============ 预警（引导式：选币→选方向→发价格）============
@@ -787,7 +809,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")])
         from handlers import source as _source
         _ex, _mk = _source.get_pref(query.message.chat_id if query.message else 0)
-        await query.edit_message_text(
+        await safe_edit(query, 
             "🔔 *价格预警 / 波动监控*\n\n"
             "• 选币设**涨破/跌破**或**±5%**提醒(一次性)👇\n"
             "• 或点【👁 持续波动监控】盯指定币，涨跌超阈值**反复**提醒(支持小盘/合约币)\n"
@@ -815,7 +837,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 选好币 → 选方向
     elif d.startswith("alertcoin:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(
+        await safe_edit(query, 
             f"🔔 *{symbol} 价格预警*\n选择提醒方式：",
             reply_markup=alert_direction_kb(symbol), parse_mode="Markdown")
 
@@ -824,7 +846,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, symbol, direction = d.split(":")
         context.user_data["await_alert"] = {"symbol": symbol, "direction": direction}
         arrow = "涨破" if direction == "above" else "跌破"
-        await query.edit_message_text(
+        await safe_edit(query, 
             f"🔔 *{symbol} {arrow}提醒*\n\n请直接发送触发价格，例如 `65000`\n"
             f"（发送后自动设置，到价会提醒你；取消发 /menu）",
             parse_mode="Markdown")
@@ -832,32 +854,32 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 一键 ±5% 预警（用当前价做基准）
     elif d.startswith("alertpctset:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"⚡ 设置 {symbol} ±5% 提醒中...")
+        await safe_edit(query, f"⚡ 设置 {symbol} ±5% 提醒中...")
         from handlers import alert as _alert, source as _src
         try:
             chat_id = query.message.chat_id
             base, used = await _src.price_for(chat_id, symbol)
             if base is None:
-                await query.edit_message_text("获取当前价失败，稍后再试", reply_markup=back_to("cat_alert"))
+                await safe_edit(query, "获取当前价失败，稍后再试", reply_markup=back_to("cat_alert"))
             else:
                 idx = _alert.add_alert(chat_id, {
                     "type": "pct", "symbol": symbol, "pct": 5, "base_price": base,
                     "set_by": query.from_user.first_name,
                 })
-                await query.edit_message_text(
+                await safe_edit(query, 
                     f"✅ 已设置 *{symbol}* 涨跌超 ±5% 提醒\n"
                     f"基准价 ${base:,.6g}　数据源 {used}",
                     reply_markup=_alert.src_kb(chat_id, idx), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"一键百分比预警出错: {e}")
-            await query.edit_message_text(f"设置失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_alert"))
+            await safe_edit(query, f"设置失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_alert"))
 
     # 持续波动监控：引导用户发「币 百分比」，quickprice 接住
     elif d == "watchpct_start":
         context.user_data["await_watchpct"] = True
         from handlers import source as _source
         _ex, _mk = _source.get_pref(query.message.chat_id if query.message else 0)
-        await query.edit_message_text(
+        await safe_edit(query, 
             "👁 *持续波动监控*\n\n请发送「币 百分比 [合约] [交易所]」，例如：\n"
             "`DOGE 5`　`KORU 10`　`BTC 3`\n"
             "`BTC 3 合约`　← 加「合约」二字强制盯**永续合约价**\n"
@@ -898,73 +920,73 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 合约行情", callback_data="okx_fprice_sel")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text("🔥 *OKX 专区* (交易所实时数据)\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
+        await safe_edit(query, "🔥 *OKX 专区* (交易所实时数据)\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
 
     elif d == "okx_new":
-        await query.edit_message_text("🆕 查询中...")
+        await safe_edit(query, "🆕 查询中...")
         from handlers.okx import build_new_text
         try:
             await safe_edit(query, await build_new_text(), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"新币榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_okx"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_okx"))
 
     elif d == "okx_gainers":
-        await query.edit_message_text("🚀 查询中...")
+        await safe_edit(query, "🚀 查询中...")
         from handlers.okx import build_gainers_text
         try:
             await safe_edit(query, await build_gainers_text("SPOT"), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"涨幅榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_okx"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_okx"))
 
     elif d == "okx_swap":
-        await query.edit_message_text("📊 查询中...")
+        await safe_edit(query, "📊 查询中...")
         from handlers.okx import build_gainers_text
         try:
             await safe_edit(query, await build_gainers_text("SWAP"), reply_markup=back_to("cat_okx"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"合约榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_okx"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_okx"))
 
     elif d == "okx_funding_sel":
-        await query.edit_message_text("💵 *资金费率* - 点币种：", reply_markup=coin_grid("okxfunding", "cat_okx"), parse_mode="Markdown")
+        await safe_edit(query, "💵 *资金费率* - 点币种：", reply_markup=coin_grid("okxfunding", "cat_okx"), parse_mode="Markdown")
 
     elif d.startswith("okxfunding:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"💵 查询 {symbol}...")
+        await safe_edit(query, f"💵 查询 {symbol}...")
         from handlers.okx import build_funding_text
         try:
             await safe_edit(query, await build_funding_text(symbol), reply_markup=back_to("okx_funding_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"资金费率出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("okx_funding_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("okx_funding_sel"))
 
     elif d == "okx_ratio_sel":
-        await query.edit_message_text("⚖️ *多空比* - 点币种：", reply_markup=coin_grid("okxratio", "cat_okx"), parse_mode="Markdown")
+        await safe_edit(query, "⚖️ *多空比* - 点币种：", reply_markup=coin_grid("okxratio", "cat_okx"), parse_mode="Markdown")
 
     elif d.startswith("okxratio:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"⚖️ 查询 {symbol}...")
+        await safe_edit(query, f"⚖️ 查询 {symbol}...")
         from handlers.okx import build_ratio_text
         try:
             await safe_edit(query, await build_ratio_text(symbol), reply_markup=back_to("okx_ratio_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"多空比出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("okx_ratio_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("okx_ratio_sel"))
 
     elif d == "okx_liq_sel":
-        await query.edit_message_text("💥 *爆仓* - 点币种：", reply_markup=coin_grid("okxliq", "cat_okx"), parse_mode="Markdown")
+        await safe_edit(query, "💥 *爆仓* - 点币种：", reply_markup=coin_grid("okxliq", "cat_okx"), parse_mode="Markdown")
 
     elif d.startswith("okxliq:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"💥 查询 {symbol}...")
+        await safe_edit(query, f"💥 查询 {symbol}...")
         from handlers.okx import build_liq_text
         try:
             await safe_edit(query, await build_liq_text(symbol), reply_markup=back_to("okx_liq_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"爆仓出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("okx_liq_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("okx_liq_sel"))
 
     # ============ 资讯快讯 ============
     elif d == "cat_news":
@@ -975,10 +997,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔓 解锁排行", callback_data="do_unlocks")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text("📰 *资讯快讯*\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
+        await safe_edit(query, "📰 *资讯快讯*\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
 
     elif d == "do_news":
-        await query.edit_message_text("📰 获取新闻...")
+        await safe_edit(query, "📰 获取新闻...")
         from handlers.news import fetch_news, translate_news
         try:
             items = await fetch_news(8)
@@ -987,14 +1009,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for i, it in enumerate(items, 1):
                 title = sanitize_link_text(cn.get(i, it["title"]) if cn else it["title"])
                 lines.append(f"{i}. [{title}]({it['link']})")
-            await query.edit_message_text("\n".join(lines), reply_markup=back_to("cat_news"),
+            await safe_edit(query, "\n".join(lines), reply_markup=back_to("cat_news"),
                 parse_mode="Markdown", disable_web_page_preview=True)
         except Exception as e:
             logging.error(f"菜单新闻出错: {e}")
-            await query.edit_message_text(f"获取失败：{str(e)[:80]}", reply_markup=back_to("cat_news"))
+            await safe_edit(query, f"获取失败：{str(e)[:80]}", reply_markup=back_to("cat_news"))
 
     elif d == "do_movers":
-        await query.edit_message_text("📸 获取异动快照...")
+        await safe_edit(query, "📸 获取异动快照...")
         from handlers.movers import _okx_get
         try:
             from handlers import movers as _m
@@ -1018,19 +1040,19 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(query, "\n".join(lines), reply_markup=back_to("cat_news"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单异动出错: {e}")
-            await query.edit_message_text(f"获取失败：{str(e)[:80]}", reply_markup=back_to("cat_news"))
+            await safe_edit(query, f"获取失败：{str(e)[:80]}", reply_markup=back_to("cat_news"))
 
     elif d == "do_summary":
-        await query.edit_message_text("📊 生成市场总结...")
+        await safe_edit(query, "📊 生成市场总结...")
         from handlers.summary import build_summary
         try:
             await safe_edit(query, await build_summary(), reply_markup=back_to("cat_news"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单总结出错: {e}")
-            await query.edit_message_text(f"生成失败：{str(e)[:80]}", reply_markup=back_to("cat_news"))
+            await safe_edit(query, f"生成失败：{str(e)[:80]}", reply_markup=back_to("cat_news"))
 
     elif d == "do_unlocks":
-        await query.edit_message_text("🔓 查询解锁排行...")
+        await safe_edit(query, "🔓 查询解锁排行...")
         try:
             import handlers.unlock as _u
             import time, datetime, asyncio
@@ -1048,7 +1070,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             res=await asyncio.gather(*[chk(s,p) for s,p in list(_u.SYMBOL_MAP.items())[:20]])
             r=[x for x in res if x]; r.sort(key=lambda x:x["ts"])
             if not r:
-                await query.edit_message_text("近30天主流币无大额解锁", reply_markup=back_to("cat_news"))
+                await safe_edit(query, "近30天主流币无大额解锁", reply_markup=back_to("cat_news"))
             else:
                 lines=["🔓 *未来30天大额解锁*\n"]
                 for x in r[:10]:
@@ -1057,7 +1079,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await safe_edit(query, "\n".join(lines), reply_markup=back_to("cat_news"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"菜单解锁出错: {e}")
-            await query.edit_message_text(f"获取失败：{str(e)[:80]}", reply_markup=back_to("cat_news"))
+            await safe_edit(query, f"获取失败：{str(e)[:80]}", reply_markup=back_to("cat_news"))
 
     # ============ 个性化设置 ============
     elif d == "my_settings":
@@ -1085,7 +1107,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⬅️ 返回订阅", callback_data="cat_subs"),
              InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text(text, reply_markup=kb, parse_mode="Markdown")
+        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
 
     # ============ 订阅推送（按钮+状态）============
     elif d == "cat_subs":
@@ -1117,7 +1139,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⚙️ 我的个性化设置", callback_data="my_settings")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text(
+        await safe_edit(query, 
             "🔔 *订阅推送*\n✅已订阅 ⬜未订阅，点击切换：",
             reply_markup=kb, parse_mode="Markdown")
 
@@ -1158,22 +1180,22 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("⚙️ 我的个性化设置", callback_data="my_settings")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text(
+        await safe_edit(query, 
             "🔔 *订阅推送*\n✅已订阅 ⬜未订阅，点击切换：",
             reply_markup=kb, parse_mode="Markdown")
 
     elif d == "okx_fprice_sel":
-        await query.edit_message_text("📊 *合约行情* - 点币种：", reply_markup=coin_grid("okxfprice", "cat_okx"), parse_mode="Markdown")
+        await safe_edit(query, "📊 *合约行情* - 点币种：", reply_markup=coin_grid("okxfprice", "cat_okx"), parse_mode="Markdown")
 
     elif d.startswith("okxfprice:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"📊 查询 {symbol} 合约...")
+        await safe_edit(query, f"📊 查询 {symbol} 合约...")
         from handlers.okx import build_fprice_text
         try:
             await safe_edit(query, await build_fprice_text(symbol), reply_markup=back_to("okx_fprice_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"合约行情出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("okx_fprice_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("okx_fprice_sel"))
 
     # ============ 币安专区（镜像 OKX，数据来自 Binance）============
     elif d == "cat_binance":
@@ -1187,63 +1209,63 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 合约行情", callback_data="bn_fprice_sel")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text("🅱️ *币安专区* (Binance 数据)\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
+        await safe_edit(query, "🅱️ *币安专区* (Binance 数据)\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
 
     elif d == "bn_new":
-        await query.edit_message_text("🆕 查询中...")
+        await safe_edit(query, "🆕 查询中...")
         from handlers.binance import build_new_text_bn
         try:
             await safe_edit(query, await build_new_text_bn(), reply_markup=back_to("cat_binance"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"币安新币榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_binance"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_binance"))
 
     elif d == "bn_gainers":
-        await query.edit_message_text("🚀 查询中...")
+        await safe_edit(query, "🚀 查询中...")
         from handlers.binance import build_gainers_text_bn
         try:
             await safe_edit(query, await build_gainers_text_bn("SPOT"), reply_markup=back_to("cat_binance"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"币安涨幅榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_binance"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_binance"))
 
     elif d == "bn_swap":
-        await query.edit_message_text("📊 查询中...")
+        await safe_edit(query, "📊 查询中...")
         from handlers.binance import build_gainers_text_bn
         try:
             await safe_edit(query, await build_gainers_text_bn("SWAP"), reply_markup=back_to("cat_binance"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"币安合约榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_binance"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_binance"))
 
     elif d == "bn_funding_sel":
-        await query.edit_message_text("💵 *资金费率* - 点币种：", reply_markup=coin_grid("bnfunding", "cat_binance"), parse_mode="Markdown")
+        await safe_edit(query, "💵 *资金费率* - 点币种：", reply_markup=coin_grid("bnfunding", "cat_binance"), parse_mode="Markdown")
 
     elif d.startswith("bnfunding:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"💵 查询 {symbol}...")
+        await safe_edit(query, f"💵 查询 {symbol}...")
         from handlers.binance import build_funding_text_bn
         try:
             await safe_edit(query, await build_funding_text_bn(symbol), reply_markup=back_to("bn_funding_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"币安资金费率出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("bn_funding_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("bn_funding_sel"))
 
     elif d == "bn_ratio_sel":
-        await query.edit_message_text("⚖️ *多空比* - 点币种：", reply_markup=coin_grid("bnratio", "cat_binance"), parse_mode="Markdown")
+        await safe_edit(query, "⚖️ *多空比* - 点币种：", reply_markup=coin_grid("bnratio", "cat_binance"), parse_mode="Markdown")
 
     elif d.startswith("bnratio:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"⚖️ 查询 {symbol}...")
+        await safe_edit(query, f"⚖️ 查询 {symbol}...")
         from handlers.binance import build_ratio_text_bn
         try:
             await safe_edit(query, await build_ratio_text_bn(symbol), reply_markup=back_to("bn_ratio_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"币安多空比出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("bn_ratio_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("bn_ratio_sel"))
 
     elif d == "bn_liq_sel":
-        await query.edit_message_text("💥 *爆仓* - 点币种：", reply_markup=coin_grid("bnliq", "cat_binance"), parse_mode="Markdown")
+        await safe_edit(query, "💥 *爆仓* - 点币种：", reply_markup=coin_grid("bnliq", "cat_binance"), parse_mode="Markdown")
 
     elif d.startswith("bnliq:"):
         symbol = d.split(":")[1]
@@ -1251,17 +1273,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, await build_liq_text_bn(symbol), reply_markup=back_to("bn_liq_sel"), parse_mode="Markdown")
 
     elif d == "bn_fprice_sel":
-        await query.edit_message_text("📊 *合约行情* - 点币种：", reply_markup=coin_grid("bnfprice", "cat_binance"), parse_mode="Markdown")
+        await safe_edit(query, "📊 *合约行情* - 点币种：", reply_markup=coin_grid("bnfprice", "cat_binance"), parse_mode="Markdown")
 
     elif d.startswith("bnfprice:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"📊 查询 {symbol} 合约...")
+        await safe_edit(query, f"📊 查询 {symbol} 合约...")
         from handlers.binance import build_fprice_text_bn
         try:
             await safe_edit(query, await build_fprice_text_bn(symbol), reply_markup=back_to("bn_fprice_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"币安合约行情出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("bn_fprice_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("bn_fprice_sel"))
 
     # ============ Gate 专区（镜像币安专区，数据来自 Gate.io）============
     # 小币/新币 Gate 上得最早最全，币安查不到不等于没这个合约。
@@ -1276,90 +1298,90 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 合约行情", callback_data="gt_fprice_sel")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text(
+        await safe_edit(query, 
             "🟢 *Gate 专区* (Gate.io 数据)\n"
             "小币和新币上得最早最全；爆仓这里是真有数的（币安已关公开接口）。\n"
             "榜单已剔除代币化股票/指数等非加密合约。",
             reply_markup=kb, parse_mode="Markdown")
 
     elif d == "gt_new":
-        await query.edit_message_text("🆕 查询中...")
+        await safe_edit(query, "🆕 查询中...")
         from handlers.gate import build_new_text_gt
         try:
             await safe_edit(query, await build_new_text_gt(), reply_markup=back_to("cat_gate"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Gate 新币榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
 
     elif d == "gt_gainers":
-        await query.edit_message_text("🚀 查询中...")
+        await safe_edit(query, "🚀 查询中...")
         from handlers.gate import build_gainers_text_gt
         try:
             await safe_edit(query, await build_gainers_text_gt("SPOT"), reply_markup=back_to("cat_gate"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Gate 涨幅榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
 
     elif d == "gt_swap":
-        await query.edit_message_text("📊 查询中...")
+        await safe_edit(query, "📊 查询中...")
         from handlers.gate import build_gainers_text_gt
         try:
             await safe_edit(query, await build_gainers_text_gt("SWAP"), reply_markup=back_to("cat_gate"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Gate 合约榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
 
     elif d == "gt_funding_sel":
-        await query.edit_message_text("💵 *资金费率* - 点币种：", reply_markup=coin_grid("gtfunding", "cat_gate"), parse_mode="Markdown")
+        await safe_edit(query, "💵 *资金费率* - 点币种：", reply_markup=coin_grid("gtfunding", "cat_gate"), parse_mode="Markdown")
 
     elif d.startswith("gtfunding:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"💵 查询 {symbol}...")
+        await safe_edit(query, f"💵 查询 {symbol}...")
         from handlers.gate import build_funding_text_gt
         try:
             await safe_edit(query, await build_funding_text_gt(symbol), reply_markup=back_to("gt_funding_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Gate 资金费率出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_funding_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_funding_sel"))
 
     elif d == "gt_ratio_sel":
-        await query.edit_message_text("⚖️ *多空比* - 点币种：", reply_markup=coin_grid("gtratio", "cat_gate"), parse_mode="Markdown")
+        await safe_edit(query, "⚖️ *多空比* - 点币种：", reply_markup=coin_grid("gtratio", "cat_gate"), parse_mode="Markdown")
 
     elif d.startswith("gtratio:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"⚖️ 查询 {symbol}...")
+        await safe_edit(query, f"⚖️ 查询 {symbol}...")
         from handlers.gate import build_ratio_text_gt
         try:
             await safe_edit(query, await build_ratio_text_gt(symbol), reply_markup=back_to("gt_ratio_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Gate 多空比出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_ratio_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_ratio_sel"))
 
     elif d == "gt_liq_sel":
-        await query.edit_message_text("💥 *爆仓* - 点币种：", reply_markup=coin_grid("gtliq", "cat_gate"), parse_mode="Markdown")
+        await safe_edit(query, "💥 *爆仓* - 点币种：", reply_markup=coin_grid("gtliq", "cat_gate"), parse_mode="Markdown")
 
     elif d.startswith("gtliq:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"💥 查询 {symbol}...")
+        await safe_edit(query, f"💥 查询 {symbol}...")
         from handlers.gate import build_liq_text_gt
         try:
             await safe_edit(query, await build_liq_text_gt(symbol), reply_markup=back_to("gt_liq_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Gate 爆仓出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_liq_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_liq_sel"))
 
     elif d == "gt_fprice_sel":
-        await query.edit_message_text("📊 *合约行情* - 点币种：", reply_markup=coin_grid("gtfprice", "cat_gate"), parse_mode="Markdown")
+        await safe_edit(query, "📊 *合约行情* - 点币种：", reply_markup=coin_grid("gtfprice", "cat_gate"), parse_mode="Markdown")
 
     elif d.startswith("gtfprice:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"📊 查询 {symbol} 合约...")
+        await safe_edit(query, f"📊 查询 {symbol} 合约...")
         from handlers.gate import build_fprice_text_gt
         try:
             await safe_edit(query, await build_fprice_text_gt(symbol), reply_markup=back_to("gt_fprice_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Gate 合约行情出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_fprice_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_fprice_sel"))
 
     # ============ Bybit 专区（镜像 OKX/币安，数据来自 Bybit）============
     elif d == "cat_bybit":
@@ -1373,63 +1395,63 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("📊 合约行情", callback_data="by_fprice_sel")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text("🟡 *Bybit 专区* (Bybit 数据)\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
+        await safe_edit(query, "🟡 *Bybit 专区* (Bybit 数据)\n点按钮直接看：", reply_markup=kb, parse_mode="Markdown")
 
     elif d == "by_new":
-        await query.edit_message_text("🆕 查询中...")
+        await safe_edit(query, "🆕 查询中...")
         from handlers.bybit import build_new_text_by
         try:
             await safe_edit(query, await build_new_text_by(), reply_markup=back_to("cat_bybit"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Bybit新币榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_bybit"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_bybit"))
 
     elif d == "by_gainers":
-        await query.edit_message_text("🚀 查询中...")
+        await safe_edit(query, "🚀 查询中...")
         from handlers.bybit import build_gainers_text_by
         try:
             await safe_edit(query, await build_gainers_text_by("SPOT"), reply_markup=back_to("cat_bybit"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Bybit涨幅榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_bybit"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_bybit"))
 
     elif d == "by_swap":
-        await query.edit_message_text("📊 查询中...")
+        await safe_edit(query, "📊 查询中...")
         from handlers.bybit import build_gainers_text_by
         try:
             await safe_edit(query, await build_gainers_text_by("SWAP"), reply_markup=back_to("cat_bybit"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Bybit合约榜出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_bybit"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_bybit"))
 
     elif d == "by_funding_sel":
-        await query.edit_message_text("💵 *资金费率* - 点币种：", reply_markup=coin_grid("byfunding", "cat_bybit"), parse_mode="Markdown")
+        await safe_edit(query, "💵 *资金费率* - 点币种：", reply_markup=coin_grid("byfunding", "cat_bybit"), parse_mode="Markdown")
 
     elif d.startswith("byfunding:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"💵 查询 {symbol}...")
+        await safe_edit(query, f"💵 查询 {symbol}...")
         from handlers.bybit import build_funding_text_by
         try:
             await safe_edit(query, await build_funding_text_by(symbol), reply_markup=back_to("by_funding_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Bybit资金费率出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("by_funding_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("by_funding_sel"))
 
     elif d == "by_ratio_sel":
-        await query.edit_message_text("⚖️ *多空比* - 点币种：", reply_markup=coin_grid("byratio", "cat_bybit"), parse_mode="Markdown")
+        await safe_edit(query, "⚖️ *多空比* - 点币种：", reply_markup=coin_grid("byratio", "cat_bybit"), parse_mode="Markdown")
 
     elif d.startswith("byratio:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"⚖️ 查询 {symbol}...")
+        await safe_edit(query, f"⚖️ 查询 {symbol}...")
         from handlers.bybit import build_ratio_text_by
         try:
             await safe_edit(query, await build_ratio_text_by(symbol), reply_markup=back_to("by_ratio_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Bybit多空比出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("by_ratio_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("by_ratio_sel"))
 
     elif d == "by_liq_sel":
-        await query.edit_message_text("💥 *爆仓* - 点币种：", reply_markup=coin_grid("byliq", "cat_bybit"), parse_mode="Markdown")
+        await safe_edit(query, "💥 *爆仓* - 点币种：", reply_markup=coin_grid("byliq", "cat_bybit"), parse_mode="Markdown")
 
     elif d.startswith("byliq:"):
         symbol = d.split(":")[1]
@@ -1437,17 +1459,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, await build_liq_text_by(symbol), reply_markup=back_to("by_liq_sel"), parse_mode="Markdown")
 
     elif d == "by_fprice_sel":
-        await query.edit_message_text("📊 *合约行情* - 点币种：", reply_markup=coin_grid("byfprice", "cat_bybit"), parse_mode="Markdown")
+        await safe_edit(query, "📊 *合约行情* - 点币种：", reply_markup=coin_grid("byfprice", "cat_bybit"), parse_mode="Markdown")
 
     elif d.startswith("byfprice:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"📊 查询 {symbol} 合约...")
+        await safe_edit(query, f"📊 查询 {symbol} 合约...")
         from handlers.bybit import build_fprice_text_by
         try:
             await safe_edit(query, await build_fprice_text_by(symbol), reply_markup=back_to("by_fprice_sel"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"Bybit合约行情出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("by_fprice_sel"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("by_fprice_sel"))
 
     # ============ 工具（按钮直达）============
     elif d == "cat_tools":
@@ -1462,7 +1484,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🐋 地址追踪", callback_data="cat_track")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text("🛠 *实用工具*\n点按钮直接出结果：", reply_markup=kb, parse_mode="Markdown")
+        await safe_edit(query, "🛠 *实用工具*\n点按钮直接出结果：", reply_markup=kb, parse_mode="Markdown")
 
     # ---- Gas 提醒（按钮设阈值）----
     elif d == "cat_gasalert":
@@ -1502,7 +1524,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
     elif d == "trackadd":
         context.user_data["await_track_addr"] = True
-        await query.edit_message_text("🐋 发送要追踪的以太坊地址(0x 开头 42 位)，我就开始盯它。\n(取消发 /menu)")
+        await safe_edit(query, "🐋 发送要追踪的以太坊地址(0x 开头 42 位)，我就开始盯它。\n(取消发 /menu)")
     elif d.startswith("trackdel:"):
         from storage import data as _d, save_data as _s
         cid = str(query.message.chat_id); addr = d.split(":", 1)[1]
@@ -1519,52 +1541,52 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
 
     elif d == "do_fear":
-        await query.edit_message_text("😱 获取中...")
+        await safe_edit(query, "😱 获取中...")
         try:
             fg = await get_fear_greed()
-            await query.edit_message_text(
+            await safe_edit(query, 
                 f"😱 *恐惧贪婪指数*\n{fg['value']}/100 - {fg['classification']}\n(不构成投资建议)",
                 reply_markup=back_to("cat_tools"), parse_mode="Markdown")
         except Exception:
-            await query.edit_message_text("获取失败", reply_markup=back_to("cat_tools"))
+            await safe_edit(query, "获取失败", reply_markup=back_to("cat_tools"))
 
     elif d == "do_gas":
-        await query.edit_message_text("⛽ 获取中...")
+        await safe_edit(query, "⛽ 获取中...")
         try:
             gwei = await get_gas_price()
-            await query.edit_message_text(f"⛽ *以太坊Gas*: {gwei:.2f} gwei",
+            await safe_edit(query, f"⛽ *以太坊Gas*: {gwei:.2f} gwei",
                 reply_markup=back_to("cat_tools"), parse_mode="Markdown")
         except Exception:
-            await query.edit_message_text("获取失败", reply_markup=back_to("cat_tools"))
+            await safe_edit(query, "获取失败", reply_markup=back_to("cat_tools"))
 
     elif d == "do_whale":
-        await query.edit_message_text("🐋 扫描最新区块...")
+        await safe_edit(query, "🐋 扫描最新区块...")
         from handlers.whale import build_whale_text
         try:
             text = await build_whale_text(100)
             await safe_edit(query, text, reply_markup=back_to("cat_tools"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"巨鲸出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_tools"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_tools"))
 
     elif d == "sub_arb":
-        await query.edit_message_text("💱 *多交易所比价* - 点币种：",
+        await safe_edit(query, "💱 *多交易所比价* - 点币种：",
             reply_markup=coin_grid("doarb", "cat_tools"), parse_mode="Markdown")
 
     elif d.startswith("doarb:"):
         symbol = d.split(":")[1]
-        await query.edit_message_text(f"💱 查询 {symbol} 各所价格...")
+        await safe_edit(query, f"💱 查询 {symbol} 各所价格...")
         from handlers.arbitrage import build_arb_text
         try:
             text = await build_arb_text(symbol)
             await safe_edit(query, text, reply_markup=back_to("sub_arb"), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"比价出错: {e}")
-            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("sub_arb"))
+            await safe_edit(query, f"查询失败：{str(e)[:80]}", reply_markup=back_to("sub_arb"))
 
     # ============ 持仓 ============
     elif d == "cat_holding":
-        await query.edit_message_text(
+        await safe_edit(query, 
             "💼 *我的持仓* (🔒私聊使用)\n\n"
             "`/buy BTC 0.5 60000` 买入\n"
             "`/sell BTC 0.3` 卖出\n"
@@ -1581,7 +1603,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🔴 实盘交易(Bybit)", callback_data="cat_rtrade")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text(
+        await safe_edit(query, 
             "🎮 *虚拟合约交易*（模拟盘，用真实行情练手，不碰真钱 🔒私聊）\n\n"
             "用命令下单：\n"
             "`/vopen BTC long 1000 10` 开多（1000U 保证金 10x）\n"
@@ -1599,7 +1621,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render_vpos(query)
         except Exception as e:
             logging.error(f"虚拟持仓刷新出错: {e}")
-            await query.edit_message_text(f"刷新失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_vtrade"))
+            await safe_edit(query, f"刷新失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_vtrade"))
 
     elif d == "vhist_show":
         from handlers.vtrade import render_vhist
@@ -1607,7 +1629,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await render_vhist(query)
         except Exception as e:
             logging.error(f"虚拟历史出错: {e}")
-            await query.edit_message_text(f"查询失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_vtrade"))
+            await safe_edit(query, f"查询失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_vtrade"))
 
     # ---- 实盘交易说明卡（仅文字，下单须手打命令+确认，防误触）----
     elif d == "cat_rtrade":
@@ -1620,7 +1642,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("🌅 AI 盘前简报", callback_data="brnow")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await query.edit_message_text(
+        await safe_edit(query, 
             "🔴 *Bybit 实盘交易*（管理员·私聊·真金白银）\n"
             f"{env}\n\n"
             "💡 记不住命令就点【🎛 交易台】，开仓/平仓/改止损/预警全是按钮。\n\n"
@@ -1644,14 +1666,14 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d == "ask_start":
         if query.message.chat.type in ("group", "supergroup"):
             # 群里直接 @我 / 回复我就能连续对话，不需要会话开关
-            await query.edit_message_text(
+            await safe_edit(query, 
                 "💬 *AI 助手*\n\n群里直接 **@我** 或 **回复我的消息** 就能连续对话，"
                 "能查实时币价/资金费/涨跌榜/情绪来答。\n例：`@我 BTC 做空挂单区间给我拆一下`",
                 reply_markup=back_kb(), parse_mode="Markdown")
         else:
             context.user_data["ai_session"] = True
             kb = InlineKeyboardMarkup([[InlineKeyboardButton("🚪 退出 AI 问答", callback_data="ask_stop")]])
-            await query.edit_message_text(
+            await safe_edit(query, 
                 "💬 *已进入 AI 问答*（连续对话）\n\n直接发问题，可以一直追问，我记得上下文。"
                 "需要实时数据我会自己查（币价/合约资金费/涨跌榜/情绪）。\n\n"
                 "例：`做空 BTC 挂单区间给我拆一下`　`那如果改15分钟短线呢`\n\n"
@@ -1660,7 +1682,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif d == "ask_stop":
         context.user_data.pop("ai_session", None)
-        await query.edit_message_text("已退出 AI 问答。发 /menu 打开菜单。", reply_markup=back_kb())
+        await safe_edit(query, "已退出 AI 问答。发 /menu 打开菜单。", reply_markup=back_kb())
 
     # ---- 交易台 / 引导式开仓 / 一键持仓操作 ----
     elif d == "tpanel":
@@ -1776,7 +1798,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await confirm_open(query, context)
         except Exception as e:
             logging.error(f"实盘确认下单出错: {e}")
-            await query.edit_message_text(f"❌ 下单异常：{e}")
+            await safe_edit(query, f"❌ 下单异常：{e}")
     elif d == "rocancel":
         from handlers.rtrade import cancel_open
         await cancel_open(query, context)
@@ -1784,7 +1806,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ============ 帮助 ============
     elif d == "cat_help":
         from config import VERSION as _V
-        await query.edit_message_text(
+        await safe_edit(query, 
             "❓ *使用帮助*\n\n"
             "📊 行情 - 几百种币实时价格\n"
             "📈 分析 - 技术指标+AI解读\n"

@@ -250,7 +250,7 @@ def test_guided_prompt_mentions_exchange():
     """点按钮进来的那条提示里要写明能选交易所，否则等于没做。"""
     import inspect
     from handlers import menu
-    src = inspect.getsource(menu.button_handler)
+    src = inspect.getsource(menu._dispatch)
     start = src.index('elif d == "watchpct_start"')
     block = src[start:start + 1400]
     assert "交易所" in block

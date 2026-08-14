@@ -24,7 +24,7 @@ def _routes():
     button_handler 是一条大 if/elif 链，只有三种形态：
     `d == "x"` / `d.startswith("x")` / `d in CATS`。
     """
-    src = inspect.getsource(menu.button_handler)
+    src = inspect.getsource(menu._dispatch)
     # 左边必须卡死是变量 d 本身：不加边界的话 `uid in vals` 里的 "d in v" 也会中招
     b = r'(?<![\w.])d'
     exact = set(re.findall(b + r' == "([^"]+)"', src))

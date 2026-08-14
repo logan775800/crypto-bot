@@ -205,4 +205,4 @@ def test_panel_is_routed_by_the_menu():
     """有按钮没接线 = 点了没反应，v1.14.0 刚栽过一次。"""
     import inspect
     from handlers import menu
-    assert 'startswith("src:")' in inspect.getsource(menu.button_handler)
+    assert 'startswith("src:")' in inspect.getsource(menu._dispatch)

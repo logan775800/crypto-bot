@@ -73,6 +73,8 @@ def apply_defaults(d=None):
     d.setdefault("event_state", {})       # 各币上一轮状态快照（判"切换"的基线）
     d.setdefault("event_cooldown", {})    # 事件推送冷却 {币:事件 -> ts}
     d.setdefault("contract_min_tier", {})  # 合约告警每群最低档 {chat_id: 20/30/50/100}
+    d.setdefault("regime_subs", [])         # 订阅 BTC 市场环境变化提醒的 chat_id
+    d.setdefault("btc_regime", {})          # BTC 环境状态机 {state,pending,pending_n,changed_ts}
     d.setdefault("announced_version", "")   # 已经向订阅会话播报过更新的版本（防每次重启都刷屏）
     return d
 
@@ -149,7 +151,8 @@ def prune_data(now=None):
 # 必须看同一份清单：以前只有 migrate_chat 知道，再写一个就会漏掉后加的订阅类型，
 # 而漏掉的表现是「某个群搬完家收不到推送」或「更新播报少一个群」，都很难查。
 _ID_LISTS = ("broadcast_chats", "market_watch", "news_subs", "unlock_subs",
-             "summary_subs", "analysis_subs", "contract_watch", "weekly_subs")
+             "summary_subs", "analysis_subs", "contract_watch", "weekly_subs",
+             "regime_subs")
 _DICT_LISTS = ("watchpct", "alerts", "ti_alerts", "cond_alerts", "plans")
 _ID_KEYED = ("gas_subs", "arb_subs", "whale_addr", "whale_min", "fex_subs",
              "pump_watch", "event_subs", "contract_min_tier")

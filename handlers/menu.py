@@ -89,6 +89,9 @@ def followup_kb(symbol=None, back=None):
          InlineKeyboardButton("🔔 设预警", callback_data=f"fu:alert:{s}")],
         [InlineKeyboardButton("🎮 模拟开仓", callback_data=f"fu:vopen:{s}"),
          InlineKeyboardButton("🩺 数据体检", callback_data=f"fu:check:{s}")],
+        # 闭环的最后一环：前面几步都在"算"，真要下单还得自己去翻 /trade。
+        # 少这一个按钮，分析和实盘之间就还隔着一次手工搬运。
+        [InlineKeyboardButton("🎛 进交易台", callback_data="tpanel")],
     ]
     rows.append([InlineKeyboardButton("⬅️ 返回", callback_data=back or "menu_main")])
     return InlineKeyboardMarkup(rows)
@@ -508,6 +511,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(
             tip.format(s=s) + "\n\n_直接发消息即可，发 /menu 取消_",
             parse_mode="Markdown")
+
+    elif d.startswith("ctx:"):
+        from handlers import chat as _chat
+        await _chat.on_ctx_button(query, context)
 
     # ---- 无参数功能：点了直接跑 ----
     elif d.startswith("do:"):

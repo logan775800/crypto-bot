@@ -65,24 +65,68 @@ def _is_ai_msg(context, message_id):
         return False
 
 
+def _ctx_kb(context):
+    """带着上下文时给两个出口：换币种、清掉。
+
+    上下文是把双刃剑 —— 它让「那空单呢」这种省略句能接上，但一旦聊到别的币，
+    它又会把旧币种带进来。用户看不见上下文，也就不知道要用 /resetchat，
+    只会觉得「机器人答非所问」。把它变成两个看得见的按钮。
+    """
+    if context is None:
+        return None
+    try:
+        sym = (context.chat_data.get("trade_ctx") or {}).get("symbol")
+    except Exception:
+        return None
+    if not sym:
+        return None
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    short = str(sym).upper().replace("USDT", "")
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"🔄 换币种（当前 {short}）", callback_data="ctx:switch"),
+        InlineKeyboardButton("🧹 清除上下文", callback_data="ctx:clear"),
+    ]])
+
+
 async def _send(msg, text, context=None):
     """发 AI 回复：不引用原消息(直接发群里)，markdown 渲染失败则降级为去标记纯文本。
 
-    传了 context 才登记为「AI 的话」。brief/rstats 等复用本函数的地方是命令输出或
-    主动播报，不该让人回复它们就唤醒 AI，所以它们不传。
+    传了 context 才登记为「AI 的话」、才挂上下文按钮。brief/rstats 等复用本函数的
+    地方是命令输出或主动播报，不该让人回复它们就唤醒 AI，所以它们不传。
     """
+    kb = _ctx_kb(context)
     try:
-        sent = await msg.reply_text(_md_to_tg(text), parse_mode="Markdown", do_quote=False)
+        sent = await msg.reply_text(_md_to_tg(text), parse_mode="Markdown",
+                                    do_quote=False, reply_markup=kb)
         _remember_ai_msg(context, sent)
         return sent
     except Exception as e:
         log.warning(f"AI回复Markdown渲染失败，降级纯文本: {e}")
         try:
-            sent = await msg.reply_text(_strip_md(text), do_quote=False)
+            sent = await msg.reply_text(_strip_md(text), do_quote=False, reply_markup=kb)
             _remember_ai_msg(context, sent)
             return sent
         except Exception as e2:
             log.error(f"AI回复发送失败: {e2}")
+
+
+async def on_ctx_button(query, context):
+    """处理 ctx:* 回调。由 menu.button_handler 转发。"""
+    what = query.data.split(":", 1)[1]
+    if what == "clear":
+        context.chat_data.pop("chat_hist", None)
+        had = context.chat_data.pop("trade_ctx", None)
+        sym = (had or {}).get("symbol") or ""
+        await query.answer("已清除")
+        await query.message.reply_text(
+            f"🧹 已清空对话记忆与交易上下文{f'（原来在聊 {sym}）' if sym else ''}，重新开始。")
+        return
+    # 换币种：只丢币种，留着对话记忆——他多半还在聊同一个话题，只是换个标的
+    c = context.chat_data.get("trade_ctx") or {}
+    c.pop("symbol", None)
+    context.chat_data["trade_ctx"] = c
+    await query.answer("说个新币名就行")
+    await query.message.reply_text("🔄 已忘掉当前币种。直接说新的币名（或连问题一起发）即可。")
 
 MAX_TURNS = 10        # 保留最近 10 轮（20 条）上下文
 AI_DAILY_LIMIT = 40   # 每人每日 AI 调用上限（管理员不限），防群里刷爆中转站额度

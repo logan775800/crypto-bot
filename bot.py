@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -128,6 +128,7 @@ BOT_COMMANDS = [
     BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
     BotCommand("source", "📡 默认数据源(用哪家交易所的价)"),
     BotCommand("changelog", "📋 这一版更新了什么"),
+    BotCommand("btcregime", "🧭 BTC市场环境(变化时提醒)"),
     BotCommand("watchpct", "👁 持续波动监控(指定币±%)"),
     BotCommand("watchpcts", "👁 我的波动监控列表"),
     BotCommand("checklist", "📋 合约交易检查清单"),
@@ -505,6 +506,7 @@ def main():
     app.add_handler(CommandHandler("source", source.source_cmd))
     # 更新日志：这一版改了什么（启动播报也会带上当前版本这段）
     app.add_handler(CommandHandler("changelog", changelog.changelog_cmd))
+    app.add_handler(CommandHandler("btcregime", regime.btcregime))
     app.add_handler(CommandHandler("checklist", checklist.checklist))
     app.add_handler(CommandHandler("upstreak", streak.upstreak))
     app.add_handler(CommandHandler("downstreak", streak.downstreak))
@@ -617,6 +619,7 @@ def main():
     jq.run_repeating(unlock.check_unlocks, interval=86400, first=180)  # 解锁检查，每天
     jq.run_repeating(backup.auto_backup, interval=86400, first=60)  # 每天自动备份
     jq.run_repeating(prune_job, interval=86400, first=300)  # 每天清理 data.json 冗余(冷却/去重/历史封顶)
+    jq.run_repeating(regime.check_regime, interval=regime.CHECK_EVERY, first=150)  # BTC市场环境(4h均线排列)变化
     jq.run_repeating(monitor.health_check, interval=300, first=120)  # 数据源健康检查，每5分钟
     jq.run_repeating(portfolio.check_holding_moves, interval=900, first=90)  # 持仓异动检查，每15分钟
     jq.run_repeating(market.check_gas_alerts, interval=300, first=100)  # Gas阈值提醒，每5分钟

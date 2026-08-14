@@ -555,7 +555,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"📦 版本　`{tag}`\n"
                 f"⚠️ 原因　{escape_md(str(msg))}\n"
                 f"━━━━━━━━━━━━━━\n"
-                f"修好后点下方重试",
+                # 说清楚"没开始"和"跑挂了"的区别：这一步是按钮没按下去，
+                # 服务器上的代码和容器都没动，线上还是老版本，重试是安全的
+                f"这一步只是**没触发成功**——服务器代码没动，线上仍是旧版本。\n"
+                f"重试是安全的，点下方按钮即可",
                 reply_markup=kb, parse_mode="Markdown")
 
     # ---- 查其他币（按来源决定后续动作）----

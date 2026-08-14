@@ -160,9 +160,14 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not cand or " " in cand or len(cand) > 12:
             await update.message.reply_text("请发送单个币名，例如 pepe（取消发 /menu）")
             return
-        if cand not in COIN_IDS:
+        # 以前这里卡 COIN_IDS 主流币白名单，AKE、TUT 这类小币直接被挡在门外——
+        # 而它们才是最需要盯的。现在改成「哪家交易所有就能设」，用取价来验。
+        from handlers import source as _src
+        _p, _used = await _src.price_for(update.effective_chat.id, cand)
+        if _p is None:
             await update.message.reply_text(
-                f"暂不支持给 {cand} 设预警（仅支持市值较前的币）。换一个，或发 /menu 取消")
+                f"各家交易所都查不到 {cand} 的价格，设了也不会触发。\n"
+                f"换个币名（用交易所里的基名），或发 /menu 取消")
             return
         context.user_data.pop("await_alert_coin", None)
         from handlers.menu import alert_direction_kb
@@ -179,18 +184,19 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except ValueError:
             await update.message.reply_text("请发送数字价格，例如 65000（取消发 /menu）")
             return
-        from storage import data as _ad, save_data as _as
-        _ad["alerts"].append({
-            "type": "fixed", "chat_id": update.effective_chat.id,
-            "symbol": pending["symbol"], "target": target,
+        from handlers import alert as _alert
+        chat_id = update.effective_chat.id
+        idx = _alert.add_alert(chat_id, {
+            "type": "fixed", "symbol": pending["symbol"], "target": target,
             "direction": pending["direction"],
             "set_by": update.effective_user.first_name,
         })
-        _as()
         context.user_data.pop("await_alert", None)
         arrow = "涨破" if pending["direction"] == "above" else "跌破"
         await update.message.reply_text(
-            f"✅ 预警已设置：{pending['symbol']} {arrow} ${target:,.2f}\n到价会自动提醒你。"
+            f"✅ 预警已设置：{pending['symbol']} {arrow} ${target:,.6g}\n"
+            f"到价会自动提醒你。数据源 {_alert.src_desc({'src': _alert.default_label(chat_id)})}",
+            reply_markup=_alert.src_kb(chat_id, idx)
         )
         return
 

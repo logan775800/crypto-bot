@@ -445,6 +445,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import events as _events
         await _events.on_button(query, context)
 
+    # ---- 数据源选择（默认 / 单条预警 / 单个监控 共用同一个面板）----
+    elif d.startswith("src:"):
+        from handlers import source as _source
+        await _source.on_button(query, context)
+
     # ---- 缓步增长面板（切窗口天数 / 仅加密↔含股票商品）----
     elif d.startswith("stdy:"):
         from handlers import steady
@@ -755,11 +760,16 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("🎯 条件提醒(价格+指标组合)", callback_data="cond_help")])
         rows.append([InlineKeyboardButton("📋 我的价格预警", callback_data="my_alerts"),
                      InlineKeyboardButton("👁 我的波动监控", callback_data="my_watchpct")])
+        rows.append([InlineKeyboardButton("📡 默认数据源（用哪家交易所的价）",
+                                          callback_data="src:panel:def")])
         rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")])
+        from handlers import source as _source
+        _ex, _mk = _source.get_pref(query.message.chat_id if query.message else 0)
         await query.edit_message_text(
             "🔔 *价格预警 / 波动监控*\n\n"
             "• 选币设**涨破/跌破**或**±5%**提醒(一次性)👇\n"
-            "• 或点【👁 持续波动监控】盯指定币，涨跌超阈值**反复**提醒(支持小盘/合约币)",
+            "• 或点【👁 持续波动监控】盯指定币，涨跌超阈值**反复**提醒(支持小盘/合约币)\n"
+            f"• 当前数据源：*{_source.describe(_ex, _mk)}*（每条设完还能单独改）",
             reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
 
     # 查看我的预警列表（每条带删除按钮）
@@ -801,21 +811,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("alertpctset:"):
         symbol = d.split(":")[1]
         await query.edit_message_text(f"⚡ 设置 {symbol} ±5% 提醒中...")
-        from storage import data as _ad, save_data as _as
+        from handlers import alert as _alert, source as _src
         try:
-            r = await get_price(symbol)
-            if not r:
+            chat_id = query.message.chat_id
+            base, used = await _src.price_for(chat_id, symbol)
+            if base is None:
                 await query.edit_message_text("获取当前价失败，稍后再试", reply_markup=back_to("cat_alert"))
             else:
-                _ad["alerts"].append({
-                    "type": "pct", "chat_id": query.message.chat_id,
-                    "symbol": symbol, "pct": 5, "base_price": r["price"],
+                idx = _alert.add_alert(chat_id, {
+                    "type": "pct", "symbol": symbol, "pct": 5, "base_price": base,
                     "set_by": query.from_user.first_name,
                 })
-                _as()
                 await query.edit_message_text(
-                    f"✅ 已设置 *{symbol}* 涨跌超 ±5% 提醒\n基准价 ${r['price']:,.2f}",
-                    reply_markup=back_to("cat_alert"), parse_mode="Markdown")
+                    f"✅ 已设置 *{symbol}* 涨跌超 ±5% 提醒\n"
+                    f"基准价 ${base:,.6g}　数据源 {used}",
+                    reply_markup=_alert.src_kb(chat_id, idx), parse_mode="Markdown")
         except Exception as e:
             logging.error(f"一键百分比预警出错: {e}")
             await query.edit_message_text(f"设置失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_alert"))

@@ -12,15 +12,11 @@
 """
 import time
 import logging
-import httpx
 from telegram import Update
 from telegram.ext import ContextTypes
 from storage import data, save_data
 
-OKX = "https://www.okx.com"
-BN = "https://api.binance.com"
-FAPI = "https://fapi.binance.com"        # 币安 USDT 本位永续合约
-BYBIT = "https://api.bybit.com"
+# 各所的取价端点已收进 handlers.source，这里不再自己维护一份
 
 COOLDOWN = 60           # 同一币两次提醒最短间隔秒，防急涨急跌时刷屏（配合重设基准）
 MAX_PER_CHAT = 30       # 每个会话最多盯多少个币
@@ -49,6 +45,20 @@ def parse_market(tok):
     return MARKET_ALIASES.get((tok or "").strip().lower(), "auto")
 
 
+EXCHANGE_ALIASES = {
+    "okx": "okx", "欧易": "okx", "ok": "okx",
+    "binance": "binance", "币安": "binance", "bn": "binance", "bnb": "binance",
+    "bybit": "bybit", "by": "bybit", "b": "bybit",
+    "gate": "gate", "gateio": "gate", "芝麻": "gate", "芝麻开门": "gate",
+    "auto": "auto", "自动": "auto",
+}
+
+
+def parse_exchange(tok):
+    """把交易所参数解析成 okx/binance/bybit/gate/auto；认不出返回 None。"""
+    return EXCHANGE_ALIASES.get((tok or "").strip().lower())
+
+
 def norm_symbol(sym):
     """规范化币名：用户可能粘贴完整交易对(TUSDT/BTCUSDT)，去掉结尾 USDT 取基名。"""
     s = (sym or "").upper().strip()
@@ -57,60 +67,50 @@ def norm_symbol(sym):
     return s
 
 
-async def _fetch(c, symbol, source):
-    """从指定来源取一次价，返回 (price, source) 或 None。"""
-    s = symbol.upper()
-    try:
-        if source in ("OKX", "OKX永续"):
-            inst = f"{s}-USDT-SWAP" if source == "OKX永续" else f"{s}-USDT"
-            r = await c.get(f"{OKX}/api/v5/market/ticker", params={"instId": inst})
-            d = r.json()
-            if d.get("code") == "0" and d.get("data"):
-                return float(d["data"][0]["last"]), source
-        elif source == "Binance":
-            r = await c.get(f"{BN}/api/v3/ticker/price", params={"symbol": f"{s}USDT"})
-            if r.status_code == 200 and "price" in r.json():
-                return float(r.json()["price"]), source
-        elif source == "Binance永续":
-            r = await c.get(f"{FAPI}/fapi/v1/ticker/price", params={"symbol": f"{s}USDT"})
-            if r.status_code == 200 and "price" in r.json():
-                return float(r.json()["price"]), source
-        elif source in ("Bybit", "Bybit永续"):
-            cat = "linear" if source == "Bybit永续" else "spot"
-            r = await c.get(f"{BYBIT}/v5/market/tickers",
-                            params={"category": cat, "symbol": f"{s}USDT"})
-            d = r.json()
-            lst = d.get("result", {}).get("list") or []
-            if d.get("retCode") == 0 and lst:
-                return float(lst[0]["lastPrice"]), source
-    except Exception:
-        pass
-    return None
+async def resolve_price(symbol, market="auto", exchange="auto"):
+    """取价，返回 (price, source) 或 (None, None)。
 
-
-# 各模式下的取价优先级（第一个取到就用）
-CHAINS = {
-    "swap": ["OKX永续", "Bybit永续", "Binance永续"],
-    "spot": ["OKX", "Binance", "Bybit"],
-    "auto": ["OKX", "OKX永续", "Binance", "Bybit", "Bybit永续"],
-}
-
-
-async def resolve_price(symbol, market="auto"):
-    """多所取价，兼容小盘/合约币。market: auto/spot/swap。返回 (price, source) 或 (None, None)。"""
-    async with httpx.AsyncClient(timeout=8) as c:
-        for src in CHAINS.get(market, CHAINS["auto"]):
-            res = await _fetch(c, symbol, src)
-            if res:
-                return res
-    return None, None
+    取价逻辑已收进 handlers.source 统一层（原来这里自己维护一条 OKX→币安→Bybit
+    的链，和价格预警、虚拟合约各走各的，同一个币在不同功能里价格能对不上）。
+    exchange 显式指定时只查那一家——查不到就如实说没有，不偷偷换一家，
+    否则用户以为在盯 Gate 的价、实际盯的是 Bybit 的。
+    """
+    from handlers import source as src_mod
+    return await src_mod.price(symbol, exchange, market)
 
 
 async def fetch_pinned(symbol, source):
-    """从固定来源取价（波动监控轮询用，保证与基准同一交易所）。返回 price 或 None。"""
-    async with httpx.AsyncClient(timeout=8) as c:
-        res = await _fetch(c, symbol, source)
-    return res[0] if res else None
+    """从固定来源取价（轮询用，保证与基准同一交易所）。返回 price 或 None。"""
+    from handlers import source as src_mod
+    return await src_mod.price_at(symbol, source)
+
+
+async def repoint(chat_id, symbol, label):
+    """把某个监控换到指定数据源，并按新源重设基准。
+
+    基准必须一起换：换源那一刻价格是阶跃的（现货↔永续的基差尤其明显），
+    沿用旧基准等于把这个阶跃当成行情，立刻误报一次。
+    """
+    symbol = norm_symbol(symbol)
+    mine = [w for w in data.get("watchpct", [])
+            if w["chat_id"] == chat_id and w["symbol"] == symbol]
+    if not mine:
+        return False, f"没找到 {symbol} 的波动监控（可能已经取消了）"
+    from handlers import source as src_mod
+    price = await src_mod.price_at(symbol, label) if label else None
+    if label and price is None:
+        return False, (f"⚠️ *{label}* 上查不到 {symbol}，没有切换。\n"
+                       f"小币常常只有某几家有，换一家试试。")
+    if not label:                       # 选了「自动」
+        price, label = await src_mod.price(symbol)
+        if price is None:
+            return False, f"⚠️ 各家都查不到 {symbol}，没有切换。"
+    for w in mine:
+        w["src"], w["base"], w["last_ts"] = label, price, 0
+    save_data()
+    realtime = "⚡ 秒级实时(WebSocket)" if label in ("OKX永续", "Bybit永续") else "约1分钟轮询"
+    return True, (f"✅ *{symbol}* 的监控已改用 *{label}*\n"
+                  f"新基准 ${fmt(price)}　触发方式：{realtime}")
 
 
 def on_tick(source, sym, price):
@@ -142,16 +142,27 @@ def on_tick(source, sym, price):
 
 
 # ---------- 设置逻辑（命令与菜单共用）----------
-async def add_watch(chat_id, symbol, pct, set_by, market="auto"):
-    """新增/更新一个持续波动监控。market: auto/spot/swap。返回 (成功, Markdown文本)。"""
+async def add_watch(chat_id, symbol, pct, set_by, market="auto", exchange=None):
+    """新增/更新一个持续波动监控。market: auto/spot/swap。返回 (成功, Markdown文本)。
+
+    exchange 不传时用会话默认数据源（/source 设的），传了就只认这一家。
+    """
+    from handlers import source as src_mod
     symbol = norm_symbol(symbol)
     if pct <= 0:
         return False, "百分比要大于 0"
-    price, src = await resolve_price(symbol, market)
+    if exchange is None:
+        exchange, pref_market = src_mod.get_pref(chat_id)
+        if market == "auto":            # 命令里没写「合约/现货」才用默认里的
+            market = pref_market
+    price, src = await resolve_price(symbol, market, exchange)
     if price is None:
         kind = "合约" if market == "swap" else ("现货" if market == "spot" else "")
-        return False, (f"没查到 {symbol} 的{kind}价格。"
+        where = f"{src_mod.EX_CN.get(exchange, exchange)}上" if exchange != "auto" else ""
+        return False, (f"没查到 {where}{symbol} 的{kind}价格。"
                        + ("该币可能没有对应永续合约。" if market == "swap" else "")
+                       + ("换一家试试（小币常常只有 Gate 或 Bybit 有），或"
+                          if exchange != "auto" else "")
                        + "用交易所里的交易对基名试试（如 KORU、RAM、DOGE）")
 
     lst = data.setdefault("watchpct", [])
@@ -175,14 +186,23 @@ async def add_watch(chat_id, symbol, pct, set_by, market="auto"):
         f"触发方式：{realtime}，报警后自动以新价为基准继续盯（{COOLDOWN//60}分钟冷却）。")
 
 
+def src_kb(symbol):
+    """监控确认卡下面的「换数据源」按钮（只改这一个币）。"""
+    from telegram import InlineKeyboardMarkup
+    from handlers import source as src_mod
+    return InlineKeyboardMarkup([[src_mod.change_btn(f"wp|{norm_symbol(symbol)}")]])
+
+
 # ---------- 命令 ----------
 async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
     if len(args) < 2:
         await update.message.reply_text(
-            "用法：/watchpct 币 百分比 [合约]\n"
-            "例：/watchpct DOGE 5      （现货优先，报后以新价继续盯）\n"
-            "例：/watchpct BTC 3 合约  （强制盯永续合约价）\n"
+            "用法：/watchpct 币 百分比 [合约] [交易所]\n"
+            "例：/watchpct DOGE 5        （用你的默认数据源，/source 可改）\n"
+            "例：/watchpct BTC 3 合约    （强制盯永续合约价）\n"
+            "例：/watchpct AKE 2 合约 gate（只盯 Gate 的永续）\n"
+            "交易所可写 okx / 币安 / bybit / gate。\n"
             "支持小盘/合约币（如 KORU、RAM）。取消：/unwatchpct 币")
         return
     symbol = norm_symbol(args[0])
@@ -191,11 +211,20 @@ async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         await update.message.reply_text("百分比要是数字，例：/watchpct DOGE 5")
         return
-    market = parse_market(args[2]) if len(args) > 2 else "auto"
+    # 第三、四个参数不分先后：「合约 gate」和「gate 合约」都认
+    market, exchange = "auto", None
+    for tok in args[2:4]:
+        m = parse_market(tok)
+        e = parse_exchange(tok)
+        if m != "auto":
+            market = m
+        elif e:
+            exchange = e
     ok, msg = await add_watch(update.effective_chat.id, symbol, pct,
-                              update.effective_user.first_name, market)
+                              update.effective_user.first_name, market, exchange)
     tail = f"\n查看 /watchpcts　取消 /unwatchpct {symbol}" if ok else ""
-    await update.message.reply_text(msg + tail, parse_mode="Markdown")
+    await update.message.reply_text(msg + tail, parse_mode="Markdown",
+                                    reply_markup=src_kb(symbol) if ok else None)
 
 
 async def unwatchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):

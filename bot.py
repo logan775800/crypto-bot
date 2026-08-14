@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -126,6 +126,7 @@ BOT_COMMANDS = [
     BotCommand("arbwatch", "💱 套利监控告警"),
     BotCommand("alert", "🔔 价格预警"),
     BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
+    BotCommand("source", "📡 默认数据源(用哪家交易所的价)"),
     BotCommand("watchpct", "👁 持续波动监控(指定币±%)"),
     BotCommand("watchpcts", "👁 我的波动监控列表"),
     BotCommand("checklist", "📋 合约交易检查清单"),
@@ -499,6 +500,8 @@ def main():
     app.add_handler(CommandHandler("watchpct", watchpct.watchpct))
     app.add_handler(CommandHandler("watchpcts", watchpct.watchpcts))
     app.add_handler(CommandHandler("unwatchpct", watchpct.unwatchpct))
+    # 默认数据源：所有按币取价的功能（预警/监控/持仓估值/虚拟盘）都跟着它走
+    app.add_handler(CommandHandler("source", source.source_cmd))
     app.add_handler(CommandHandler("checklist", checklist.checklist))
     app.add_handler(CommandHandler("upstreak", streak.upstreak))
     app.add_handler(CommandHandler("downstreak", streak.downstreak))

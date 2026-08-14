@@ -2,6 +2,33 @@ import logging
 from telegram import Update
 from telegram.ext import ContextTypes
 from api import get_prices_usd as get_prices
+
+
+async def _prices_for(chat_id, symbols):
+    """持仓估值取价：尊重 /source 设的默认数据源。
+
+    默认（自动）时仍以 CoinGecko 为主——它给的是跨所加权价，更适合当估值口径，
+    而且带 24h 涨跌幅；缺的币再用交易所补上。
+    一旦用户显式指定了交易所，就以那家的价为准：他在交易所看到的是那个数，
+    估值再用第三方价，对不上就会怀疑账算错了。
+    """
+    from handlers import source as src_mod
+    syms = list(symbols)
+    try:
+        out = await get_prices(syms)
+    except Exception as e:
+        logging.warning(f"持仓估值 CoinGecko 取价失败，改用交易所: {e}")
+        out = {}
+    ex, market = src_mod.get_pref(chat_id)
+    explicit = not (ex == src_mod.AUTO and market == src_mod.AUTO)
+    need = syms if explicit else [s for s in syms if s not in out]
+    if not need:
+        return out
+    got = await src_mod.prices_at(need, src_mod.label_of(ex, market))
+    for s, p in got.items():
+        cur = out.setdefault(s, {"usd": p, "change": 0.0})
+        cur["usd"] = p
+    return out
 from config import COIN_IDS
 from storage import data, save_data
 
@@ -41,7 +68,7 @@ async def portfolio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("你还没有持仓。用 /add BTC 0.5 60000 记录")
         return
     try:
-        prices = await get_prices(list(holdings.keys()))
+        prices = await _prices_for(update.effective_chat.id, list(holdings.keys()))
     except Exception as e:
         logging.error(f"组合查价出错: {e}")
         await update.message.reply_text(f"查询失败：{str(e)[:80]}")
@@ -200,7 +227,7 @@ async def ranking(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("你还没有持仓")
         return
     try:
-        prices = await get_prices(list(holdings.keys()))
+        prices = await _prices_for(update.effective_chat.id, list(holdings.keys()))
     except Exception as e:
         logging.error(f"排行查价出错: {e}")
         await update.message.reply_text(f"查询失败：{str(e)[:80]}")

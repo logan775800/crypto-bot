@@ -222,6 +222,49 @@ def test_watch_repoint_refuses_a_source_without_the_coin(market):
     assert storage.data["watchpct"][0]["src"] == "OKX", "失败了就不该动原来的监控"
 
 
+# ── 命令和引导流程必须走同一套解析 ───────────────────────────────
+# v1.16.0 只给 /watchpct 命令加了选交易所，菜单点进去的引导流程漏了，
+# 而 Logan 平时就是点按钮进来的——他看到的还是老样子。
+@pytest.mark.parametrize("tokens,want", [
+    ([], ("auto", None)),
+    (["合约"], ("swap", None)),
+    (["gate"], ("auto", "gate")),
+    (["合约", "gate"], ("swap", "gate")),
+    (["gate", "合约"], ("swap", "gate")),      # 不分先后
+    (["现货", "币安"], ("spot", "binance")),
+    (["垃圾话"], ("auto", None)),
+])
+def test_tokens_parse_the_same_both_ways(tokens, want):
+    assert W.parse_tokens(tokens) == want
+
+
+def test_guided_flow_uses_the_shared_parser():
+    """引导流程和命令都必须调 parse_tokens，否则又会只改一处。"""
+    import inspect
+    from handlers import quickprice
+    assert "parse_tokens" in inspect.getsource(quickprice.quick_price)
+    assert "parse_tokens" in inspect.getsource(W.watchpct)
+
+
+def test_guided_prompt_mentions_exchange():
+    """点按钮进来的那条提示里要写明能选交易所，否则等于没做。"""
+    import inspect
+    from handlers import menu
+    src = inspect.getsource(menu.button_handler)
+    start = src.index('elif d == "watchpct_start"')
+    block = src[start:start + 1400]
+    assert "交易所" in block
+    assert "src:panel:def" in block, "面板上要有改数据源的按钮"
+
+
+def test_existing_watches_can_be_repointed_from_the_list():
+    """已经在盯的币也要能换源，不能只有新建时能选。"""
+    import inspect
+    from handlers import menu
+    assert "change_btn" in inspect.getsource(menu.render_my_watchpct)
+    assert "change_btn" in inspect.getsource(menu.render_my_alerts)
+
+
 # ── 小币不再被主流币白名单挡住 ───────────────────────────────────
 def test_small_caps_can_have_alerts_now(market):
     """AKE、TUT 这类以前直接被 COIN_IDS 白名单拒了——而它们才是最需要盯的。"""

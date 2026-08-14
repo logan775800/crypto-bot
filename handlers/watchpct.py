@@ -59,6 +59,24 @@ def parse_exchange(tok):
     return EXCHANGE_ALIASES.get((tok or "").strip().lower())
 
 
+def parse_tokens(tokens):
+    """把「合约」「gate」这类尾巴解析成 (market, exchange)，不分先后。
+
+    命令 /watchpct 和菜单引导流程共用——分成两份写，改一处必漏另一处
+    （引导流程就漏过一次：命令支持选交易所了，点按钮进来的那条还不支持）。
+    """
+    market, exchange = "auto", None
+    for tok in tokens:
+        m = parse_market(tok)
+        if m != "auto":
+            market = m
+            continue
+        e = parse_exchange(tok)
+        if e:
+            exchange = e
+    return market, exchange
+
+
 def norm_symbol(sym):
     """规范化币名：用户可能粘贴完整交易对(TUSDT/BTCUSDT)，去掉结尾 USDT 取基名。"""
     s = (sym or "").upper().strip()
@@ -212,14 +230,7 @@ async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("百分比要是数字，例：/watchpct DOGE 5")
         return
     # 第三、四个参数不分先后：「合约 gate」和「gate 合约」都认
-    market, exchange = "auto", None
-    for tok in args[2:4]:
-        m = parse_market(tok)
-        e = parse_exchange(tok)
-        if m != "auto":
-            market = m
-        elif e:
-            exchange = e
+    market, exchange = parse_tokens(args[2:4])
     ok, msg = await add_watch(update.effective_chat.id, symbol, pct,
                               update.effective_user.first_name, market, exchange)
     tail = f"\n查看 /watchpcts　取消 /unwatchpct {symbol}" if ok else ""

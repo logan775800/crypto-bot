@@ -315,11 +315,15 @@ async def render_my_alerts(query):
             "📋 *我的价格预警*\n\n你还没有设置任何预警。\n返回上一步选币即可添加👇",
             reply_markup=back_to("cat_alert"), parse_mode="Markdown")
         return
-    lines = ["📋 *我的价格预警*\n点下方 ❌ 取消对应预警：\n"]
+    lines = ["📋 *我的价格预警*\n每条都能单独换数据源：\n"]
     rows = []
+    from handlers.source import change_btn
     for n, (gi, a) in enumerate(mine, 1):
-        lines.append(f"{n}. {_alert_desc(a)}")
-        rows.append([InlineKeyboardButton(f"❌ 删除 {n}. {a['symbol']}", callback_data=f"delalert:{gi}")])
+        # 序号有两套：gi 是全局下标（删除用），n-1 是本会话内的序号（换源用）
+        lines.append(f"{n}. {_alert_desc(a)}　[{a.get('src') or '自动'}]")
+        rows.append([InlineKeyboardButton(f"❌ 删除 {n}. {a['symbol']}",
+                                          callback_data=f"delalert:{gi}"),
+                     change_btn(f"al|{n - 1}")])
     rows.append([InlineKeyboardButton("🔄 刷新", callback_data="my_alerts"),
                  InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")])
     await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
@@ -336,11 +340,14 @@ async def render_my_watchpct(query):
             "👁 *我的波动监控*\n\n还没有。点【👁 持续波动监控】添加👇",
             reply_markup=back_to("cat_alert"), parse_mode="Markdown")
         return
-    lines = ["👁 *我的波动监控*\n点 ❌ 取消：\n"]
+    lines = ["👁 *我的波动监控*\n每条都能单独换数据源：\n"]
     rows = []
+    from handlers.source import change_btn
     for n, w in enumerate(mine, 1):
         lines.append(f"{n}. {w['symbol']}  ±{w['pct']}%  基准 ${fmt(w['base'])}（{w.get('src','?')}）")
-        rows.append([InlineKeyboardButton(f"❌ 取消 {w['symbol']}", callback_data=f"delwatchpct:{w['symbol']}")])
+        rows.append([InlineKeyboardButton(f"❌ 取消 {w['symbol']}",
+                                          callback_data=f"delwatchpct:{w['symbol']}"),
+                     change_btn(f"wp|{w['symbol']}")])
     rows.append([InlineKeyboardButton("🔄 刷新", callback_data="my_watchpct"),
                  InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")])
     await query.edit_message_text("\n".join(lines), reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
@@ -833,12 +840,21 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 持续波动监控：引导用户发「币 百分比」，quickprice 接住
     elif d == "watchpct_start":
         context.user_data["await_watchpct"] = True
+        from handlers import source as _source
+        _ex, _mk = _source.get_pref(query.message.chat_id if query.message else 0)
         await query.edit_message_text(
-            "👁 *持续波动监控*\n\n请发送「币 百分比 [合约]」，例如：\n"
+            "👁 *持续波动监控*\n\n请发送「币 百分比 [合约] [交易所]」，例如：\n"
             "`DOGE 5`　`KORU 10`　`BTC 3`\n"
-            "`BTC 3 合约`　← 加「合约」二字强制盯**永续合约价**\n\n"
+            "`BTC 3 合约`　← 加「合约」二字强制盯**永续合约价**\n"
+            "`AKE 2 合约 gate`　← 再加所名只盯那一家（okx/币安/bybit/gate）\n\n"
+            f"不写交易所就用你的默认：*{_source.describe(_ex, _mk)}*\n"
+            "（下面的按钮可以改默认；设完之后每个币还能单独换）\n\n"
             "该币每从基准涨跌超此百分比就提醒，报后自动以新价继续盯。\n"
             "支持小盘/合约币。取消发 /menu",
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton(f"📡 默认数据源：{_source.describe(_ex, _mk)}",
+                                       callback_data="src:panel:def")],
+                 [InlineKeyboardButton("⬅️ 返回", callback_data="cat_alert")]]),
             parse_mode="Markdown")
 
     # 我的波动监控列表（带取消按钮）

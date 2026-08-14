@@ -145,13 +145,16 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("百分比要是数字，例如 `DOGE 5`（取消发 /menu）",
                                             parse_mode="Markdown")
             return
-        from handlers.watchpct import add_watch, parse_market
-        market = parse_market(parts[2]) if len(parts) > 2 else "auto"
-        ok, msg = await add_watch(update.effective_chat.id, parts[0].upper(), pct,
-                                  update.effective_user.first_name, market)
+        from handlers import watchpct as _wp
+        # 和 /watchpct 命令走同一套解析：「合约」「gate」不分先后都认
+        market, exchange = _wp.parse_tokens(parts[2:4])
+        ok, msg = await _wp.add_watch(update.effective_chat.id, parts[0].upper(), pct,
+                                      update.effective_user.first_name, market, exchange)
         if ok:
             context.user_data.pop("await_watchpct", None)
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await update.message.reply_text(
+            msg, parse_mode="Markdown",
+            reply_markup=_wp.src_kb(parts[0]) if ok else None)
         return
 
     # 引导式预警：用户点了"查其他币"，现在发来的是"要设预警的币名"

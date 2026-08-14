@@ -49,7 +49,8 @@ def main_menu_kb():
         [InlineKeyboardButton("📊 策略回测", callback_data="cat_strategy")],
         [InlineKeyboardButton("🔥 OKX专区", callback_data="cat_okx"),
          InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance"),
-         InlineKeyboardButton("🟡 Bybit专区", callback_data="cat_bybit")],
+         InlineKeyboardButton("🟡 Bybit专区", callback_data="cat_bybit"),
+         InlineKeyboardButton("🟢 Gate专区", callback_data="cat_gate")],
         [InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news"),
          InlineKeyboardButton("🔔 订阅推送", callback_data="cat_subs")],
         [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
@@ -1220,6 +1221,104 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logging.error(f"币安合约行情出错: {e}")
             await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("bn_fprice_sel"))
+
+    # ============ Gate 专区（镜像币安专区，数据来自 Gate.io）============
+    # 小币/新币 Gate 上得最早最全，币安查不到不等于没这个合约。
+    elif d == "cat_gate":
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🆕 新币榜", callback_data="gt_new"),
+             InlineKeyboardButton("🚀 涨幅榜", callback_data="gt_gainers")],
+            [InlineKeyboardButton("📊 合约涨幅", callback_data="gt_swap"),
+             InlineKeyboardButton("💵 资金费率", callback_data="gt_funding_sel")],
+            [InlineKeyboardButton("⚖️ 多空比", callback_data="gt_ratio_sel"),
+             InlineKeyboardButton("💥 爆仓", callback_data="gt_liq_sel")],
+            [InlineKeyboardButton("📊 合约行情", callback_data="gt_fprice_sel")],
+            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+        ])
+        await query.edit_message_text(
+            "🟢 *Gate 专区* (Gate.io 数据)\n"
+            "小币和新币上得最早最全；爆仓这里是真有数的（币安已关公开接口）。\n"
+            "榜单已剔除代币化股票/指数等非加密合约。",
+            reply_markup=kb, parse_mode="Markdown")
+
+    elif d == "gt_new":
+        await query.edit_message_text("🆕 查询中...")
+        from handlers.gate import build_new_text_gt
+        try:
+            await safe_edit(query, await build_new_text_gt(), reply_markup=back_to("cat_gate"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Gate 新币榜出错: {e}")
+            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
+
+    elif d == "gt_gainers":
+        await query.edit_message_text("🚀 查询中...")
+        from handlers.gate import build_gainers_text_gt
+        try:
+            await safe_edit(query, await build_gainers_text_gt("SPOT"), reply_markup=back_to("cat_gate"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Gate 涨幅榜出错: {e}")
+            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
+
+    elif d == "gt_swap":
+        await query.edit_message_text("📊 查询中...")
+        from handlers.gate import build_gainers_text_gt
+        try:
+            await safe_edit(query, await build_gainers_text_gt("SWAP"), reply_markup=back_to("cat_gate"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Gate 合约榜出错: {e}")
+            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("cat_gate"))
+
+    elif d == "gt_funding_sel":
+        await query.edit_message_text("💵 *资金费率* - 点币种：", reply_markup=coin_grid("gtfunding", "cat_gate"), parse_mode="Markdown")
+
+    elif d.startswith("gtfunding:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"💵 查询 {symbol}...")
+        from handlers.gate import build_funding_text_gt
+        try:
+            await safe_edit(query, await build_funding_text_gt(symbol), reply_markup=back_to("gt_funding_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Gate 资金费率出错: {e}")
+            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_funding_sel"))
+
+    elif d == "gt_ratio_sel":
+        await query.edit_message_text("⚖️ *多空比* - 点币种：", reply_markup=coin_grid("gtratio", "cat_gate"), parse_mode="Markdown")
+
+    elif d.startswith("gtratio:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"⚖️ 查询 {symbol}...")
+        from handlers.gate import build_ratio_text_gt
+        try:
+            await safe_edit(query, await build_ratio_text_gt(symbol), reply_markup=back_to("gt_ratio_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Gate 多空比出错: {e}")
+            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_ratio_sel"))
+
+    elif d == "gt_liq_sel":
+        await query.edit_message_text("💥 *爆仓* - 点币种：", reply_markup=coin_grid("gtliq", "cat_gate"), parse_mode="Markdown")
+
+    elif d.startswith("gtliq:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"💥 查询 {symbol}...")
+        from handlers.gate import build_liq_text_gt
+        try:
+            await safe_edit(query, await build_liq_text_gt(symbol), reply_markup=back_to("gt_liq_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Gate 爆仓出错: {e}")
+            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_liq_sel"))
+
+    elif d == "gt_fprice_sel":
+        await query.edit_message_text("📊 *合约行情* - 点币种：", reply_markup=coin_grid("gtfprice", "cat_gate"), parse_mode="Markdown")
+
+    elif d.startswith("gtfprice:"):
+        symbol = d.split(":")[1]
+        await query.edit_message_text(f"📊 查询 {symbol} 合约...")
+        from handlers.gate import build_fprice_text_gt
+        try:
+            await safe_edit(query, await build_fprice_text_gt(symbol), reply_markup=back_to("gt_fprice_sel"), parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"Gate 合约行情出错: {e}")
+            await query.edit_message_text(f"查询失败：{str(e)[:80]}", reply_markup=back_to("gt_fprice_sel"))
 
     # ============ Bybit 专区（镜像 OKX/币安，数据来自 Bybit）============
     elif d == "cat_bybit":

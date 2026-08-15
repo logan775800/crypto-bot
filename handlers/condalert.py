@@ -83,19 +83,25 @@ def rule_text(r):
 
 
 # ── 取数：一个币一个周期只拉一次 K 线，多个条件共用 ────────────────
-async def _snapshot(symbol, ivs):
-    """{周期: 指标包}。任一周期失败就跳过该周期（对应条件当作不满足）。"""
+async def _snapshot(symbol, ivs, source=None):
+    """{周期: 指标包}。任一周期失败就跳过该周期（对应条件当作不满足）。
+
+    source 是数据源标签（规则建立时记下的），不传就是 Bybit 永续。
+    一条规则从头到尾必须用同一个源：RSI/均线在不同所差一点很正常，
+    今天这家明天那家会让规则在边界上反复触发。
+    """
+    from handlers import klines as kl
+    ex, market = ("bybit", "swap") if not source else kl.src_mod.split_label(source)
+    if ex == kl.src_mod.AUTO:
+        ex, market = "bybit", "swap"
     out = {}
     for iv in ivs:
         try:
-            r = await md._get("/v5/market/kline", {
-                "category": "linear", "symbol": md.norm(symbol),
-                "interval": md.INTERVALS.get(iv, "15"), "limit": 250})
-            rows = (r.get("list") or [])[::-1]      # Bybit 新→旧，反成旧→新
+            rows, meta = await kl.fetch(symbol, iv, 250, ex, market)
             if len(rows) < 30:
                 continue
-            c = [float(x[4]) for x in rows]
-            v = [float(x[5]) for x in rows]
+            c = [x[4] for x in rows]
+            v = [x[5] for x in rows]
             pack = {
                 "close": c[-1],
                 "rsi": md.rsi(c, 14),
@@ -190,27 +196,31 @@ async def cond(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="Markdown")
         return
 
-    # 币必须真在 Bybit 有永续，否则规则永远不触发、用户还以为在盯
-    try:
-        r = await md._get("/v5/market/tickers",
-                          {"category": "linear", "symbol": md.norm(symbol)})
-        if not (r.get("list") or []):
-            raise RuntimeError("empty")
-    except Exception:
-        await safe_reply(update.message, f"❌ Bybit 没有 {symbol} 永续合约，换一个")
+    chat_id = update.effective_chat.id
+    # 币必须真在**选定的源**上有，否则规则永远不触发、用户还以为在盯
+    from handlers.source import pref_label
+    src_label = pref_label(chat_id)
+    from handlers import klines as kl
+    probe, meta = await kl.fetch(
+        symbol, "15m", 30,
+        *((("bybit", kl.SWAP)) if not src_label else kl.src_mod.split_label(src_label)))
+    if not probe:
+        await safe_reply(update.message,
+                         f"❌ {meta['error']}，换个币或用 /source 换数据源")
         return
 
-    chat_id = update.effective_chat.id
     rules = data.setdefault("cond_alerts", [])
     if len([x for x in rules if x["chat_id"] == chat_id]) >= MAX_PER_CHAT:
         await safe_reply(update.message, f"每个会话最多 {MAX_PER_CHAT} 条条件提醒，先 /conds 删几条")
         return
     rule = {"chat_id": chat_id, "symbol": symbol, "conds": conds,
-            "set_by": update.effective_user.first_name, "last_ts": 0}
+            "set_by": update.effective_user.first_name, "last_ts": 0,
+            "src": src_label or ""}
     rules.append(rule)
     save_data()
     await safe_reply(update.message,
         f"✅ *条件提醒已设*\n{escape_md(rule_text(rule))}\n\n"
+        f"数据源 {meta['label']}\n"
         f"全部满足才提醒（每2分钟检查，触发后30分钟冷却）。\n`/conds` 查看　`/delcond` 删除",
         parse_mode="Markdown")
 
@@ -272,21 +282,23 @@ async def check_conds(context: ContextTypes.DEFAULT_TYPE):
     live = [r for r in rules if now - r.get("last_ts", 0) >= COOLDOWN]
     if not live:
         return
+    # 按 (币, 数据源) 分组：同一个币在两个源上是两份 K 线，指标也不一样，
+    # 混着用会让规则在边界上来回触发
     need = {}
     for r in live:
-        need.setdefault(r["symbol"], set()).update(
+        need.setdefault((r["symbol"], r.get("src") or ""), set()).update(
             c.get("iv", "15m") for c in r["conds"])
 
     snaps = {}
-    for sym, ivs in need.items():
+    for (sym, src_label), ivs in need.items():
         try:
-            snaps[sym] = await _snapshot(sym, sorted(ivs))
+            snaps[(sym, src_label)] = await _snapshot(sym, sorted(ivs), src_label)
         except Exception as e:
-            log.warning(f"条件告警取数失败 {sym}: {e}")
+            log.warning(f"条件告警取数失败 {sym} {src_label or 'Bybit永续'}: {e}")
 
     changed = False
     for r in live:
-        snap = snaps.get(r["symbol"])
+        snap = snaps.get((r["symbol"], r.get("src") or ""))
         if not snap:
             continue
         try:

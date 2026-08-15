@@ -26,12 +26,18 @@ DEFAULT_IV = "1h"
 PLOT_BARS = 120        # 画最近 120 根；均线用全量算好再截，保证 EMA200 有值
 
 
-async def _klines(symbol, interval, limit=400):
-    r = await md._get("/v5/market/kline", {
-        "category": "linear", "symbol": md.norm(symbol),
-        "interval": md.INTERVALS.get(interval, "60"), "limit": limit})
-    rows = (r.get("list") or [])[::-1]      # Bybit 返回新→旧，反成旧→新
-    return rows
+async def _klines(symbol, interval, limit=400, source=None):
+    """取 K 线（旧→新）。source 是数据源标签，不传就是 Bybit 永续。
+
+    返回的行沿用 [时间戳, 开, 高, 低, 收, 量, 额] 这个顺序——统一层出来就是它，
+    画图和指标都按位取值，别改顺序。
+    """
+    from handlers import klines as kl
+    ex, market = ("bybit", "swap") if not source else kl.src_mod.split_label(source)
+    if ex == kl.src_mod.AUTO:
+        ex, market = "bybit", "swap"
+    rows, meta = await kl.fetch(symbol, interval, limit, ex, market)
+    return rows, meta
 
 
 def _ema_series(closes, n):
@@ -148,9 +154,9 @@ def caption(symbol, interval, lv):
     return "\n".join(lines)
 
 
-async def build_chart(symbol, interval=DEFAULT_IV):
+async def build_chart(symbol, interval=DEFAULT_IV, source=None):
     """返回 (buf, caption_text)；数据/绘图失败返回 None，调用方给友好提示。"""
-    rows = await _klines(symbol, interval)
+    rows, meta = await _klines(symbol, interval, source=source)
     if len(rows) < 60:
         return None
     try:
@@ -223,7 +229,13 @@ async def build_chart(symbol, interval=DEFAULT_IV):
         log.error(f"[achart] {sym} 绘图失败: {e}")
         return None
     buf.seek(0)
-    return buf, caption(symbol, interval, lv)
+    cap = caption(symbol, interval, lv)
+    # 图上没地方写来源（标题只能放 ASCII），但看图的人必须知道这是哪家的 K 线
+    if meta.get("label"):
+        cap += f"\n📡 数据源 {meta['label']}"
+        if meta.get("capped"):
+            cap += f"（该所单次上限 {meta['got']} 根）"
+    return buf, cap
 
 
 # ── 命令 ───────────────────────────────────────────────────────────
@@ -256,18 +268,27 @@ async def achart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if interval not in IVS:
         await safe_reply(update.message, f"周期只支持 {'/'.join(IVS)}")
         return
-    await _send(update.message, symbol, interval)
+    await _send(update.message, symbol, interval,
+                source=_pref_label(update.effective_chat.id))
 
 
-async def _send(message, symbol, interval):
+def _pref_label(chat_id):
+    """这个会话选的数据源标签；没选过返回 None（= Bybit 永续）。"""
+    from handlers.source import pref_label
+    return pref_label(chat_id)
+
+
+async def _send(message, symbol, interval, source=None):
     try:
-        r = await build_chart(symbol, interval)
+        r = await build_chart(symbol, interval, source=source)
     except Exception as e:
         log.error(f"achart 出错 {symbol}: {e}")
         await safe_reply(message, f"生成失败：{str(e)[:100]}")
         return
     if not r:
-        await safe_reply(message, f"❌ 拿不到 {symbol} 的 {interval} K线（Bybit 有这个永续吗？）")
+        where = source or "Bybit永续"
+        await safe_reply(message, f"❌ 拿不到 {symbol} 的 {interval} K线"
+                                  f"（{where} 上有这个交易对吗？/source 可换数据源）")
         return
     buf, cap = r
     try:
@@ -284,7 +305,8 @@ async def _send(message, symbol, interval):
 # ── 按钮回调 ───────────────────────────────────────────────────────
 async def from_btn(query, context, symbol, interval):
     await query.answer(f"生成 {symbol} {interval}…")
-    await _send(query.message, symbol, interval)
+    chat_id = query.message.chat_id if query.message else 0
+    await _send(query.message, symbol, interval, source=_pref_label(chat_id))
 
 
 async def ai_from_btn(query, context, symbol, interval):
@@ -295,7 +317,10 @@ async def ai_from_btn(query, context, symbol, interval):
         return
     await query.answer("AI 解读中…")
     try:
-        text = await md.klines_analysis(symbol, interval)
+        # 和图用同一个源，否则图上是 Gate 的结构、AI 讲的是 Bybit 的，两边对不上
+        text = await md.klines_analysis(
+            symbol, interval,
+            source=_pref_label(query.message.chat_id if query.message else 0))
         ctx = await md.market_context()
         from handlers.ai import ask_ai_messages
         reply = await ask_ai_messages(

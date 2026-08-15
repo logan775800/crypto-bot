@@ -251,6 +251,18 @@ def set_pref(chat_id, ex, market):
     save_data()
 
 
+def pref_label(chat_id, default_market=SWAP):
+    """这个会话选的数据源标签；没选过返回 None。
+
+    K 线类功能用它：拿不到就落回 Bybit 永续，而不是「自动」——自动挑源会让同一个币
+    今天用这家、明天用那家，画出来的结构对不上，回测结果也不可比。
+    """
+    ex, market = get_pref(chat_id)
+    if ex == AUTO:
+        return None
+    return label_of(ex, market if market != AUTO else default_market)
+
+
 async def price_for(chat_id, symbol, override=None):
     """按「单条覆盖 > 会话默认 > 自动」的顺序取价。返回 (价格, 标签)。
 

@@ -35,6 +35,12 @@ INTERVAL_MS = {"1": 60_000, "3": 180_000, "5": 300_000, "15": 900_000,
                "D": 86_400_000, "W": 604_800_000}
 
 
+def src_mod_cap(meta):
+    """K线被单次上限截短时的说明——OKX 单次只给 300 根，要 400 根做结构就缩水了。
+    如实写出来，别让人以为分析是按他要的根数算的。"""
+    return f"该所单次上限，实得{meta.get('got')}根／要了{meta.get('asked')}根"
+
+
 def norm(sym):
     """BTC / btc / BTCUSDT → BTCUSDT"""
     s = (sym or "").upper().strip().replace("-", "").replace("/", "")
@@ -209,25 +215,33 @@ def structure(highs, lows):
 
 
 # ── 1) K线 + 量能 + 指标 ─────────────────────────────────────────────
-async def klines_analysis(symbol, interval="15m", limit=None):
+async def klines_analysis(symbol, interval="15m", limit=None, source=None):
+    """K 线量化分析。source 是数据源标签（如 "Gate永续"），不传就是 Bybit 永续。
+
+    取数已收进 handlers.klines 统一层：四家的字段顺序/排序/时间戳单位各不相同，
+    分散在各处解析迟早读串一家（Gate 现货那个顺序尤其毒）。
+    """
+    from handlers import klines as kl
     sym = norm(symbol)
     iv = INTERVALS.get(str(interval).lower(), str(interval))
     lim = int(limit or DEFAULT_LIMIT.get(iv, 300))
     lim = max(60, min(lim, 1000))
-    r, srv = await _get2("/v5/market/kline",
-                         {"category": CAT, "symbol": sym, "interval": iv, "limit": lim})
-    rows = r.get("list") or []
-    if not rows:
+    ex, market = ("bybit", "swap") if not source else kl.src_mod.split_label(source)
+    if ex == kl.src_mod.AUTO:
+        ex, market = "bybit", "swap"
+    rows_n, meta = await kl.fetch(sym, interval, lim, ex, market)
+    if not rows_n:
         # 说清是「这个币/周期没有」而不是「工具坏了」——两者的处理方式完全不同
-        return (f"⚠️ {sym} {interval}: Bybit 返回空K线（该永续不存在或该周期无数据）。"
+        return (f"⚠️ {sym} {interval}: {meta['error'] or '返回空K线'}。"
                 f"结论不可基于此周期，请换周期或确认币种。")
-    rows = rows[::-1]      # Bybit 返回新→旧，反成 旧→新
-    o = [float(x[1]) for x in rows]
-    h = [float(x[2]) for x in rows]
-    lo = [float(x[3]) for x in rows]
-    c = [float(x[4]) for x in rows]
-    v = [float(x[5]) for x in rows]
-    tn = [float(x[6]) for x in rows]        # 成交额(USDT)
+    srv = meta.get("server_ms")
+    rows = rows_n
+    o = [x[1] for x in rows]
+    h = [x[2] for x in rows]
+    lo = [x[3] for x in rows]
+    c = [x[4] for x in rows]
+    v = [x[5] for x in rows]
+    tn = [x[6] for x in rows]        # 成交额(USDT)
 
     last = c[-1]
     e20, e50, e200 = ema(c, 20), ema(c, 50), ema(c, 200)
@@ -268,8 +282,11 @@ async def klines_analysis(symbol, interval="15m", limit=None):
     ph, pl = max(h[-n50:]), min(lo[-n50:])
 
     lag_txt, stale = bar_lag(srv, int(rows[-1][0]), interval)
+    # 源必须写在标题里：换了所却看不出来，两家的结构和量能对不上时会以为是自己看错
+    src_txt = f"｜{meta['label']}" if meta.get("label") else ""
+    cap_txt = (f"（{src_mod_cap(meta)}）" if meta.get("capped") else "")
     lines = [
-        f"【{sym} {interval}】共{len(c)}根｜{stamp(srv)}",
+        f"【{sym} {interval}】共{len(c)}根{cap_txt}｜{stamp(srv)}{src_txt}",
         lag_txt if lag_txt else "",
         f"现价 {f(last)}｜区间 {f(lowv)}~{f(hi)}｜近{n50}根前高/前低 {f(ph)}/{f(pl)}",
         f"EMA20 {f(e20)}／EMA50 {f(e50)}／EMA200 {f(e200)} → {arr}{slope}",

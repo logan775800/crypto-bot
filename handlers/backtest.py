@@ -163,25 +163,33 @@ def stats(trades):
 
 
 async def run(symbol, interval="1h", rule="trend", rr=2.0, cost_pct=0.11,
-              limit=DEFAULT_BARS):
-    """取K线 → 跑规则 → 出统计。返回 (stats, bars数, 错误信息|None)。"""
+              limit=DEFAULT_BARS, source=None):
+    """取K线 → 跑规则 → 出统计。返回 (stats, bars数, 错误信息|None)。
+
+    source 是数据源标签，不传就是 Bybit 永续。⚠️ 换所回测出的结果**不可跨所比较**：
+    K 线不同、根数上限也不同（OKX 单次只给 300 根，够不着 250 根预热+样本）。
+    """
+    from handlers import klines as kl
     sym = md.norm(symbol)
     if rule not in RULES:
         return None, 0, f"规则只能是 {'/'.join(RULES)}"
-    try:
-        r = await md._get("/v5/market/kline", {
-            "category": md.CAT, "symbol": sym,
-            "interval": md.INTERVALS.get(interval, "60"), "limit": min(limit, 1000)})
-        rows = (r.get("list") or [])[::-1]
-    except Exception as e:
-        return None, 0, f"取K线失败：{str(e)[:60]}"
+    ex, market = ("bybit", "swap") if not source else kl.src_mod.split_label(source)
+    if ex == kl.src_mod.AUTO:
+        ex, market = "bybit", "swap"
+    rows, meta = await kl.fetch(sym, interval, min(limit, 1000), ex, market)
+    if not rows:
+        return None, 0, meta["error"] or "取K线失败"
     if len(rows) < 250:
-        return None, len(rows), (f"K线只有 {len(rows)} 根，不够跑回测"
-                                 f"（至少 250 根，规则要用到 EMA50 和 200 根预热）")
-    bars = [(int(x[0]), float(x[1]), float(x[2]), float(x[3]), float(x[4]))
-            for x in rows]
+        cap = ("——该所单次上限就这么多，换个数据源或换大周期"
+               if meta.get("capped") else "")
+        return None, len(rows), (f"{meta['label']} 只给到 {len(rows)} 根K线，不够跑回测"
+                                 f"（至少 250 根，规则要用到 EMA50 和 200 根预热）{cap}")
+    bars = [(x[0], x[1], x[2], x[3], x[4]) for x in rows]
     trades = simulate(bars, rule, rr=rr, cost_pct=cost_pct)
-    return stats(trades), len(bars), None
+    st = stats(trades)
+    if st:
+        st["source"] = meta["label"]
+    return st, len(bars), None
 
 
 RULE_DESC = {
@@ -200,8 +208,10 @@ def render(s, symbol, interval, rule, bars, rr, cost_pct):
                 f"别据此下结论——换更长周期或更多K线再看。")
     exp_emoji = "✅" if s["net_exp"] > 0 else "❌"
     pf = "∞" if s["profit_factor"] == float("inf") else f"{s['profit_factor']:.2f}"
+    # 源要写出来：不同所的 K 线不一样，回测数字跨所不可比
+    src_line = f"　数据源 {s['source']}" if s.get("source") else ""
     return "\n".join([
-        f"🧪 *规则回测*　{symbol} {interval}",
+        f"🧪 *规则回测*　{symbol} {interval}{src_line}",
         f"{RULE_DESC.get(rule, rule)}",
         f"止损 1.5×ATR｜止盈 {rr:g}R｜单边成本 {cost_pct:g}%",
         f"样本 {bars} 根K线，共 *{s['n']}* 笔",
@@ -250,7 +260,9 @@ async def backtest_cmd(update, context):
                          parse_mode="Markdown")
         return
     await safe_reply(update.message, f"🧪 回测 {sym} {interval} {rule} …")
-    s, bars, err = await run(sym, interval, rule, rr, cost)
+    from handlers.annotchart import _pref_label
+    s, bars, err = await run(sym, interval, rule, rr, cost,
+                             source=_pref_label(update.effective_chat.id))
     if err:
         await safe_reply(update.message, f"回测失败：{err}")
         return

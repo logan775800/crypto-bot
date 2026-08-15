@@ -78,9 +78,10 @@ def test_steady_button_actually_reaches_the_handler():
     """端到端跑一遍分发：点 stdy: 必须真的调到 steady 的扫描，而不是静默落空。"""
     called = {}
 
-    async def fake_run(days, crypto_only=True):
+    async def fake_run(days, crypto_only=True, source=None, **kw):
         called["days"] = days
         called["crypto_only"] = crypto_only
+        called["source"] = source
         return [], [], 0, 0
 
     class FakeQuery:

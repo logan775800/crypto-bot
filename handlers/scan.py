@@ -213,7 +213,9 @@ async def _pool():
         # 代币化美股/大宗商品（AAPL、XAU 这类）对做加密永续的人是噪音，
         # 而且风险特征不同（跟着美股开收盘跳空、周末流动性枯竭）。
         # 靠 instruments-info 的 symbolType 识别：加密是空串。
-        if types.get(s, "") != "":
+        # 只剔真正的非加密：symbolType 还有个 'innovation'（创新区），那是真币，
+        # 按「非空即非加密」过滤会把 120 个新上的小币全漏掉
+        if not md.is_crypto_type(types.get(s, "")):
             continue
         try:
             turnover = float(t.get("turnover24h") or 0)

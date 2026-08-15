@@ -262,3 +262,88 @@ def test_pref_label_helper():
     assert S.pref_label(1) is None
     S.set_pref(1, "gate", S.AUTO)
     assert S.pref_label(1) == "Gate永续"      # 市场没选时 K 线默认永续
+
+
+# ── 品类判定：这是找出来的一个老 bug ──────────────────────────────
+# Bybit 的 symbolType 实测有四个值（821 个合约）：
+#   ''(504) 加密 ／ 'stock'(193) 美股 ／ 'commodity'(4) 贵金属 ／
+#   'innovation'(120) **创新区，是真加密币**（AKE、AEON、ACU…）
+# 原来 /scan、/steady 按「非空即非加密」过滤，把这 120 个新上的小币全当股票
+# 剔掉了——而它们恰恰是扫描最该覆盖的一批（AKE 当时成交额 2.6 亿）。
+def test_innovation_zone_coins_are_crypto():
+    from handlers import marketdata as md
+    assert md.is_crypto_type("innovation"), "创新区是真币，不能当股票剔掉"
+    assert md.is_crypto_type("")
+
+
+@pytest.mark.parametrize("t", ["stock", "commodity"])
+def test_real_noncrypto_types_are_excluded(t):
+    from handlers import marketdata as md
+    assert not md.is_crypto_type(t)
+
+
+def test_unknown_type_is_treated_as_crypto():
+    """清单接口哪天多个新取值，宁可多列一个也别把正经币过滤掉。"""
+    from handlers import marketdata as md
+    assert md.is_crypto_type("brand_new_category")
+
+
+def test_universe_tags_instead_of_dropping(monkeypatch):
+    """非加密只打标记不剔除——「一共扫了多少个」要算进去，筛不筛是调用方的事。"""
+    async def fake_types():
+        return {"BTCUSDT": "", "AKEUSDT": "innovation", "AAPLUSDT": "stock"}
+
+    async def fake_bad():
+        return {"AAPL"}
+    from handlers import marketdata as md
+    monkeypatch.setattr(md, "symbol_types", fake_types)
+    monkeypatch.setattr(K, "noncrypto_bases", fake_bad)
+
+    class C:
+        async def get(self, url, params=None):
+            return FakeResp({"result": {"list": [
+                {"symbol": "BTCUSDT", "turnover24h": "3", "price24hPcnt": "0.01"},
+                {"symbol": "AKEUSDT", "turnover24h": "2", "price24hPcnt": "0.02"},
+                {"symbol": "AAPLUSDT", "turnover24h": "1", "price24hPcnt": "0.03"},
+            ]}})
+    monkeypatch.setattr(S, "client", lambda: C())
+    u = asyncio.run(K.universe("bybit", S.SWAP))
+    got = {x["symbol"]: x["crypto"] for x in u}
+    assert got == {"BTC": True, "AKE": True, "AAPL": False}
+    assert [x["symbol"] for x in u] == ["BTC", "AKE", "AAPL"]   # 按成交额降序
+
+
+def test_bybit_change_is_a_fraction_not_percent(monkeypatch):
+    """Bybit 的 price24hPcnt 是小数(-0.000155)，别当百分数用，会差 100 倍。"""
+    async def fake_types():
+        return {}
+
+    async def fake_bad():
+        return set()
+    from handlers import marketdata as md
+    monkeypatch.setattr(md, "symbol_types", fake_types)
+    monkeypatch.setattr(K, "noncrypto_bases", fake_bad)
+
+    class C:
+        async def get(self, url, params=None):
+            return FakeResp({"result": {"list": [
+                {"symbol": "BTCUSDT", "turnover24h": "1", "price24hPcnt": "-0.0155"}]}})
+    monkeypatch.setattr(S, "client", lambda: C())
+    u = asyncio.run(K.universe("bybit", S.SWAP))
+    assert u[0]["change"] == pytest.approx(-1.55)
+
+
+def test_okx_turnover_is_derived_from_base_volume(monkeypatch):
+    """OKX 没有成交额字段，要 volCcy24h × last 自己算。"""
+    async def fake_bad():
+        return set()
+    monkeypatch.setattr(K, "noncrypto_bases", fake_bad)
+
+    class C:
+        async def get(self, url, params=None):
+            return FakeResp({"data": [{"instId": "BTC-USDT-SWAP", "last": "100",
+                                       "open24h": "80", "volCcy24h": "5"}]})
+    monkeypatch.setattr(S, "client", lambda: C())
+    u = asyncio.run(K.universe("okx", S.SWAP))
+    assert u[0]["turnover"] == 500
+    assert u[0]["change"] == pytest.approx(25.0)

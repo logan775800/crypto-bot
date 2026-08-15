@@ -150,26 +150,23 @@ def reject_reason(p):
 
 
 # ── 取数 ────────────────────────────────────────────────────────
-async def _series(sym, days):
+async def _series(sym, days, ex="bybit", market="swap"):
     """取该窗口对应的收盘价序列。短窗口用 4h，长窗口用日线。"""
+    from handlers import klines as kl
     iv, need, _py, _unit, _lim = bar_spec(days)
-    try:
-        r = await md._get("/v5/market/kline", {
-            "category": md.CAT, "symbol": sym, "interval": iv,
-            "limit": min(need + 2, 1000)})
-        rows = (r.get("list") or [])[::-1]
-        # 最后一根是**还没走完**的，丢掉——半根的涨跌会污染整段拟合
-        closes = [float(x[4]) for x in rows][:-1]
-        return closes[-need:] if len(closes) > need else closes
-    except Exception as e:
-        log.debug(f"缓涨扫描取 {sym} {iv} K线失败: {e}")
+    rows, meta = await kl.fetch(sym, iv, min(need + 2, 1000), ex, market)
+    if not rows:
+        log.debug(f"缓涨扫描取 {sym} {iv} K线失败: {meta.get('error')}")
         return []
+    # 最后一根是**还没走完**的，丢掉——半根的涨跌会污染整段拟合
+    closes = [x[4] for x in rows][:-1]
+    return closes[-need:] if len(closes) > need else closes
 
 
-async def _one(sym, turnover, days, sem):
+async def _one(sym, turnover, days, sem, ex="bybit", market="swap"):
     _iv, _need, per_year, _unit, lim = bar_spec(days)
     async with sem:
-        closes = await _series(sym, days)
+        closes = await _series(sym, days, ex, market)
     if len(closes) < MIN_POINTS:
         return None
     p = profile(closes, per_year, lim)
@@ -182,38 +179,29 @@ async def _one(sym, turnover, days, sem):
     return p
 
 
-async def run(days=DEFAULT_DAYS, limit=POOL, crypto_only=True):
-    """返回 (通过筛选的[按稳中有升排序], 被否掉的[带原因], 扫描总数, 排除的非加密数)。"""
-    r, types = await asyncio.gather(
-        md._get("/v5/market/tickers", {"category": md.CAT}),
-        md.symbol_types(), return_exceptions=True)
-    if isinstance(r, Exception):
-        raise r
-    types = {} if isinstance(types, Exception) else types
-    rows, skipped = [], 0
-    for t in (r.get("list") or []):
-        s = t.get("symbol") or ""
-        if not s.endswith("USDT"):
-            continue
-        try:
-            tv = float(t.get("turnover24h") or 0)
-        except (TypeError, ValueError):
-            continue
-        if tv < MIN_TURNOVER:
-            continue
-        # 「稳」这个筛选天然会把代币化股票和贵金属顶到前面——它们本来就比
-        # 加密币稳得多。对做加密永续的人那是噪音，默认排除。
-        if crypto_only and types.get(s, "") != "":
-            skipped += 1
-            continue
-        rows.append((s, tv))
+async def run(days=DEFAULT_DAYS, limit=POOL, crypto_only=True, source=None):
+    """返回 (通过筛选的[按稳中有升排序], 被否掉的[带原因], 扫描总数, 排除的非加密数)。
+
+    source 是数据源标签，不传就是 Bybit 永续。换所扫的是**那家的币池**——
+    Gate 的池子比 Bybit 大得多，小币缓涨往往只在那边能扫出来。
+    """
+    from handlers import klines as kl
+    ex, market = ("bybit", "swap") if not source else kl.src_mod.split_label(source)
+    if ex == kl.src_mod.AUTO:
+        ex, market = "bybit", "swap"
+    # 「稳」这个筛选天然会把代币化股票和贵金属顶到前面——它们本来就比
+    # 加密币稳得多。对做加密永续的人那是噪音，默认排除。
+    pool = await kl.universe(ex, market)
+    liquid = [x for x in pool if x["turnover"] >= MIN_TURNOVER]
+    skipped = sum(1 for x in liquid if not x["crypto"]) if crypto_only else 0
     # 这里按成交额降序取样，和 /scan 刻意相反：/scan 找的是"今天动了的"，
     # 而缓涨要的是"能拿得住的"——流动性差的币磨上去也出不来。
-    rows.sort(key=lambda x: -x[1])
-    rows = rows[:limit]
+    rows = [(x["symbol"], x["turnover"]) for x in liquid
+            if x["crypto"] or not crypto_only][:limit]
     sem = asyncio.Semaphore(CONCURRENCY)
-    res = await asyncio.gather(*[_one(s, tv, days, sem) for s, tv in rows],
-                               return_exceptions=True)
+    res = await asyncio.gather(
+        *[_one(s, tv, days, sem, ex, market) for s, tv in rows],
+        return_exceptions=True)
     good, bad = [], []
     for x in res:
         if not x or isinstance(x, Exception):
@@ -223,7 +211,7 @@ async def run(days=DEFAULT_DAYS, limit=POOL, crypto_only=True):
     return good, bad, len(rows), skipped
 
 
-def render(good, bad, scanned, days, skipped=0):
+def render(good, bad, scanned, days, skipped=0, source="Bybit永续"):
     iv, need, _py, unit, lim = bar_spec(days)
     tf = "4h K线" if iv == "240" else "日线"
     if not good:
@@ -232,7 +220,7 @@ def render(good, bad, scanned, days, skipped=0):
                 f"无单根暴涨>{lim:g}%。\n"
                 f"整体震荡或普涨普跌的市场里选不出来是正常的——"
                 f"这时候没有「稳」可言。换个窗口试试。")
-    lines = [f"🌱 *缓步增长*　近 {days} 天走得最稳的（扫了 {scanned} 个）",
+    lines = [f"🌱 *缓步增长*　近 {days} 天走得最稳的（在 {source} 扫了 {scanned} 个）",
              f"用 {tf}（{need} 根）｜排序 = 年化斜率 × R²，不是按涨幅",
              "━━━━━━━━━━━━━━"]
     from handlers.util import escape_md
@@ -297,16 +285,21 @@ async def on_button(query, context):
     except (ValueError, IndexError):
         await query.answer("参数看不懂")
         return
+    from handlers.source import pref_label
+    src = pref_label(query.message.chat_id if query.message else 0)
     await query.answer(f"扫描近 {days} 天…")
-    await safe_edit(query, f"🌱 扫描近 {days} 天走势最稳的币…（约 20~40 秒）")
+    await safe_edit(query, f"🌱 在 {src or 'Bybit永续'} 上扫描近 {days} 天"
+                           f"走势最稳的币…（约 20~40 秒）")
     try:
-        good, bad, scanned, skipped = await run(days, crypto_only=not show_all)
+        good, bad, scanned, skipped = await run(days, crypto_only=not show_all,
+                                                source=src)
     except Exception as e:
         log.error(f"缓涨面板扫描失败: {e}")
         await safe_edit(query, f"扫描失败：{str(e)[:80]}",
                         reply_markup=days_kb(days, show_all))
         return
-    await safe_edit(query, render(good, bad, scanned, days, skipped),
+    await safe_edit(query, render(good, bad, scanned, days, skipped,
+                                  source=src or "Bybit永续"),
                     reply_markup=days_kb(days, show_all), parse_mode="Markdown")
 
 
@@ -338,13 +331,19 @@ async def steady_cmd(update, context):
         except ValueError:
             await safe_reply(update.message, USAGE, parse_mode="Markdown")
             return
+    from handlers.source import pref_label
+    src = pref_label(update.effective_chat.id)
     await safe_reply(update.message,
-                     f"🌱 扫描近 {days} 天走势最稳的币…（约 20~40 秒）")
+                     f"🌱 在 {src or 'Bybit永续'} 上扫描近 {days} 天"
+                     f"走势最稳的币…（约 20~40 秒）")
     try:
-        good, bad, scanned, skipped = await run(days, crypto_only=not show_all)
+        good, bad, scanned, skipped = await run(days, crypto_only=not show_all,
+                                                source=src)
     except Exception as e:
         log.error(f"/steady 失败: {e}")
         await safe_reply(update.message, f"扫描失败：{str(e)[:80]}")
         return
-    await safe_reply(update.message, render(good, bad, scanned, days, skipped),
+    await safe_reply(update.message,
+                     render(good, bad, scanned, days, skipped,
+                            source=src or "Bybit永续"),
                      reply_markup=days_kb(days, show_all), parse_mode="Markdown")

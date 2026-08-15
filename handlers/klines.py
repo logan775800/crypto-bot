@@ -199,6 +199,153 @@ def note(meta):
     return "　".join(bits)
 
 
+# ---------- 全市场清单（扫描类用） ----------
+# 四家的成交额和涨跌幅字段又各不相同（2026-08-15 实测）：
+#   Bybit  turnover24h(USDT)        price24hPcnt 是**小数**(-0.000155 = -0.0155%)
+#   OKX    没有直接的成交额字段，要 volCcy24h(基础量) × last 自己算；
+#          涨跌幅也没有，要 (last-open24h)/open24h
+#   币安    quoteVolume(USDT)        priceChangePercent 已是百分数
+#   Gate   volume_24h_settle(USDT)  change_percentage 已是百分数
+# 代币化股票只有 Bybit 和 Gate 有，各自用 symbolType / contract_type 剔除。
+_NONCRYPTO = {"at": 0.0, "set": None}
+_NONCRYPTO_TTL = 3600
+
+
+async def noncrypto_bases():
+    """所有"不是加密货币"的基名（SNDK、NAVER、XAU…），合并三家的标注。
+
+    为什么要合并：**OKX 的合约接口根本没有品类字段**（实测 SNDK-USDT-SWAP 和
+    BTC-USDT-SWAP 的每个字段都一样），而它上了一堆代币化美股，SNDK 的成交额
+    还排在全所第二——不剔除的话缓涨扫描第一页会被美股占满。
+    好在同一个标的在别家是有标的：
+      Bybit  instruments-info.symbolType != ''
+      币安    exchangeInfo.underlyingType != 'COIN'（EQUITY/HK_EQUITY/COMMODITY…）
+      Gate   contracts.contract_type != ''
+    同一个基名在任一家被标成非加密，就当它在四家都是非加密——底层资产是同一个。
+    """
+    now = time.monotonic()
+    if _NONCRYPTO["set"] is not None and now - _NONCRYPTO["at"] < _NONCRYPTO_TTL:
+        return _NONCRYPTO["set"]
+    out = set()
+    c = src_mod.client()
+    try:
+        from handlers import marketdata as md
+        for s, t in (await md.symbol_types()).items():
+            # 只认真正的非加密品类：'innovation' 是 Bybit 创新区的**真币**
+            if not md.is_crypto_type(t) and s.endswith("USDT"):
+                out.add(s[:-4])
+    except Exception as e:
+        log.debug(f"取 Bybit 品类失败: {e}")
+    try:
+        r = await c.get("https://fapi.binance.com/fapi/v1/exchangeInfo")
+        for x in (r.json().get("symbols") or []):
+            if (x.get("underlyingType") or "COIN") != "COIN":
+                out.add(x.get("baseAsset") or "")
+    except Exception as e:
+        log.debug(f"取币安品类失败: {e}")
+    try:
+        from handlers import gate as gate_mod
+        for name, meta in (await gate_mod.contracts()).items():
+            if not gate_mod._kind(meta)[0] and name.endswith("_USDT"):
+                out.add(name[:-5])
+    except Exception as e:
+        log.debug(f"取 Gate 品类失败: {e}")
+    out.discard("")
+    if out:
+        _NONCRYPTO.update(at=now, set=out)
+    return out
+
+
+async def universe(ex="bybit", market=SWAP):
+    """某家某市场的全部 USDT 交易对 → [{symbol, turnover, change, crypto}]，成交额降序。
+
+    symbol 是**基名**（AKE、BTC），跨所可比；各家的原生写法在这层就抹平了。
+    非加密标的（代币化股票/杠杆代币）不在这里剔除，只打 crypto=False 标记——
+    调用方要的口径不一样：缓涨扫描要排除它们，而"一共扫了多少个"要算进去。
+    """
+    c = src_mod.client()
+    bad = await noncrypto_bases()
+    out = []
+    if ex == "bybit":
+        from handlers import marketdata as md
+        r = await c.get("https://api.bybit.com/v5/market/tickers",
+                        params={"category": "linear" if market == SWAP else "spot"})
+        types = await md.symbol_types() if market == SWAP else {}
+        for t in ((r.json().get("result") or {}).get("list") or []):
+            s = t.get("symbol") or ""
+            if not s.endswith("USDT"):
+                continue
+            out.append({"symbol": s[:-4],
+                        "turnover": float(t.get("turnover24h") or 0),
+                        "change": float(t.get("price24hPcnt") or 0) * 100,
+                        "crypto": md.is_crypto_type(types.get(s, ""))
+                        and s[:-4] not in bad})
+    elif ex == "okx":
+        r = await c.get("https://www.okx.com/api/v5/market/tickers",
+                        params={"instType": "SWAP" if market == SWAP else "SPOT"})
+        tail = "-USDT-SWAP" if market == SWAP else "-USDT"
+        for t in (r.json().get("data") or []):
+            iid = t.get("instId") or ""
+            if not iid.endswith(tail):
+                continue
+            last = float(t.get("last") or 0)
+            op = float(t.get("open24h") or 0)
+            out.append({"symbol": iid[:-len(tail)],
+                        "turnover": float(t.get("volCcy24h") or 0) * last,
+                        "change": (last - op) / op * 100 if op else 0.0,
+                        # OKX 自己不标品类，只能靠别家标注过的基名反查
+                        "crypto": iid[:-len(tail)] not in bad})
+    elif ex == "binance":
+        url = ("https://fapi.binance.com/fapi/v1/ticker/24hr" if market == SWAP
+               else "https://api.binance.com/api/v3/ticker/24hr")
+        rows = (await c.get(url)).json()
+        if not isinstance(rows, list):
+            return []
+        for t in rows:
+            s = t.get("symbol") or ""
+            if not s.endswith("USDT"):
+                continue
+            base = s[:-4]
+            out.append({"symbol": base,
+                        "turnover": float(t.get("quoteVolume") or 0),
+                        "change": float(t.get("priceChangePercent") or 0),
+                        # 杠杆代币（BTCUP/BTCDOWN）不是币，和 Gate 那边同一个理由
+                        "crypto": base not in bad
+                        and not any(base.endswith(x) for x in _LEV_SUFFIX_BN)})
+    elif ex == "gate":
+        from handlers import gate as gate_mod
+        if market == SWAP:
+            rows = (await c.get(
+                "https://api.gateio.ws/api/v4/futures/usdt/tickers")).json()
+            meta = await gate_mod.contracts()
+            for t in rows if isinstance(rows, list) else []:
+                pair = t.get("contract") or ""
+                if not pair.endswith("_USDT"):
+                    continue
+                out.append({"symbol": pair[:-5],
+                            "turnover": float(t.get("volume_24h_settle") or 0),
+                            "change": float(t.get("change_percentage") or 0),
+                            "crypto": gate_mod._kind(meta.get(pair))[0]
+                            and pair[:-5] not in bad})
+        else:
+            rows = (await c.get("https://api.gateio.ws/api/v4/spot/tickers")).json()
+            for t in rows if isinstance(rows, list) else []:
+                pair = t.get("currency_pair") or ""
+                if not pair.endswith("_USDT"):
+                    continue
+                base = pair[:-5]
+                out.append({"symbol": base,
+                            "turnover": float(t.get("quote_volume") or 0),
+                            "change": float(t.get("change_percentage") or 0),
+                            "crypto": not gate_mod._is_leveraged(base)
+                            and base not in bad})
+    out.sort(key=lambda x: -x["turnover"])
+    return out
+
+
+_LEV_SUFFIX_BN = ("UP", "DOWN", "BULL", "BEAR")
+
+
 async def fetch_for(chat_id, symbol, interval="15m", limit=300, override=None):
     """按「单条覆盖 > 会话默认 > Bybit 永续」取 K 线。
 

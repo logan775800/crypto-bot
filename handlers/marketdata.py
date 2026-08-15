@@ -515,8 +515,20 @@ _TYPES = {"ts": 0, "map": {}}
 _TYPE_TTL = 6 * 3600
 
 
+# symbolType 实测有四个取值（2026-08-15，821 个合约）：
+#   ''(504) 加密 ／ 'stock'(193) 代币化美股 ／ 'commodity'(4) 贵金属原油
+#   ／ 'innovation'(120) **Bybit 创新区，是真加密币**（AKE、AEON、ACU 这些）
+# 原来按「非空即非加密」过滤，把这 120 个新上的小币全当股票剔掉了——
+# 而它们恰恰是扫描最该覆盖的一批。这里改成只认真正的非加密品类。
+NONCRYPTO_TYPES = {"stock", "commodity"}
+
+
+def is_crypto_type(symbol_type):
+    return (symbol_type or "") not in NONCRYPTO_TYPES
+
+
 async def symbol_types():
-    """{symbol: symbolType}。'' = 加密，'stock'/'commodity' = 非加密。"""
+    """{symbol: symbolType}。'' / 'innovation' = 加密，'stock'/'commodity' = 非加密。"""
     import time as _t
     if _TYPES["map"] and _t.time() - _TYPES["ts"] < _TYPE_TTL:
         return _TYPES["map"]
@@ -535,7 +547,7 @@ async def symbol_types():
 async def is_crypto(symbol):
     """这个合约是不是加密币（而非代币化股票/商品）。查不到时按加密处理——
     宁可多列一个，也不要因为清单接口抖动就把正经币过滤掉。"""
-    return (await symbol_types()).get(norm(symbol), "") == ""
+    return is_crypto_type((await symbol_types()).get(norm(symbol), ""))
 
 
 async def simple_prices(symbols):

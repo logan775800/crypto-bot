@@ -542,6 +542,10 @@ def detail_kb(t):
         rows.append([InlineKeyboardButton(
             f"🔔 涨跌±{p}% 提醒", callback_data=f"oc:w:{t['address']}:{p}")
             for p in WATCH_PCTS])
+    if t.get("address") and t.get("chain_key"):
+        rows.append([InlineKeyboardButton(
+            "🔐 安全检查（税/可卖性/LP/集中度）",
+            callback_data=f"oc:s:{t['chain_key']}:{t['address']}")])
     if t.get("url"):
         rows.append([InlineKeyboardButton("🌐 在 DexScreener 打开", url=t["url"])])
     return InlineKeyboardMarkup(rows) if rows else None
@@ -822,6 +826,25 @@ async def on_button(query, context):
         await _reply_md(query.message, msg + ("\n\n取消发 /watchpcts 看列表" if ok else ""))
         return
 
+    if what == "s":                       # 安全检查：oc:s:<链>:<代币地址>
+        chain = bits[2] if len(bits) > 2 else ""
+        addr = bits[3] if len(bits) > 3 else ""
+        await query.answer("查合约安全…")
+        from handlers import tokensec as TS
+        sec = await TS.check(chain, addr)
+        sym = ""
+        try:
+            t, _n = await by_address(addr, chain)
+            sym = t["symbol"] if t else ""
+            ok, why = gate(t, sec) if t else (True, [])
+        except Exception:
+            ok, why = True, []
+        text = TS.render(sec, sym)
+        if not ok:
+            text += "\n\n" + gate_text(why)
+        await _reply_md(query.message, text)
+        return
+
     if what == "k":                       # K线：oc:k:<链>:<池子地址>:<周期>
         chain = bits[2] if len(bits) > 2 else ""
         pool = bits[3] if len(bits) > 3 else ""
@@ -883,3 +906,75 @@ async def price_of(addr):
     if not t or not t.get("price"):
         return None, None
     return t["price"], t
+
+
+# ---------- 滑点估算 / 数据完整度 / 交易型信号闸门 ----------
+# 恒定乘积做市（x*y=k）下，吃掉 S 美元的价格冲击 ≈ S / (报价侧储备)。
+# DexScreener 给的 liquidity.usd 是**两侧合计**，所以报价侧约等于一半。
+# 这是个量级估算，不是精确值——但"池子 3 万还想进 5 千"这种事，量级就够判死刑了。
+SLIP_SIZES = (1_000, 5_000)
+
+
+def slippage_pct(liq_usd, size_usd):
+    """吃掉 size_usd 的预估价格冲击（%）。池子越浅越非线性，这里只给量级。"""
+    quote = max((liq_usd or 0) / 2, 1.0)
+    return size_usd / (quote + size_usd) * 100
+
+
+def slippage_text(liq_usd):
+    parts = [f"${s/1000:.0f}k 单 ≈ {slippage_pct(liq_usd, s):.1f}%" for s in SLIP_SIZES]
+    return "　".join(parts)
+
+
+def completeness(t, sec=None):
+    """数据完整度 → (拿到几项, 共几项, 缺的中文名列表)。
+
+    告警里必须带上这个：靠不全的数据做的判断，和靠错的数据一样危险，
+    区别只是前者你自己知道。
+    """
+    checks = [
+        ("价格", bool(t.get("price"))),
+        ("流动性", bool(t.get("liq"))),
+        ("24h成交", bool(t.get("vol24"))),
+        ("池子年龄", bool(t.get("created_ms"))),
+        ("多池比价", len(t.get("pools") or []) >= 2),
+        ("安全检查", bool(sec and sec.get("ok"))),
+    ]
+    missing = [n for n, ok in checks if not ok]
+    return len(checks) - len(missing), len(checks), missing
+
+
+def gate(t, sec=None):
+    """交易型信号闸门 → (放不放行, 原因列表)。
+
+    不放行时**只发风险提示**，不发任何带方向、带价位、带"机会"意味的内容。
+    理由很简单：池子 3 万的币，K 线上的"突破"你根本吃不到，
+    照着它下单亏的是滑点和无法退出，不是判断错。
+    """
+    reasons = []
+    liq = t.get("liq") or 0
+    if liq < LIQ_DANGER:
+        reasons.append(f"池子只有 ${liq:,.0f}（低于 ${LIQ_DANGER:,}）——"
+                       f"{slippage_text(liq)}，这个深度没法执行")
+    if is_dead_pool(t):
+        reasons.append("池子标称深度和实际成交对不上（疑似假池），报价不可信")
+    dev, _lo, _hi, n = price_spread(t.get("pools") or [])
+    if n >= 2 and dev >= 10:
+        reasons.append(f"多池价格偏差 {dev:.0f}%——同一个币不同池差这么多，"
+                       f"说明正在被拉/砸，此刻没有一个「公允价」")
+    if sec and sec.get("ok"):
+        if sec.get("sellable") is False:
+            reasons.append("安全检查判定**卖不出去**（蜜罐/限制卖出）")
+        if sec.get("dangers"):
+            reasons.append(f"合约有 {len(sec['dangers'])} 项高危（增发/冻结/黑名单一类）")
+    got, total, missing = completeness(t, sec)
+    if got <= total // 2:
+        reasons.append(f"数据只拿到 {got}/{total} 项（缺：{'、'.join(missing)}）")
+    return (not reasons), reasons
+
+
+def gate_text(reasons):
+    lines = ["🚫 *已暂停交易型信号*——下面只给风险提示，不给方向和价位",
+             "━━━━━━━━━━━━━━"]
+    lines += [f"• {r}" for r in reasons]
+    return "\n".join(lines)

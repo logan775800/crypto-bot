@@ -21,6 +21,11 @@ from storage import data, save_data
 COOLDOWN = 60           # 同一币两次提醒最短间隔秒，防急涨急跌时刷屏（配合重设基准）
 MAX_PER_CHAT = 30       # 每个会话最多盯多少个币
 
+# ── 链上监控的额外规矩（交易所那套直接搬过来会被刷屏，也会被插针骗）──
+ONCHAIN_COOLDOWN = 300  # 链上冷却拉长到 5 分钟：一笔大单就是一次波动
+CONFIRM_TF = "15m"      # 用**已收盘**的 15m K 线复核，避免被瞬时插针触发
+DEAD_STRIKES = 5        # 连续这么多轮取不到价 → 判定这条监控失效，通知一次后停掉
+
 
 def fmt(p):
     """价格显示：大数保留2位，小数按量级保留有效位。"""
@@ -178,10 +183,14 @@ async def add_watch(chat_id, symbol, pct, set_by, market="auto", exchange=None):
         if price is None:
             return False, ("链上查不到这个地址的交易对，监控没建立。\n"
                            "确认地址没抄错，或者这个币还没有 DEX 池子。")
+        # 池地址一起存：收盘确认要按池子取 K 线，而且身份本来就是
+        # 「链 + 合约地址 + 池地址」三件套，只存代币地址说不清盯的是哪个池
         return _store(chat_id, addr, pct, set_by, price,
                       src_mod.onchain_label(t["chain_key"]), "onchain",
                       name=t["symbol"], extra={"chain": t["chain_key"],
-                                               "liq": t["liq"]})
+                                               "pool": t.get("pool", ""),
+                                               "liq": t["liq"],
+                                               "misses": 0})
 
     symbol = norm_symbol(symbol)
     if exchange is None:
@@ -333,28 +342,127 @@ async def check_watchpct(context: ContextTypes.DEFAULT_TYPE):
 
     changed = False
     for w in lst:
+        if w.get("invalid"):
+            continue                # 已判失效，通知过一次就不再打扰
+        onchain = w.get("market") == "onchain"
         p = prices.get((w["symbol"], w.get("src")))
         if not p:
+            # ── 失效状态：链上池子可能被撤走，那时价格是永远取不到的。
+            # 一直沉默着不说，用户会以为"还在盯，只是没动" ──
+            w["misses"] = w.get("misses", 0) + 1
+            if onchain and w["misses"] >= DEAD_STRIKES:
+                w["invalid"] = "连续取不到价（池子可能已被撤走）"
+                changed = True
+                await _send(context, w["chat_id"],
+                            f"🛑 *{disp(w)}* 的监控已失效\n"
+                            f"原因：{w['invalid']}\n"
+                            f"已停止提醒。确认还想盯就重新加一次。")
+            elif w["misses"] > 0:
+                changed = True
             continue
+        if w.get("misses"):
+            w["misses"] = 0
+            changed = True
+
         base = w["base"]
         if base <= 0:
             w["base"] = p
             changed = True
             continue
         ch = (p - base) / base * 100
-        if abs(ch) >= w["pct"] and now - w.get("last_ts", 0) >= COOLDOWN:
-            arrow = "📈 涨" if ch > 0 else "📉 跌"
-            mkt_tag = "（合约）" if w.get("market") == "swap" else ("（现货）" if w.get("market") == "spot" else "")
-            try:
-                await context.bot.send_message(
-                    w["chat_id"],
-                    f"{arrow} *{disp(w)}*{mkt_tag} {ch:+.2f}%！\n"
-                    f"${fmt(base)} → ${fmt(p)}（阈值 ±{w['pct']}%，{w.get('src','')}）",
-                    parse_mode="Markdown")
-            except Exception as e:
-                logging.error(f"波动监控推送失败 {w['chat_id']}: {e}")
-            w["base"] = p          # 以新价为基准继续盯
-            w["last_ts"] = now
-            changed = True
+        cooldown = ONCHAIN_COOLDOWN if onchain else COOLDOWN
+        if abs(ch) < w["pct"] or now - w.get("last_ts", 0) < cooldown:
+            continue
+
+        # ── 去重：同方向、同量级的话别重复播报 ──
+        level = int(abs(ch) // max(w["pct"], 1e-9))
+        sig = f"{'up' if ch > 0 else 'dn'}:{level}"
+        if onchain and sig == w.get("last_sig") and \
+                now - w.get("last_ts", 0) < cooldown * 3:
+            continue
+
+        confirm_note = ""
+        if onchain:
+            # ── 收盘确认：链上一笔大单就能戳出一根插针，那个价成交不到量。
+            # 用**已收盘**的 15m K 线复核，没确认就不当成信号（但也不丢，标出来）──
+            ok, why = await _confirm_onchain(w, base)
+            if ok is False:
+                confirm_note = f"（{why}，未收盘确认——先当噪音看）"
+                # 未确认的不重设基准：等真走出来再报
+                w["last_ts"] = now
+                changed = True
+                await _push_move(context, w, base, p, ch, confirm_note, unconfirmed=True)
+                continue
+            confirm_note = "（已用收盘K线确认）" if ok else "（拿不到K线，未确认）"
+
+        await _push_move(context, w, base, p, ch, confirm_note)
+        w["base"] = p          # 以新价为基准继续盯
+        w["last_ts"] = now
+        w["last_sig"] = sig
+        changed = True
     if changed:
         save_data()
+
+
+async def _confirm_onchain(w, base):
+    """用已收盘的 K 线复核这次波动。→ (True/False/None, 说明)。
+
+    None = 拿不到 K 线（如实说未确认，不阻止播报）；
+    False = 收盘价没走到阈值，说明只是根插针。
+    """
+    from handlers import onchain as oc
+    try:
+        rows = await oc.ohlcv(w.get("chain"), w.get("pool"), CONFIRM_TF, limit=6)
+    except Exception:
+        return None, ""
+    if not rows:
+        return None, ""
+    marks = oc.kline_marks(rows, CONFIRM_TF)
+    closed = rows[:-1] if marks.get("unclosed") else rows
+    if not closed:
+        return None, ""
+    close = closed[-1][4]
+    ch_closed = (close - base) / base * 100 if base else 0.0
+    if abs(ch_closed) >= w["pct"]:
+        return True, ""
+    return False, f"收盘价只走了 {ch_closed:+.1f}%"
+
+
+async def _push_move(context, w, base, p, ch, note="", unconfirmed=False):
+    """推一条波动提醒。链上的必须带上流动性、预估滑点和数据完整度——
+    没有这三样，"涨了 20%" 这句话没法转成任何决策。"""
+    arrow = "📈 涨" if ch > 0 else "📉 跌"
+    mkt_tag = ("（合约）" if w.get("market") == "swap"
+               else ("（现货）" if w.get("market") == "spot" else ""))
+    head = "⏳ 未确认" if unconfirmed else arrow
+    lines = [f"{head} *{disp(w)}*{mkt_tag} {ch:+.2f}%！{note}",
+             f"${fmt(base)} → ${fmt(p)}（阈值 ±{w['pct']}%，{w.get('src','')}）"]
+
+    if w.get("market") == "onchain":
+        from handlers import onchain as oc
+        t = None
+        try:
+            t, _n = await oc.by_address(w["symbol"], w.get("chain"))
+        except Exception as e:
+            logging.debug(f"链上告警取详情失败: {e}")
+        if t:
+            got, total, missing = oc.completeness(t)
+            lines.append(f"💧 池子 ${t['liq']:,.0f}　滑点 {oc.slippage_text(t['liq'])}")
+            lines.append(f"📊 数据完整度 {got}/{total}"
+                         + (f"（缺：{'、'.join(missing)}）" if missing else ""))
+            ok, why = oc.gate(t)
+            if not ok:
+                lines.append("")
+                lines.append(oc.gate_text(why))
+    await _send(context, w["chat_id"], "\n".join(lines))
+
+
+async def _send(context, chat_id, text):
+    try:
+        await context.bot.send_message(chat_id, text, parse_mode="Markdown")
+    except Exception as e:
+        logging.error(f"波动监控推送失败 {chat_id}: {e}")
+        try:
+            await context.bot.send_message(chat_id, text.replace("*", ""))
+        except Exception as e2:
+            logging.error(f"降级后仍失败 {chat_id}: {e2}")

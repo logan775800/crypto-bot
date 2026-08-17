@@ -673,6 +673,31 @@ def render_trending(items, chain):
     return "\n".join(lines)
 
 
+def home_kb():
+    """链上专区首页。做成独立入口而不是塞在机会扫描里——链上是**另一个市场**，
+    和交易所行情是并列关系：查币、看各链热门、管自己的链上监控，是一条完整的路。"""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = [[InlineKeyboardButton("🔍 查币 / 合约地址", callback_data="oc:ask")]]
+    keys = list(CHAINS)
+    for i in range(0, len(keys), 3):
+        rows.append([InlineKeyboardButton(f"🔥 {CHAINS[k]['cn']}热门",
+                                          callback_data=f"oc:t:{k}")
+                     for k in keys[i:i + 3]])
+    rows.append([InlineKeyboardButton("👁 我的链上监控", callback_data="oc:my")])
+    rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")])
+    return InlineKeyboardMarkup(rows)
+
+
+HOME_TEXT = (
+    "🔗 *链上代币专区*\n\n"
+    "交易所还没上的币，先在链上跑——这里查的就是那一段。\n\n"
+    "• **直接把合约地址发给我**就能查，不用打命令\n"
+    "• 每个结果带风险标注：池子深浅、假池、暴涨、税、可卖性\n"
+    "• 查完可以直接设监控、看 K 线、做安全检查\n\n"
+    "⚠️ 链上没有上币审核，同名假币是常态——认合约地址，别认名字。"
+)
+
+
 def chain_kb(current=DEFAULT_CHAIN):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     keys = list(CHAINS)
@@ -824,6 +849,40 @@ async def on_button(query, context):
         who = query.from_user.first_name if query.from_user else "我"
         ok, msg = await add_watch(chat_id, addr, pct, who)
         await _reply_md(query.message, msg + ("\n\n取消发 /watchpcts 看列表" if ok else ""))
+        return
+
+    if what == "home":
+        await query.answer()
+        await safe_edit(query, HOME_TEXT, reply_markup=home_kb(),
+                        parse_mode="Markdown")
+        return
+
+    if what == "my":                      # 我的链上监控
+        await query.answer()
+        from storage import data as _d
+        from handlers import watchpct as W
+        chat_id = query.message.chat_id if query.message else 0
+        mine = [w for w in _d.get("watchpct", [])
+                if w["chat_id"] == chat_id and w.get("market") == "onchain"]
+        if not mine:
+            await safe_edit(query, "👁 *我的链上监控*\n\n还没有。查到币之后点"
+                                   "【🔔 涨跌±X% 提醒】就能加。",
+                            reply_markup=home_kb(), parse_mode="Markdown")
+            return
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        lines = ["👁 *我的链上监控*", ""]
+        rows = []
+        for w in mine:
+            state = f"　🛑 {w['invalid']}" if w.get("invalid") else ""
+            lines.append(f"• {W.disp(w)}　±{w['pct']}%　基准 ${W.fmt(w['base'])}"
+                         f"（{w.get('src', '')}）{state}")
+            rows.append([InlineKeyboardButton(
+                f"❌ 取消 {(w.get('name') or w['symbol'])[:10]}",
+                callback_data=f"delwatchpct:{w['symbol']}")])
+        rows.append([InlineKeyboardButton("⬅️ 返回", callback_data="oc:home")])
+        await safe_edit(query, "\n".join(lines),
+                        reply_markup=InlineKeyboardMarkup(rows),
+                        parse_mode="Markdown")
         return
 
     if what == "s":                       # 安全检查：oc:s:<链>:<代币地址>

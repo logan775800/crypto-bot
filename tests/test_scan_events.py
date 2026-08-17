@@ -202,3 +202,43 @@ def test_quadrant_mapping_is_exhaustive():
     for dpx in (1, -1):
         for doi in (1, -1):
             assert ev.quadrant(dpx, doi)
+
+
+# ── 跨所扫描：缺数据不能让东西看起来更安全 ────────────────────────
+def test_unknown_crowding_never_gets_a_green_light():
+    """实测：同一个币 GPS，Bybit 判「拥挤度极高·不建议」，换到不给费率和持仓量的
+    OKX 就变成 86 分 ✅。拥挤是**减分项**，拿不到数据按 0 分计入等于凭空加 15 分。"""
+    from handlers import scan
+    total, verdict = scan.overall(trend=100, liq=48, crowd=0, exec_q=95,
+                                  atr_pct=2.0, net_rr=3.0, direction="多头",
+                                  funding=None, crowd_known=False)
+    assert "✅" not in verdict
+    assert "拥挤度算不出来" in verdict
+    assert total <= 55
+
+
+def test_known_crowding_still_gets_a_green_light():
+    from handlers import scan
+    _total, verdict = scan.overall(trend=100, liq=60, crowd=5, exec_q=95,
+                                   atr_pct=2.0, net_rr=3.0, direction="多头",
+                                   funding=0.00001, crowd_known=True)
+    assert "✅" in verdict
+
+
+def test_missing_funding_is_listed_not_hidden():
+    """缺什么要写出来——用户得知道这个分是在残缺数据上算的。"""
+    import inspect
+    from handlers import scan
+    src = inspect.getsource(scan._deep)
+    assert '"费率"' in src
+
+
+def test_scan_render_names_the_source():
+    """盘口和深度是**那一家**的，换所结果不可比。"""
+    from handlers import scan
+    rows = [{"symbol": "XUSDT", "price": 1.0, "chg": 1.0, "turnover": 5e7,
+             "trend": 50, "direction": "多头", "liq": 50, "crowd": 10,
+             "exec": 90, "total": 60, "verdict": "🟡 可以看",
+             "funding": 0.0001, "oi_change": 1.0, "slip": 0.1, "partial": False,
+             "atr_pct": 2.0, "net_rr": 2.5, "btc_conflict": False, "missing": []}]
+    assert "Gate永续" in scan.render(rows, source="Gate永续")

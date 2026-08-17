@@ -54,6 +54,8 @@ def main_menu_kb():
          InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance"),
          InlineKeyboardButton("🟡 Bybit专区", callback_data="cat_bybit"),
          InlineKeyboardButton("🟢 Gate专区", callback_data="cat_gate")],
+        [InlineKeyboardButton("🔗 链上代币（交易所还没上的）",
+                               callback_data="cat_onchain")],
         [InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news"),
          InlineKeyboardButton("🔔 订阅推送", callback_data="cat_subs")],
         [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
@@ -128,8 +130,7 @@ CATS = {
                                callback_data=f"stdy:{STEADY_DEFAULT_DAYS}:0")],
          [InlineKeyboardButton("📊 合约涨跌榜", callback_data="ctr:top"),
           InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")],
-         [InlineKeyboardButton("🔗 链上代币（交易所没上的）",
-                               callback_data="oc:t:bsc")]]),
+         [InlineKeyboardButton("🔗 链上代币专区", callback_data="cat_onchain")]]),
     "cat_calc": (
         "🧮 *交易工具*\n\n"
         "下单前的三件事：这是哪个合约、扣完成本还剩多少、这个止损能开多大。",
@@ -479,7 +480,12 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import events as _events
         await _events.on_button(query, context)
 
-    # ---- 链上代币（DEX，交易所没上的币）----
+    # ---- 链上代币专区（DEX，交易所还没上的币）----
+    elif d == "cat_onchain":
+        from handlers import onchain as _oc
+        await safe_edit(query, _oc.HOME_TEXT, reply_markup=_oc.home_kb(),
+                        parse_mode="Markdown")
+
     elif d.startswith("oc:"):
         from handlers import onchain as _oc
         await _oc.on_button(query, context)

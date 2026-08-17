@@ -134,7 +134,7 @@ def crowded_side(funding, threshold=FUNDING_HOT):
 
 
 def overall(trend, liq, crowd, exec_q, atr_pct=None, net_rr=None, btc_conflict=False,
-            direction=None, funding=None):
+            direction=None, funding=None, crowd_known=True):
     """综合分 + 一句话结论。**带否决**：流动性/执行不及格时趋势不算数。
 
     后三个参数是「结果导向」的否决，跟前四维不同——它们不打分，只否决：
@@ -174,10 +174,18 @@ def overall(trend, liq, crowd, exec_q, atr_pct=None, net_rr=None, btc_conflict=F
     no_direction = direction == "分歧"
     if no_direction and not vetoes:
         raw = min(raw, 55)
-    if raw >= 70 and not vetoes and not no_direction:
+    # 拥挤度算不出来时**不准给绿灯**。拥挤是减分项，拿不到数据 = 这一项按 0 分
+    # 计入，等于凭空加了 15 分——实测同一个币 GPS，Bybit 判「拥挤度极高·不建议」，
+    # 换到不给费率/持仓量的 OKX 就变成 86 分 ✅。缺数据不能让东西看起来更安全。
+    if not crowd_known and not vetoes:
+        raw = min(raw, 55)
+    if raw >= 70 and not vetoes and not no_direction and crowd_known:
         verdict = "✅ 可交易性好"
     elif vetoes:
         verdict = "❌ 不建议（" + "、".join(vetoes) + "）"
+    elif not crowd_known:
+        verdict = ("🟡 拥挤度算不出来（这家不给资金费率/持仓量），"
+                   "不敢给绿灯——换个数据源再看一眼")
     elif no_direction:
         verdict = "🟡 只有流动性，没有方向——多周期打架，等它选边"
     elif raw >= 50:
@@ -188,7 +196,7 @@ def overall(trend, liq, crowd, exec_q, atr_pct=None, net_rr=None, btc_conflict=F
 
 
 # ── 取数 ─────────────────────────────────────────────────────────
-async def _pool():
+async def _pool(ex="bybit", market="swap"):
     """粗筛：一次拉全市场 ticker → 过流动性门槛 → 按**动过**排序。
 
     这里的排序方式很关键。按成交额降序取的话，进入细算的永远是 BTC/ETH 那批，
@@ -199,44 +207,27 @@ async def _pool():
     这不会让它退化成涨幅榜——涨幅只决定谁被看一眼，最终排序由四维打分决定，
     拥挤/执行不及格照样被否决。
     """
-    r, types = await asyncio.gather(
-        md._get("/v5/market/tickers", {"category": md.CAT}),
-        md.symbol_types(), return_exceptions=True)
-    if isinstance(r, Exception):
-        raise r
-    types = {} if isinstance(types, Exception) else types
+    from handlers import klines as kl
+    pool = await kl.universe(ex, market)
     rows = []
-    for t in (r.get("list") or []):
-        s = t.get("symbol") or ""
-        if not s.endswith("USDT"):
-            continue
+    for x in pool:
         # 代币化美股/大宗商品（AAPL、XAU 这类）对做加密永续的人是噪音，
         # 而且风险特征不同（跟着美股开收盘跳空、周末流动性枯竭）。
-        # 靠 instruments-info 的 symbolType 识别：加密是空串。
-        # 只剔真正的非加密：symbolType 还有个 'innovation'（创新区），那是真币，
-        # 按「非空即非加密」过滤会把 120 个新上的小币全漏掉
-        if not md.is_crypto_type(types.get(s, "")):
+        if not x["crypto"]:
             continue
-        try:
-            turnover = float(t.get("turnover24h") or 0)
-            move = abs(float(t.get("price24hPcnt") or 0)) * 100
-        except (TypeError, ValueError):
+        if x["turnover"] < MIN_TURNOVER:
             continue
-        if turnover < MIN_TURNOVER:
-            continue
-        rows.append((s, t, turnover, move))
+        rows.append((x["symbol"], x, x["turnover"], abs(x["change"])))
     rows.sort(key=lambda x: -x[3])          # 按波动幅度，不是成交额
-    return [(s, t, tv) for s, t, tv, _m in rows[:POOL]]
+    return [(s_, t, tv) for s_, t, tv, _m in rows[:POOL]]
 
 
-async def _tf_snapshot(sym, iv, limit=120):
+async def _tf_snapshot(sym, iv, limit=120, ex="bybit", market="swap"):
     """某周期的 EMA 排列、斜率、ATR%。取不到就返回 None —— 缺周期不猜。"""
     try:
-        r = await md._get("/v5/market/kline", {
-            "category": md.CAT, "symbol": sym,
-            "interval": md.INTERVALS[iv], "limit": limit})
-        rows = (r.get("list") or [])[::-1]
-        c = [float(x[4]) for x in rows]
+        from handlers import klines as kl
+        rows, _meta = await kl.fetch(sym, iv, limit, ex, market)
+        c = [x[4] for x in rows]
         if len(c) < 55:
             return None
         e20, e50 = md.ema(c, 20), md.ema(c, 50)
@@ -292,27 +283,30 @@ def _net_rr(price, atr_pct, slip_pct, taker=0.00055, rr=PROBE_RR):
     return (a or {}).get("net_rr")
 
 
-async def _oi_change(sym):
+async def _oi_change(sym, ex="bybit"):
+    """近 12 期持仓量变化%。这家给不了就返回 None——扫描器对缺失是标"未知"，
+    不是当成 0（OKX 没有按合约的持仓量历史接口）。"""
     try:
-        r = await md._get("/v5/market/open-interest", {
-            "category": md.CAT, "symbol": sym, "intervalTime": "15min", "limit": 13})
-        rows = (r.get("list") or [])[::-1]
+        from handlers import klines as kl
+        rows = await kl.oi_series(sym, ex, "15m", 13)
         if len(rows) < 5:
             return None
-        a, b = float(rows[0]["openInterest"]), float(rows[-1]["openInterest"])
+        a, b = rows[0], rows[-1]
         return (b - a) / a * 100 if a else None
     except Exception:
         return None
 
 
-async def _book_quality(sym):
-    """价差 + 参考名义下的滑点 + 深度。执行质量的全部依据。"""
+async def _book_quality(sym, ex="bybit", market="swap"):
+    """价差 + 参考名义下的滑点 + 深度。执行质量的全部依据。
+
+    ⚠️ 盘口单位各家不同（OKX/Gate 是**张**），归一在 klines.orderbook 里做——
+    不换算的话 OKX 的深度会被算成几百倍，"执行"这一维直接反了。
+    """
     try:
         from handlers import econ
-        r = await md._get("/v5/market/orderbook",
-                          {"category": md.CAT, "symbol": sym, "limit": 200})
-        bids = [(float(p), float(s)) for p, s in (r.get("b") or [])]
-        asks = [(float(p), float(s)) for p, s in (r.get("a") or [])]
+        from handlers import klines as kl
+        bids, asks = await kl.orderbook(sym, ex, market, 200)
         if not bids or not asks:
             return None
         mid = (bids[0][0] + asks[0][0]) / 2
@@ -331,12 +325,15 @@ async def _book_quality(sym):
         return None
 
 
-async def _deep(sym, ticker, turnover, sem, btc_move=0.0):
+async def _deep(sym, ticker, turnover, sem, btc_move=0.0, ex="bybit",
+                market="swap"):
     """对单个候选做细算。任何一项缺失都如实标 None，不用默认值糊过去。"""
     async with sem:
         tf_res, oi, book = await asyncio.gather(
-            asyncio.gather(*[_tf_snapshot(sym, iv) for iv in ("4h", "1h", "15m")]),
-            _oi_change(sym), _book_quality(sym), return_exceptions=True)
+            asyncio.gather(*[_tf_snapshot(sym, iv, ex=ex, market=market)
+                             for iv in ("4h", "1h", "15m")]),
+            _oi_change(sym, ex), _book_quality(sym, ex, market),
+            return_exceptions=True)
     tf = {}
     if not isinstance(tf_res, Exception):
         for iv, v in zip(("4h", "1h", "15m"), tf_res):
@@ -345,9 +342,11 @@ async def _deep(sym, ticker, turnover, sem, btc_move=0.0):
     oi = None if isinstance(oi, Exception) else oi
     book = None if isinstance(book, Exception) else book
     try:
-        funding = float(ticker.get("fundingRate") or 0)
-        chg = float(ticker.get("price24hPcnt") or 0) * 100
-        price = float(ticker.get("lastPrice") or 0)
+        # funding 可能是 None（OKX 的行情接口不带、现货压根没有）——
+        # 保持 None 传给拥挤度打分，别用 0 顶替：0 的意思是"中性"，不是"不知道"
+        funding = ticker.get("funding")
+        chg = float(ticker.get("change") or 0)
+        price = float(ticker.get("price") or 0)
     except (TypeError, ValueError):
         return None
 
@@ -368,7 +367,8 @@ async def _deep(sym, ticker, turnover, sem, btc_move=0.0):
     btc_conflict = (abs(btc_move) >= BTC_ALIGN_PCT and agree != 0
                     and (btc_move > 0) != (agree > 0))
     total, verdict = overall(trend, liq, crowd, ex, atr_pct, net_rr, btc_conflict,
-                             direction=direction, funding=funding)
+                             direction=direction, funding=funding,
+                             crowd_known=not (funding is None and oi is None))
     missing = []
     if not tf:
         missing.append("K线")
@@ -376,6 +376,10 @@ async def _deep(sym, ticker, turnover, sem, btc_move=0.0):
         missing.append("OI")
     if not book:
         missing.append("盘口")
+    if funding is None:
+        # 费率拿不到时拥挤度只算了 OI 那一半，分数会偏低（看起来更安全）。
+        # 必须说出来——把"不知道"当成"中性"正是这类分数骗人的方式。
+        missing.append("费率")
     return {
         "symbol": sym, "price": price, "chg": chg, "turnover": turnover,
         "trend": trend, "direction": direction, "liq": liq, "crowd": crowd,
@@ -387,25 +391,36 @@ async def _deep(sym, ticker, turnover, sem, btc_move=0.0):
     }
 
 
-async def run(limit=DEEP):
-    """完整扫描。返回按可交易性排序的结果。"""
-    pool, btc = await asyncio.gather(_pool(), _btc_bias(), return_exceptions=True)
+async def run(limit=DEEP, source=None):
+    """完整扫描。返回按可交易性排序的结果。
+
+    source 是数据源标签，不传就是 Bybit 永续。⚠️ 换所扫的是**那家的盘口和深度**，
+    结果不可跨所比较——"能不能进出"本来就取决于你在哪家下单。
+    """
+    from handlers import klines as kl
+    ex, market = ("bybit", "swap") if not source else kl.src_mod.split_label(source)
+    if ex == kl.src_mod.AUTO:
+        ex, market = "bybit", "swap"
+    pool, btc = await asyncio.gather(_pool(ex, market), _btc_bias(),
+                                     return_exceptions=True)
     if isinstance(pool, Exception) or not pool:
         return []
     btc = 0.0 if isinstance(btc, Exception) else btc
     sem = asyncio.Semaphore(CONCURRENCY)
     res = await asyncio.gather(
-        *[_deep(s, t, tv, sem, btc) for s, t, tv in pool[:limit]],
+        *[_deep(s, t, tv, sem, btc, ex, market) for s, t, tv in pool[:limit]],
         return_exceptions=True)
     out = [r for r in res if r and not isinstance(r, Exception)]
     out.sort(key=lambda r: -r["total"])
     return out
 
 
-def render(rows, limit=8):
+def render(rows, limit=8, source="Bybit永续"):
     if not rows:
         return "扫描没拿到结果（行情源异常或全市场成交额都低于门槛）。"
     lines = [f"🔍 *机会扫描*　按**可交易性**排序，不是按涨幅",
+             f"数据源 {source}——盘口和深度是**这一家**的，"
+             f"换所结果不可比（能不能进出取决于你在哪下单）",
              f"_粗筛成交额≥{MIN_TURNOVER/1e6:.0f}M，细算前 {len(rows)} 个_",
              "━━━━━━━━━━━━━━"]
     for r in rows[:limit]:
@@ -445,12 +460,16 @@ def render(rows, limit=8):
 async def scan_cmd(update, context):
     """/scan —— 全市场按可交易性排序。"""
     from handlers.util import safe_reply
+    from handlers.source import pref_label
+    src = pref_label(update.effective_chat.id)
     await safe_reply(update.message,
-                     f"🔍 扫描中…（粗筛全市场 → 细算前 {DEEP} 个，约 15~30 秒）")
+                     f"🔍 在 {src or 'Bybit永续'} 上扫描…"
+                     f"（粗筛全市场 → 细算前 {DEEP} 个，约 15~30 秒）")
     try:
-        rows = await run()
+        rows = await run(source=src)
     except Exception as e:
         log.error(f"/scan 失败: {e}")
         await safe_reply(update.message, f"扫描失败：{str(e)[:80]}")
         return
-    await safe_reply(update.message, render(rows), parse_mode="Markdown")
+    await safe_reply(update.message, render(rows, source=src or "Bybit永续"),
+                     parse_mode="Markdown")

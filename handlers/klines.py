@@ -278,6 +278,8 @@ async def universe(ex="bybit", market=SWAP):
             out.append({"symbol": s[:-4],
                         "turnover": float(t.get("turnover24h") or 0),
                         "change": float(t.get("price24hPcnt") or 0) * 100,
+                        "price": float(t.get("lastPrice") or 0),
+                        "funding": _maybe_float(t.get("fundingRate")),
                         "crypto": md.is_crypto_type(types.get(s, ""))
                         and s[:-4] not in bad})
     elif ex == "okx":
@@ -293,6 +295,10 @@ async def universe(ex="bybit", market=SWAP):
             out.append({"symbol": iid[:-len(tail)],
                         "turnover": float(t.get("volCcy24h") or 0) * last,
                         "change": (last - op) / op * 100 if op else 0.0,
+                        "price": last,
+                        # OKX 的行情接口不带资金费率，也没有全市场批量接口。
+                        # 如实留 None——扫描器对缺失是标"未知"，不是当成 0（中性）
+                        "funding": None,
                         # OKX 自己不标品类，只能靠别家标注过的基名反查
                         "crypto": iid[:-len(tail)] not in bad})
     elif ex == "binance":
@@ -301,6 +307,14 @@ async def universe(ex="bybit", market=SWAP):
         rows = (await c.get(url)).json()
         if not isinstance(rows, list):
             return []
+        funding_map = {}
+        if market == SWAP:
+            try:
+                pr = await c.get("https://fapi.binance.com/fapi/v1/premiumIndex")
+                for x in (pr.json() or []):
+                    funding_map[x.get("symbol")] = _maybe_float(x.get("lastFundingRate"))
+            except Exception as e:
+                log.debug(f"取币安资金费率失败: {e}")
         for t in rows:
             s = t.get("symbol") or ""
             if not s.endswith("USDT"):
@@ -309,6 +323,8 @@ async def universe(ex="bybit", market=SWAP):
             out.append({"symbol": base,
                         "turnover": float(t.get("quoteVolume") or 0),
                         "change": float(t.get("priceChangePercent") or 0),
+                        "price": float(t.get("lastPrice") or 0),
+                        "funding": funding_map.get(s),
                         # 杠杆代币（BTCUP/BTCDOWN）不是币，和 Gate 那边同一个理由
                         "crypto": base not in bad
                         and not any(base.endswith(x) for x in _LEV_SUFFIX_BN)})
@@ -325,6 +341,8 @@ async def universe(ex="bybit", market=SWAP):
                 out.append({"symbol": pair[:-5],
                             "turnover": float(t.get("volume_24h_settle") or 0),
                             "change": float(t.get("change_percentage") or 0),
+                            "price": float(t.get("last") or 0),
+                            "funding": _maybe_float(t.get("funding_rate")),
                             "crypto": gate_mod._kind(meta.get(pair))[0]
                             and pair[:-5] not in bad})
         else:
@@ -337,6 +355,8 @@ async def universe(ex="bybit", market=SWAP):
                 out.append({"symbol": base,
                             "turnover": float(t.get("quote_volume") or 0),
                             "change": float(t.get("change_percentage") or 0),
+                            "price": float(t.get("last") or 0),
+                            "funding": None,          # 现货没有资金费率
                             "crypto": not gate_mod._is_leveraged(base)
                             and base not in bad})
     out.sort(key=lambda x: -x["turnover"])
@@ -344,6 +364,15 @@ async def universe(ex="bybit", market=SWAP):
 
 
 _LEV_SUFFIX_BN = ("UP", "DOWN", "BULL", "BEAR")
+
+
+def _maybe_float(v):
+    """能转就转，转不了返回 None——**不要返回 0**。
+    资金费率 0 的意思是"中性"，和"不知道"完全是两回事，扫描器的拥挤度会判反。"""
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
 
 
 async def fetch_for(chat_id, symbol, interval="15m", limit=300, override=None):
@@ -361,3 +390,127 @@ async def fetch_for(chat_id, symbol, interval="15m", limit=300, override=None):
     if market == src_mod.AUTO:
         market = SWAP
     return await fetch(symbol, interval, limit, ex, market)
+
+
+# ---------- 合约乘数 / 持仓量 / 盘口（扫描器要的执行质量数据） ----------
+# 单位是这里唯一的难点，四家全不一样（2026-08-17 实测 BTC 永续买一档）：
+#   Bybit  盘口 size 是**币**            9.869 BTC
+#   币安   盘口 qty  是**币**            9.128 BTC
+#   OKX    盘口 size 是**张**，ctVal 每个合约不同（BTC 0.01、DOGE 1000）
+#   Gate   盘口 s    是**张**，quanto_multiplier 每个合约不同（BTC 0.0001）
+# 不换算就直接比，OKX/Gate 的深度会被算成几百倍——扫描器的"执行"维度直接反了。
+_UNITS = {"at": 0.0, "data": {}}
+_UNITS_TTL = 3600
+
+
+async def contract_units(ex):
+    """{基名: 一张合约等于多少个币}。Bybit/币安盘口本来就是币，返回空表示 1。"""
+    if ex in ("bybit", "binance"):
+        return {}
+    now = time.monotonic()
+    cached = _UNITS["data"].get(ex)
+    if cached and now - _UNITS["at"] < _UNITS_TTL:
+        return cached
+    out = {}
+    try:
+        if ex == "okx":
+            r = await src_mod.client().get(
+                "https://www.okx.com/api/v5/public/instruments",
+                params={"instType": "SWAP"})
+            for x in (r.json().get("data") or []):
+                iid = x.get("instId") or ""
+                if iid.endswith("-USDT-SWAP"):
+                    out[iid[:-10]] = float(x.get("ctVal") or 1)
+        elif ex == "gate":
+            from handlers import gate as gate_mod
+            for name, c in (await gate_mod.contracts()).items():
+                if name.endswith("_USDT"):
+                    out[name[:-5]] = float(c.get("quanto_multiplier") or 1)
+    except Exception as e:
+        log.warning(f"取 {ex} 合约乘数失败，深度会按张数算错: {e}")
+        return {}
+    _UNITS["data"][ex] = out
+    _UNITS["at"] = now
+    return out
+
+
+async def orderbook(symbol, ex="bybit", market=SWAP, limit=200, units=None):
+    """→ (bids, asks)，每档 (价格, **币的数量**)，最优价在前。取不到返回 ([], [])。"""
+    base = src_mod.norm(symbol)
+    mult = 1.0
+    if ex in ("okx", "gate"):
+        u = units if units is not None else await contract_units(ex)
+        mult = float(u.get(base) or 1.0)
+    c = src_mod.client()
+    try:
+        if ex == "bybit":
+            r = await c.get("https://api.bybit.com/v5/market/orderbook",
+                            params={"category": "linear" if market == SWAP else "spot",
+                                    "symbol": f"{base}USDT", "limit": min(limit, 200)})
+            d = (r.json().get("result") or {})
+            return ([(float(p), float(s)) for p, s in (d.get("b") or [])],
+                    [(float(p), float(s)) for p, s in (d.get("a") or [])])
+        if ex == "okx":
+            inst = f"{base}-USDT-SWAP" if market == SWAP else f"{base}-USDT"
+            r = await c.get("https://www.okx.com/api/v5/market/books",
+                            params={"instId": inst, "sz": min(limit, 400)})
+            d = (r.json().get("data") or [{}])[0]
+            return ([(float(x[0]), float(x[1]) * mult) for x in (d.get("bids") or [])],
+                    [(float(x[0]), float(x[1]) * mult) for x in (d.get("asks") or [])])
+        if ex == "binance":
+            url = ("https://fapi.binance.com/fapi/v1/depth" if market == SWAP
+                   else "https://api.binance.com/api/v3/depth")
+            # 币安只认 5/10/20/50/100/500/1000 这几个档数，别的会报错
+            allowed = [5, 10, 20, 50, 100, 500, 1000]
+            lim = min([x for x in allowed if x >= limit] or [1000])
+            r = await c.get(url, params={"symbol": f"{base}USDT", "limit": lim})
+            d = r.json()
+            return ([(float(p), float(q)) for p, q in (d.get("bids") or [])],
+                    [(float(p), float(q)) for p, q in (d.get("asks") or [])])
+        if ex == "gate":
+            r = await c.get("https://api.gateio.ws/api/v4/futures/usdt/order_book",
+                            params={"contract": f"{base}_USDT", "limit": min(limit, 200)})
+            d = r.json()
+            return ([(float(x["p"]), float(x["s"]) * mult) for x in (d.get("bids") or [])],
+                    [(float(x["p"]), float(x["s"]) * mult) for x in (d.get("asks") or [])])
+    except Exception as e:
+        log.debug(f"取盘口失败 {symbol} {ex}: {e}")
+    return [], []
+
+
+async def oi_series(symbol, ex="bybit", interval="15m", limit=13):
+    """持仓量序列（**币的数量**，旧→新）。这家给不了就返回 []——
+    扫描器对缺失是如实标 None 的，不需要我编一个数出来。"""
+    base = src_mod.norm(symbol)
+    c = src_mod.client()
+    try:
+        if ex == "bybit":
+            r = await c.get("https://api.bybit.com/v5/market/open-interest",
+                            params={"category": "linear", "symbol": f"{base}USDT",
+                                    "intervalTime": {"5m": "5min", "15m": "15min",
+                                                     "1h": "1h", "4h": "4h",
+                                                     "1d": "1d"}.get(interval, "15min"),
+                                    "limit": limit})
+            rows = ((r.json().get("result") or {}).get("list") or [])[::-1]
+            return [float(x["openInterest"]) for x in rows]
+        if ex == "binance":
+            r = await c.get("https://fapi.binance.com/futures/data/openInterestHist",
+                            params={"symbol": f"{base}USDT", "period": interval,
+                                    "limit": limit})
+            rows = r.json()
+            return [float(x["sumOpenInterest"]) for x in rows] \
+                if isinstance(rows, list) else []
+        if ex == "gate":
+            r = await c.get("https://api.gateio.ws/api/v4/futures/usdt/contract_stats",
+                            params={"contract": f"{base}_USDT", "interval": interval,
+                                    "limit": limit})
+            rows = r.json()
+            if not isinstance(rows, list):
+                return []
+            u = await contract_units("gate")
+            mult = float(u.get(base) or 1.0)
+            return [float(x.get("open_interest") or 0) * mult for x in rows]
+    except Exception as e:
+        log.debug(f"取持仓量失败 {symbol} {ex}: {e}")
+    # OKX 没有按合约的持仓量历史接口（只有按币种聚合的），如实返回空
+    return []

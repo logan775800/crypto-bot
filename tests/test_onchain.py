@@ -250,11 +250,34 @@ def test_command_registered():
     assert 'CommandHandler("onchain"' in src
 
 
-def test_menu_entry_exists():
+def test_onchain_has_its_own_home_entry():
+    """链上是**另一个市场**，和交易所行情并列，不该埋在机会扫描里。"""
+    from handlers import menu
+    cbs = [b.callback_data for row in menu.main_menu_kb().inline_keyboard
+           for b in row]
+    assert "cat_onchain" in cbs, "首页必须有链上入口"
+
+
+def test_scan_panel_links_to_the_onchain_zone():
     from handlers import menu
     rows = menu.CATS["cat_scan"][1]
     cbs = [b.callback_data for row in rows for b in row]
-    assert any(c.startswith("oc:") for c in cbs), "新功能必须有按钮入口"
+    assert "cat_onchain" in cbs
+
+
+def test_onchain_home_covers_the_whole_path():
+    """查币 → 各链热门 → 我的监控，一条完整的路都要有按钮。"""
+    cbs = [b.callback_data for row in OC.home_kb().inline_keyboard for b in row]
+    assert "oc:ask" in cbs
+    assert "oc:my" in cbs
+    for k in OC.CHAINS:
+        assert f"oc:t:{k}" in cbs
+
+
+def test_onchain_zone_is_routed():
+    import inspect
+    from handlers import menu
+    assert 'd == "cat_onchain"' in inspect.getsource(menu._dispatch)
 
 
 def test_address_pasted_in_chat_is_handled():

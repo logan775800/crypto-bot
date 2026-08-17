@@ -224,14 +224,50 @@ def fmt_price(p):
 
 
 # ---------- 查询 ----------
-async def by_address(addr):
-    """按合约地址查 → (代币, 同代币的其它池子数)。这是**精确**的查法。"""
+def token_id(t):
+    """代币的唯一身份：**链 + 合约地址 + 池地址**，三者缺一不可。
+
+    只用名字会撞上同名假币（搜 PEPE 出 30 个）；只用合约地址还不够——
+    同一个代币在同一条链上有多个池子，价格和深度都不一样（实测「牛来」12 个池），
+    报价说的是哪个池、监控盯的是哪个池，必须能说清楚。
+    """
+    return f"{t.get('chain_key') or t.get('chain')}:{t.get('address')}:{t.get('pool')}"
+
+
+def price_spread(pools, min_liq=LIQ_DANGER):
+    """多池价格偏差 → (偏差%, 最低价, 最高价, 参与比较的池子数)。
+
+    偏差大意味着某个池子正在被拉或被砸，此刻的"价格"取决于你用哪个池成交——
+    不说清楚就等于给了一个不存在的价。
+    """
+    ps = [p for p in pools if (p.get("liq") or 0) >= min_liq and (p.get("price") or 0) > 0]
+    if len(ps) < 2:
+        return 0.0, 0.0, 0.0, len(ps)
+    lo = min(p["price"] for p in ps)
+    hi = max(p["price"] for p in ps)
+    return ((hi - lo) / lo * 100 if lo else 0.0), lo, hi, len(ps)
+
+
+async def by_address(addr, chain=None):
+    """按合约地址查 → (代币, 该代币的池子总数)。这是**精确**的查法。
+
+    返回的代币里带上 pools（各池的价/深度）和 fetched_at（取数时刻），
+    调用方要展示价格来源和多池偏差都靠它。chain 传了就只认那条链上的池子——
+    同一个地址在多条链上可能都有（桥过去的），不指定就用可信流动性最大的。
+    """
     d = await _get(f"{DS}/latest/dex/tokens/{addr.strip()}")
     pairs = d.get("pairs") or []
-    if not pairs:
+    norm = [_pair(x) for x in pairs]
+    if chain:
+        norm = [p for p in norm if p.get("chain_key") == chain] or norm
+    if not norm:
         return None, 0
     # 用可信流动性挑主池：同一个代币下也会有大而空的假池
-    best = max((_pair(x) for x in pairs), key=effective_liq)
+    best = max(norm, key=effective_liq)
+    same_chain = [p for p in norm if p["chain_key"] == best["chain_key"]]
+    best["pools"] = sorted(same_chain, key=effective_liq, reverse=True)[:8]
+    best["pool_count"] = len(same_chain)
+    best["fetched_at"] = time.time()
     return best, len(pairs)
 
 
@@ -309,6 +345,86 @@ async def ohlcv(chain_key, pool, tf="1h", limit=200):
     return out
 
 
+TF_MS = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+WICK_BODY_RATIO = 3.0      # 影线是实体的几倍才算插针
+WICK_MIN_PCT = 3.0         # 且影线本身要占价格这么多百分比，否则只是正常波动
+# 还要超过**这个币自己**的影线中位数这么多倍。只用固定百分比不行：
+# 实测「牛来」200 根 15m 里有 48 根（四分之一）被判成插针——标记一密就等于没标。
+# 插针的定义本来就是"比这个币平时的噪音突出得多"，所以基准要用它自己的噪音。
+WICK_MEDIAN_RATIO = 3.0
+MAX_MARKS = 8              # 图上最多标几个，只留最极端的
+VOL_SPIKE_RATIO = 4.0      # 成交量是中位数的几倍算异常
+
+
+def kline_marks(rows, tf):
+    """标出「这根不能当正常K线看」的地方。返回 dict。
+
+    链上池子浅，一笔大单就能画出一根插针，而插针那个价**根本成交不到量**——
+    照着影线的高低点去设止损或判突破，等于按一个不存在的价格做决策。
+    最后一根还没收盘也必须说：它随时会变，用它做判断是在追一个还在动的数。
+    """
+    out = {"unclosed": False, "wicks": [], "vol_spikes": [], "bar_ms": TF_MS.get(tf, 0)}
+    if not rows:
+        return out
+    bar_ms = TF_MS.get(tf, 0)
+    if bar_ms:
+        # 最后一根的开始时间 + 一根的长度 还没走到现在 → 它还在形成中
+        out["unclosed"] = (rows[-1][0] + bar_ms) > time.time() * 1000
+
+    vols = sorted(r[5] for r in rows if r[5] > 0)
+    med_vol = vols[len(vols) // 2] if vols else 0.0
+    # 这个币自己的影线噪音水平：拿它当基准，才分得清"波动大"和"插针"
+    all_wicks = []
+    for _ts, o, h, lo, c, _v in rows:
+        all_wicks.append(h - max(o, c))
+        all_wicks.append(min(o, c) - lo)
+    all_wicks = sorted(w for w in all_wicks if w > 0)
+    med_wick = all_wicks[len(all_wicks) // 2] if all_wicks else 0.0
+
+    for i, (ts, o, h, lo, c, v) in enumerate(rows):
+        body = abs(c - o)
+        ref = c or o or 1.0
+        for wick, side in ((h - max(o, c), "上"), (min(o, c) - lo, "下")):
+            if wick <= 0 or ref <= 0:
+                continue
+            # 实体接近 0 时用价格自身做分母，避免除零把普通K线判成插针
+            if (wick >= WICK_BODY_RATIO * max(body, ref * 0.001)
+                    and wick / ref * 100 >= WICK_MIN_PCT
+                    and (med_wick <= 0 or wick >= WICK_MEDIAN_RATIO * med_wick)):
+                out["wicks"].append({"i": i, "ts": ts, "side": side,
+                                     "pct": wick / ref * 100,
+                                     "price": h if side == "上" else lo})
+        if med_vol > 0 and v >= VOL_SPIKE_RATIO * med_vol:
+            out["vol_spikes"].append({"i": i, "ts": ts, "x": v / med_vol})
+
+    # 只留最极端的几个：标记一密就没人看了，也画得满图都是
+    out["wicks"] = sorted(out["wicks"], key=lambda w: -w["pct"])[:MAX_MARKS]
+    out["vol_spikes"] = sorted(out["vol_spikes"], key=lambda s: -s["x"])[:MAX_MARKS]
+    return out
+
+
+def marks_text(marks, tf):
+    """把标记讲成人话。没有异常就返回空列表，不制造噪音。"""
+    out = []
+    if marks.get("unclosed"):
+        out.append(f"⏳ 最后一根 {tf} K线**还没收盘**，它还会变——"
+                   f"别拿一根没走完的K线做判断")
+    ws = marks.get("wicks") or []
+    if ws:
+        worst = max(ws, key=lambda w: w["pct"])
+        when = time.strftime("%m-%d %H:%M", time.localtime(worst["ts"] / 1000))
+        out.append(f"📌 {len(ws)} 根插针（最长 {when} {worst['side']}影 "
+                   f"{worst['pct']:.0f}%，到 ${fmt_price(worst['price'])}）——"
+                   f"池子浅，一笔单就能戳出来，那个价成交不到量")
+    vs = marks.get("vol_spikes") or []
+    if vs:
+        worst = max(vs, key=lambda v: v["x"])
+        when = time.strftime("%m-%d %H:%M", time.localtime(worst["ts"] / 1000))
+        out.append(f"📊 {len(vs)} 根异常放量（最大 {when} 是中位量的 "
+                   f"{worst['x']:.0f} 倍）")
+    return out
+
+
 def _ascii_title(t, tf):
     """图表标题只能是 ASCII——镜像里没有中文字体，「牛来」会渲染成豆腐块。
     所以中文名一律退回合约地址开头，图上认得出是哪个币就行，中文说明放在图下面。"""
@@ -351,6 +467,23 @@ async def build_chart(t, tf="1h"):
         if f"E{n}" in df:
             aps.append(mpf.make_addplot(df[f"E{n}"], color=color, width=0.9))
 
+    # 异常标记也画到图上：光在文字里说，看图的时候还是会把插针当成真实高低点
+    marks = kline_marks(rows, tf)
+    if marks["wicks"]:
+        ser = [None] * len(rows)
+        for w in marks["wicks"]:
+            ser[w["i"]] = w["price"]
+        if any(x is not None for x in ser):
+            aps.append(mpf.make_addplot(pd.Series(ser, index=df.index), type="scatter",
+                                        marker="x", markersize=60, color="#d500f9"))
+    if marks["vol_spikes"]:
+        ser = [None] * len(rows)
+        for s in marks["vol_spikes"]:
+            ser[s["i"]] = rows[s["i"]][2]
+        if any(x is not None for x in ser):
+            aps.append(mpf.make_addplot(pd.Series(ser, index=df.index), type="scatter",
+                                        marker="^", markersize=40, color="#ff9100"))
+
     mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit",
                                wick="inherit", volume="in")
     style = mpf.make_mpf_style(base_mpf_style="charles", marketcolors=mc,
@@ -365,13 +498,21 @@ async def build_chart(t, tf="1h"):
         return None
     buf.seek(0)
     hi, lo = max(r[2] for r in rows), min(r[3] for r in rows)
-    cap = "\n".join([
-        f"📈 *{escape_md(t['symbol'])}*　{tf}　{t['chain_cn']}",
-        f"现价 *${fmt_price(closes[-1])}*　区间 ${fmt_price(lo)}~${fmt_price(hi)}",
-        f"{len(rows)} 根K线　池 ${t['liq']:,.0f}",
-        "蓝线 EMA20／橙线 EMA50",
-        "⚠️ 链上池子浅，单笔大单就能画出长影线——K线形态的参考价值远低于交易所",
-    ])
+    head = [f"📈 *{escape_md(t['symbol'])}*　{tf}　{t['chain_cn']}",
+            f"现价 *${fmt_price(closes[-1])}*　区间 ${fmt_price(lo)}~${fmt_price(hi)}",
+            f"{len(rows)} 根K线　池 ${t['liq']:,.0f}"]
+    if t.get("pool"):
+        head.append(f"池子 `{_short(t['pool'])}`——K线是**这一个池**的，不是全链均价")
+    body = marks_text(marks, tf)
+    tail = ["蓝线 EMA20／橙线 EMA50"]
+    if marks["wicks"]:
+        tail.append("紫 ✕ = 插针")
+    if marks["vol_spikes"]:
+        tail.append("橙 ▲ = 异常放量")
+    cap = "\n".join(head + (["━━━━━━━━━━━━━━"] + body if body else []) +
+                    ["　".join(tail),
+                     "⚠️ 链上池子浅，单笔大单就能画出长影线——"
+                     "K线形态的参考价值远低于交易所"])
     return buf, cap
 
 
@@ -423,18 +564,48 @@ def render_token(t, pools=1, same_name=0):
         age = f"{age_h:.0f} 小时" if age_h < 48 else f"{age_h/24:.0f} 天"
         lines.append(f"池子年龄 {age}")
 
+    # ── 价格是从哪来的：来源池 / 取数时刻 / 多池偏差 ──
+    # 不说清楚就等于给了一个"不存在的价"——同一个代币不同池子的价能差出几个点，
+    # 你按哪个池成交拿到的就是哪个价。
+    lines.append("━━━━━━━━━━━━━━")
+    src_pool = t.get("pool") or ""
+    lines.append(f"📍 价格来源　{escape_md(t['dex'])}　池 `{_short(src_pool)}`")
+    lines.append(f"　 该池深度 ${t['liq']:,.0f}")
+    if t.get("fetched_at"):
+        lines.append(f"🕐 取数时刻　{time.strftime('%H:%M:%S', time.localtime(t['fetched_at']))}"
+                     f"（接口不给更新时间戳，这是我取到它的时刻）")
+    pool_list = t.get("pools") or []
+    dev, lo, hi, n = price_spread(pool_list)
+    if n >= 2:
+        tag = "⚠️ " if dev >= 3 else ""
+        lines.append(f"{tag}多池偏差　{dev:.2f}%　（{n} 个≥${LIQ_DANGER//1000}k 的池子："
+                     f"${fmt_price(lo)} ~ ${fmt_price(hi)}）")
+        if dev >= 3:
+            lines.append("　 偏差这么大说明某个池子正在被拉或被砸，"
+                         "成交前先确认你走的是哪个池")
+    elif t.get("pool_count", 1) > 1:
+        lines.append(f"多池偏差　只有 {n} 个池子够深，其余太浅不参与比较")
+
     rk = risks(t)
     if rk:
         lines.append("━━━━━━━━━━━━━━")
         lines.extend(rk)
     if pools > 1:
-        lines.append(f"（该代币共 {pools} 个池子，上面是流动性最大的那个）")
+        lines.append(f"（该代币共 {pools} 个池子，上面是可信流动性最大的那个）")
     if same_name:
         lines.append(f"⚠️ 链上有 *{same_name}* 个同名代币——链上没有上币审核，"
                      f"同名假币是常态。**认准合约地址**：")
-    lines.append(f"`{t['address']}`")
+    lines.append("━━━━━━━━━━━━━━")
+    lines.append(f"🔗 身份　{t['chain_cn']}")
+    lines.append(f"　 代币 `{t['address']}`")
+    if src_pool:
+        lines.append(f"　 池子 `{src_pool}`")
     lines.append("\n⚠️ 链上代币风险远高于交易所币，不构成投资建议")
     return "\n".join(lines)
+
+
+def _short(addr):
+    return f"{addr[:6]}…{addr[-4:]}" if addr and len(addr) > 14 else (addr or "?")
 
 
 def render_list(items, q, total):

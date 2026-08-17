@@ -230,17 +230,21 @@ async def _tf_snapshot(sym, iv, limit=120, ex="bybit", market="swap"):
         c = [x[4] for x in rows]
         if len(c) < 55:
             return None
-        # 趋势排列用 MA3/13/23（全局统一口径，见 annotchart.MA_PERIODS）——
-        # 以前这里是 EMA20/50，和图上、破位扫描各说各话
-        from handlers.annotchart import _ma_series, MA_PERIODS
+        # 趋势排列直接复用 ma_align——和破位扫描**同一个函数**，
+        # 不是"同一套周期各写一遍判定"。
+        # 这里踩过一次：我给它多加了"价格要在最上面"这一条，看着更严谨，
+        # 实测把"有方向"的比例从 87%(旧EMA口径) 压到 39%，
+        # 大半个市场被判成"分歧"、扫描几乎给不出绿灯。ma_align 是 74%。
+        # 顺势的定义就是**均线排列**，价格在不在最上面是另一回事（那是回踩）。
+        from handlers.annotchart import _ma_series, ma_align, MA_PERIODS
         p1, p2, p3 = MA_PERIODS
         s1 = _ma_series(c, p1)[-1] if len(c) >= p1 else None
         s2 = _ma_series(c, p2)[-1] if len(c) >= p2 else None
         s3 = _ma_series(c, p3)[-1] if len(c) >= p3 else None
         if not (s1 and s2 and s3):
             return None
+        align = ma_align(c)
         last = c[-1]
-        align = 1 if last > s1 > s2 > s3 else (-1 if last < s1 < s2 < s3 else 0)
         prev_ser = _ma_series(c[:-10], p1) if len(c) > p1 + 10 else None
         prev = prev_ser[-1] if prev_ser and prev_ser[-1] is not None else None
         e20 = s1

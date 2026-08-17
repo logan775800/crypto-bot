@@ -242,3 +242,38 @@ def test_scan_render_names_the_source():
              "funding": 0.0001, "oi_change": 1.0, "slip": 0.1, "partial": False,
              "atr_pct": 2.0, "net_rr": 2.5, "btc_conflict": False, "missing": []}]
     assert "Gate永续" in scan.render(rows, source="Gate永续")
+
+
+# ── 趋势口径：和破位扫描共用同一个函数，不是各写一遍 ─────────────
+def test_scan_trend_reuses_ma_align():
+    """曾经在这里另写过一遍判定（多加了"价格要在最上面"），看着更严谨，
+    实测把"有方向"的比例从 87% 压到 39%——大半个市场被判成"分歧"，
+    扫描几乎给不出绿灯。顺势的定义就是**均线排列**，价格在哪是另一回事。"""
+    import inspect
+    from handlers import scan
+    src = inspect.getsource(scan._tf_snapshot)
+    assert "ma_align(c)" in src
+    assert "c[-1] > s1 > s2 > s3" not in src.replace(" ", " ")
+
+
+def test_tf_snapshot_returns_data_for_a_normal_series():
+    """_tf_snapshot 把所有异常都吞成 None，表现出来就是"趋势 0(无数据)"——
+    改这个函数时漏掉一个变量就会静默变成"全市场都没趋势"，实际发生过。"""
+    import asyncio
+    from handlers import scan, klines as kl
+
+    rows = [[i * 3_600_000, 100 + i, 101 + i, 99 + i, 100.5 + i, 10.0, 1000.0]
+            for i in range(120)]
+
+    async def fake_fetch(sym, iv, limit, ex, market):
+        return rows, {"label": "Bybit永续"}
+
+    orig = kl.fetch
+    kl.fetch = fake_fetch
+    try:
+        got = asyncio.run(scan._tf_snapshot("BTCUSDT", "1h"))
+    finally:
+        kl.fetch = orig
+    assert got is not None, "涨了 120 根还说没数据，说明函数里抛了异常被吞掉"
+    assert got["align"] == 1
+    assert got["close"] > 0 and got["atr_pct"] is not None

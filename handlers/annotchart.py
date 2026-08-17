@@ -90,6 +90,53 @@ def ma_align(closes, periods=MA_PERIODS):
     return 0
 
 
+# ── 中文字体 ──────────────────────────────────────────────────────
+# 镜像里装了 fonts-noto-cjk（见 Dockerfile）。但**不能假设一定装上了**：
+# 本地跑、旧镜像、别人拿去部署都可能没有。没字体时中文会渲染成一排豆腐块，
+# 那比退回显示英文/地址还糟。所以探测一次，探到才用中文。
+_CJK = {"checked": False, "name": None}
+_CJK_NAMES = ("Noto Sans CJK SC", "Noto Sans CJK JP", "Noto Sans CJK",
+              "Source Han Sans SC", "WenQuanYi Zen Hei",
+              "Microsoft YaHei", "SimHei", "PingFang SC")
+_CJK_FILE_HINTS = ("notosanscjk", "notoserifcjk", "sourcehansans", "wqy", "msyh")
+
+
+def cjk_font():
+    """可用的中文字体名；没有返回 None（调用方退回 ASCII）。"""
+    if _CJK["checked"]:
+        return _CJK["name"]
+    _CJK["checked"] = True
+    try:
+        import matplotlib.font_manager as fm
+        have = {f.name for f in fm.fontManager.ttflist}
+        for name in _CJK_NAMES:
+            if name in have:
+                _CJK["name"] = name
+                break
+        else:
+            # 各发行版 Noto 的 family 名不一致，再按文件名兜一层
+            for f in fm.fontManager.ttflist:
+                if any(k in (f.fname or "").lower() for k in _CJK_FILE_HINTS):
+                    _CJK["name"] = f.name
+                    break
+    except Exception as e:
+        log.debug(f"探测中文字体失败: {e}")
+    log.info(f"图表中文字体：{_CJK['name'] or '无（标题退回 ASCII）'}")
+    return _CJK["name"]
+
+
+def apply_cjk(style_kwargs=None):
+    """给 mplfinance 的 style 补上中文字体设置。没字体就原样返回。"""
+    font = cjk_font()
+    out = dict(style_kwargs or {})
+    if font:
+        rc = dict(out.get("rc") or {})
+        rc["font.family"] = font
+        rc["axes.unicode_minus"] = False      # 中文字体下负号会变成方块
+        out["rc"] = rc
+    return out
+
+
 def levels(rows, plot_bars=PLOT_BARS):
     """算出要标在图上的关键位。纯函数，方便测。
 
@@ -149,7 +196,11 @@ _STRUCT_ASCII = {
 
 
 def _ascii_structure(lv):
-    return _STRUCT_ASCII.get(lv.get("structure"), "")
+    """结构标签。有中文字体就直接用中文（更好读），没有才用 ASCII 对照表。"""
+    tag = lv.get("structure") or ""
+    if cjk_font():
+        return tag
+    return _STRUCT_ASCII.get(tag, "")
 
 
 def caption(symbol, interval, lv):
@@ -220,8 +271,9 @@ async def build_chart(symbol, interval=DEFAULT_IV, source=None):
     sym = md.norm(symbol).replace("USDT", "")
     mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit",
                                wick="inherit", volume="in")
-    style = mpf.make_mpf_style(base_mpf_style="charles", marketcolors=mc,
-                               gridstyle=":", facecolor="white")
+    style = mpf.make_mpf_style(**apply_cjk(
+        dict(base_mpf_style="charles", marketcolors=mc,
+             gridstyle=":", facecolor="white")))
     aps = []
     for col, color in zip([f"MA{n}" for n in MA_PERIODS], MA_COLORS):
         if df[col].notna().any():

@@ -478,6 +478,13 @@ async def orderbook(symbol, ex="bybit", market=SWAP, limit=200, units=None):
     return [], []
 
 
+# 统一周期 → (rubik 支持的周期, 根数换算比)。例：想要 13 根 15m，
+# 就取 13×3=39 根 5m，覆盖的时间跨度一样。
+_OKX_OI_PERIOD = {"5m": ("5m", 1), "15m": ("5m", 3), "30m": ("5m", 6),
+                  "1h": ("1H", 1), "2h": ("1H", 2), "4h": ("1H", 4),
+                  "12h": ("1H", 12), "1d": ("1D", 1)}
+
+
 async def oi_series(symbol, ex="bybit", interval="15m", limit=13):
     """持仓量序列（**币的数量**，旧→新）。这家给不了就返回 []——
     扫描器对缺失是如实标 None 的，不需要我编一个数出来。"""
@@ -510,7 +517,26 @@ async def oi_series(symbol, ex="bybit", interval="15m", limit=13):
             u = await contract_units("gate")
             mult = float(u.get(base) or 1.0)
             return [float(x.get("open_interest") or 0) * mult for x in rows]
+        if ex == "okx":
+            # OKX 没有"按合约"的持仓量历史，只有 rubik 的**按币种聚合**统计
+            # （同一个币的所有合约加总，含币本位）。当代理指标用够了——
+            # 扫描器要的是"OI 在涨还是在跌"这个变化率，不是绝对值。
+            # 但它给的是**美元名义**，和别家的"币数量"不同口径，
+            # 所以只能内部比自己的首尾，绝不能和别家的数直接比。
+            # rubik 的 period 只认 5m / 1H / 1D（实测 15m、1h、4H 都报 51000
+            # 参数错误）。所以把请求周期折到它支持的档，再按时间跨度换算根数——
+            # 直接把 "15m" 传过去会静默拿到空列表，表现成"这家没有持仓量"。
+            per, ratio = _OKX_OI_PERIOD.get(norm_interval(interval), ("5m", 3))
+            want = max(2, int(limit * ratio))
+            r = await c.get(
+                "https://www.okx.com/api/v5/rubik/stat/contracts/open-interest-volume",
+                params={"ccy": base, "period": per})
+            d = r.json()
+            rows = d.get("data") or []
+            if d.get("code") != "0" or not rows:
+                return []
+            # 返回是新→旧；反成旧→新后取够覆盖同样时间跨度的根数
+            return [float(x[1]) for x in reversed(rows)][-want:]
     except Exception as e:
         log.debug(f"取持仓量失败 {symbol} {ex}: {e}")
-    # OKX 没有按合约的持仓量历史接口（只有按币种聚合的），如实返回空
     return []

@@ -179,7 +179,9 @@ class TestCaption:
 
 
 class TestAsciiStructure:
-    """图标题必须纯 ASCII：镜像 python:3.11-slim 无 CJK 字体，中文会渲染成豆腐块。"""
+    """结构标签：**装了中文字体就直接用中文**（镜像里有 fonts-noto-cjk），
+    没装才退回 ASCII 对照表——中文硬画出来是一排豆腐块。
+    下面这几条统一把字体探测钉死，免得跟着跑测试的机器有没有中文字体飘。"""
 
     def test_every_structure_label_has_an_ascii_mapping(self):
         # marketdata.structure 新增标签而这里没跟上 → 标题会静默变空
@@ -197,8 +199,102 @@ class TestAsciiStructure:
         for v in _STRUCT_ASCII.values():
             assert v.isascii(), v
 
-    def test_unknown_label_degrades_to_empty_not_chinese(self):
+    def test_unknown_label_degrades_to_empty_without_font(self, monkeypatch):
+        """没字体时遇到没映射的标签宁可空着，也别把中文画成豆腐块。"""
+        from handlers import annotchart as A
+        monkeypatch.setitem(A._CJK, "checked", True)
+        monkeypatch.setitem(A._CJK, "name", None)
         assert _ascii_structure({"structure": "某个新标签"}) == ""
 
-    def test_lookup_works(self):
+    def test_lookup_works_without_font(self, monkeypatch):
+        from handlers import annotchart as A
+        monkeypatch.setitem(A._CJK, "checked", True)
+        monkeypatch.setitem(A._CJK, "name", None)
         assert _ascii_structure({"structure": "上升结构(HH+HL)"}) == "Uptrend HH+HL"
+
+    def test_chinese_is_used_when_the_font_exists(self, monkeypatch):
+        from handlers import annotchart as A
+        monkeypatch.setitem(A._CJK, "checked", True)
+        monkeypatch.setitem(A._CJK, "name", "Noto Sans CJK SC")
+        assert _ascii_structure({"structure": "上升结构(HH+HL)"}) == "上升结构(HH+HL)"
+
+
+class TestMaConsistency:
+    """三处均线必须同一套口径。
+
+    以前：日线图 MA7/25/99、标注图 EMA20/50/200、破位扫描 MA3/13/23——
+    同一个币在三个地方给出三种"排列"，用户没法知道该信哪个。
+    """
+
+    def test_detail_chart_uses_the_same_periods(self):
+        import inspect
+        from handlers import detail
+        src = inspect.getsource(detail)
+        assert "MA_PERIODS" in src
+        assert "mav=(7, 25, 99)" not in src
+
+    def test_marketdata_analysis_uses_the_same_periods(self):
+        import inspect
+        from handlers import marketdata
+        src = inspect.getsource(marketdata.klines_analysis)
+        assert "MA_PERIODS" in src
+        assert "ema(c, 20)" not in src
+
+    def test_scan_trend_uses_the_same_periods(self):
+        import inspect
+        from handlers import scan
+        src = inspect.getsource(scan._tf_snapshot)
+        assert "MA_PERIODS" in src
+        assert "md.ema(c, 20)" not in src
+
+    def test_breakout_shares_the_same_align(self):
+        import inspect
+        from handlers import breakout
+        assert "ma_align" in inspect.getsource(breakout.detect)
+
+
+class TestCjkFont:
+    """图上的中文：装了字体就用真名，没装才退回 ASCII。
+    没字体时硬画中文会渲染成一排豆腐块，比显示英文/地址还糟。"""
+
+    def test_probe_is_cached(self):
+        from handlers.annotchart import cjk_font, _CJK
+        cjk_font()
+        assert _CJK["checked"] is True
+
+    def test_apply_cjk_sets_font_when_available(self, monkeypatch):
+        from handlers import annotchart as A
+        monkeypatch.setitem(A._CJK, "checked", True)
+        monkeypatch.setitem(A._CJK, "name", "Noto Sans CJK SC")
+        out = A.apply_cjk({"base_mpf_style": "charles"})
+        assert out["rc"]["font.family"] == "Noto Sans CJK SC"
+        assert out["rc"]["axes.unicode_minus"] is False   # 否则负号变方块
+
+    def test_apply_cjk_is_a_noop_without_font(self, monkeypatch):
+        from handlers import annotchart as A
+        monkeypatch.setitem(A._CJK, "checked", True)
+        monkeypatch.setitem(A._CJK, "name", None)
+        assert A.apply_cjk({"x": 1}) == {"x": 1}
+
+    def test_onchain_title_falls_back_without_font(self, monkeypatch):
+        from handlers import annotchart as A, onchain as OC
+        monkeypatch.setitem(A._CJK, "checked", True)
+        monkeypatch.setitem(A._CJK, "name", None)
+        t = {"symbol": "牛来", "address": "0xBEEA1D618e533a387D941F58a7d4c9b7bD377777",
+             "chain": "bsc"}
+        title = OC._ascii_title(t, "1h")
+        assert title.isascii() and "0xBEEA1D61" in title
+
+    def test_onchain_title_uses_chinese_with_font(self, monkeypatch):
+        from handlers import annotchart as A, onchain as OC
+        monkeypatch.setitem(A._CJK, "checked", True)
+        monkeypatch.setitem(A._CJK, "name", "Noto Sans CJK SC")
+        t = {"symbol": "牛来", "address": "0xa", "chain": "bsc"}
+        assert "牛来" in OC._ascii_title(t, "1h")
+
+    def test_dockerfile_installs_the_font(self):
+        import io as _io
+        import os
+        p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "Dockerfile")
+        assert "fonts-noto-cjk" in _io.open(p, encoding="utf-8").read()

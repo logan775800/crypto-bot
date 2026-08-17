@@ -3,7 +3,7 @@
 一次查询推送两条消息：
   1) 信息卡：价格/来源 + 市值·排名·成交量·多周期涨跌 + RSI(4h·1d) + 资金费率
              + 全市场主动买卖估算(Binance/OKX/Bitget/Bybit 四所现货齐全才显示)
-  2) 蜡烛图(MA7/25/99 + 成交量) + 综合研判(趋势/动能/量能/强度)
+  2) 蜡烛图(MA3/13/23 + 成交量) + 综合研判(趋势/动能/量能/强度)
 
 数据源都是各交易所公开接口，无需鉴权。任一环节失败都优雅降级，不影响其余内容。
 """
@@ -366,10 +366,15 @@ def _build_signal_text(o, h, l, c, v):
     """由日线 OHLCV 生成 综合信号/趋势/动能/量能/强度 五行研判。"""
     closes, highs, lows, vols = c, h, l, v
     last = closes[-1]
-    ma7 = sma(closes, 7)
-    ma25 = sma(closes, 25)
-    ma99 = sma(closes, 99)
-    ma25_prev = sma(closes[:-3], 25) if len(closes) > 28 else None
+    # 均线口径全局统一成 MA3/13/23（annotchart.MA_PERIODS）——
+    # 以前这张日线图是 MA7/25/99、标注图是 EMA20/50/200、破位扫描又是 3/13/23，
+    # 同一个币在三个地方能得出三种"排列"，用户没法知道该信哪个。
+    from handlers.annotchart import MA_PERIODS
+    _P1, _P2, _P3 = MA_PERIODS
+    ma7 = sma(closes, _P1)
+    ma25 = sma(closes, _P2)
+    ma99 = sma(closes, _P3)
+    ma25_prev = sma(closes[:-3], _P2) if len(closes) > _P2 + 3 else None
     mh = macd_hist(closes)
     r = _rsi(closes, 14)
     ax = _adx(highs, lows, closes, 14)
@@ -386,19 +391,19 @@ def _build_signal_text(o, h, l, c, v):
     if ma7 and ma25:
         if ma7 > ma25:
             score += 1
-            trend_ma = "MA7>MA25 短期偏强"
+            trend_ma = f"MA{_P1}>MA{_P2} 短期偏强"
         else:
             score -= 1
-            trend_ma = "MA7<MA25 短期偏弱"
+            trend_ma = f"MA{_P1}<MA{_P2} 短期偏弱"
     else:
         trend_ma = "均线数据不足"
     if ma25 and ma25_prev:
         if ma25 > ma25_prev:
-            trend_dir = "MA25 上行"; score += 1
+            trend_dir = f"MA{_P2} 上行"; score += 1
         else:
-            trend_dir = "MA25 下行"; score -= 1
+            trend_dir = f"MA{_P2} 下行"; score -= 1
     else:
-        trend_dir = "MA25 走平"
+        trend_dir = f"MA{_P2} 走平"
     trend_line = f"趋势：{trend_ma}，{trend_dir}"
 
     # —— 动能 ——
@@ -472,7 +477,7 @@ def _build_signal_text(o, h, l, c, v):
 
 
 async def build_signal_chart(symbol):
-    """生成蜡烛图(MA7/25/99+量) 并附综合研判文案。返回 (buf, caption) 或 None。"""
+    """生成蜡烛图(MA3/13/23+量) 并附综合研判文案。返回 (buf, caption) 或 None。"""
     ohlcv = await _daily_ohlcv(symbol)
     if not ohlcv or len(ohlcv) < 30:
         return None
@@ -480,6 +485,7 @@ async def build_signal_chart(symbol):
         import datetime
         import pandas as pd
         import mplfinance as mpf
+        from handlers.annotchart import MA_PERIODS
     except Exception as e:
         log.error(f"[chart] 绘图库缺失: {e}")
         return None
@@ -492,16 +498,19 @@ async def build_signal_chart(symbol):
          "Volume": [r[5] for r in ohlcv]},
         index=pd.DatetimeIndex(idx),
     )
-    # 只画最近 ~120 根，均线用全量算好再截可保证 MA99 有值；这里数据本就是最近 120 根
+    # 只画最近 ~120 根，均线用全量算好再截可保证长周期均线有值
     last = df["Close"].iloc[-1]
     mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit",
                                wick="inherit", volume="in")
-    style = mpf.make_mpf_style(base_mpf_style="charles", marketcolors=mc,
-                               gridstyle=":", facecolor="white",
-                               mavcolors=["#f5b800", "#2962ff", "#8e44ad"])  # MA7黄/MA25蓝/MA99紫
+    from handlers.annotchart import apply_cjk
+    style = mpf.make_mpf_style(**apply_cjk(dict(
+        base_mpf_style="charles", marketcolors=mc,
+        gridstyle=":", facecolor="white",
+        # MA3黄/MA13蓝/MA23紫
+        mavcolors=["#f5b800", "#2962ff", "#8e44ad"])))
     buf = io.BytesIO()
     try:
-        mpf.plot(df, type="candle", mav=(7, 25, 99), volume=True, style=style,
+        mpf.plot(df, type="candle", mav=MA_PERIODS, volume=True, style=style,
                  title=f"[{sym}] 1d  #{last:g}", figsize=(11, 6.5),
                  tight_layout=True, savefig=dict(fname=buf, dpi=90, format="png"))
     except Exception as e:

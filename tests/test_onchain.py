@@ -418,13 +418,25 @@ def test_ohlcv_rejects_unknown_chain():
     assert asyncio.run(OC.ohlcv("火币链", "0xpool")) == []
 
 
-def test_chart_title_is_ascii_only():
-    """镜像里没有中文字体，「牛来」会渲染成豆腐块——标题只能 ASCII。"""
+def test_chart_title_falls_back_to_ascii_without_a_cjk_font(monkeypatch):
+    """没装中文字体时，「牛来」硬画出来是一排豆腐块——退回合约地址开头。
+    （镜像里现在装了 fonts-noto-cjk，但本地/旧镜像可能没有，两条路都要对。）"""
+    from handlers import annotchart as A
+    monkeypatch.setitem(A._CJK, "checked", True)
+    monkeypatch.setitem(A._CJK, "name", None)
     t = {"symbol": "牛来", "address": "0xBEEA1D618e533a387D941F58a7d4c9b7bD377777",
          "chain": "bsc"}
     title = OC._ascii_title(t, "1h")
     assert title.isascii()
     assert "0xBEEA1D61" in title
+
+
+def test_chart_title_uses_the_real_name_when_the_font_exists(monkeypatch):
+    from handlers import annotchart as A
+    monkeypatch.setitem(A._CJK, "checked", True)
+    monkeypatch.setitem(A._CJK, "name", "Noto Sans CJK SC")
+    t = {"symbol": "牛来", "address": "0xa", "chain": "bsc"}
+    assert "牛来" in OC._ascii_title(t, "1h")
 
 
 def test_chart_title_keeps_ascii_symbols():

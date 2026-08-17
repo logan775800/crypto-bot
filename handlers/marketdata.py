@@ -244,7 +244,16 @@ async def klines_analysis(symbol, interval="15m", limit=None, source=None):
     tn = [x[6] for x in rows]        # 成交额(USDT)
 
     last = c[-1]
-    e20, e50, e200 = ema(c, 20), ema(c, 50), ema(c, 200)
+    # 均线口径全局统一成 MA3/13/23（annotchart.MA_PERIODS）——
+    # 以前这里是 EMA20/50/200、日线图是 MA7/25/99、破位扫描是 MA3/13/23，
+    # 同一个币三处能给出三种"排列"，AI 说的和图上画的对不上。
+    from handlers.annotchart import _ma_series, MA_PERIODS
+    _P1, _P2, _P3 = MA_PERIODS
+
+    def _ma(n):
+        ser = _ma_series(c, n)
+        return ser[-1] if ser and ser[-1] is not None else None
+    e20, e50, e200 = _ma(_P1), _ma(_P2), _ma(_P3)
     a14 = atr(h, lo, c, 14)
     r14 = rsi(c, 14)
     tag, h3, l3 = structure(h, lo)
@@ -253,17 +262,18 @@ async def klines_analysis(symbol, interval="15m", limit=None, source=None):
     arr = "数据不足"
     if e20 and e50 and e200:
         if last > e20 > e50 > e200:
-            arr = "多头排列(价>20>50>200)"
+            arr = f"多头排列(价>MA{_P1}>MA{_P2}>MA{_P3})"
         elif last < e20 < e50 < e200:
-            arr = "空头排列(价<20<50<200)"
+            arr = f"空头排列(价<MA{_P1}<MA{_P2}<MA{_P3})"
         else:
-            arr = f"缠绕/过渡(价{'>' if last>e20 else '<'}EMA20)"
-    # EMA20 斜率（最近10根变化率）
+            arr = f"缠绕/过渡(价{'>' if last>e20 else '<'}MA{_P1})"
+    # 短均线斜率（最近10根变化率）
     slope = ""
     if e20 and len(c) > 30:
-        e20_prev = ema(c[:-10], 20)
+        _prev_ser = _ma_series(c[:-10], _P1)
+        e20_prev = _prev_ser[-1] if _prev_ser and _prev_ser[-1] is not None else None
         if e20_prev:
-            slope = f"，EMA20近10根斜率 {(e20-e20_prev)/e20_prev*100:+.2f}%"
+            slope = f"，MA{_P1}近10根斜率 {(e20-e20_prev)/e20_prev*100:+.2f}%"
     # 量能：最近5根均量 vs 前20根均量
     vol_txt = ""
     if len(v) >= 25:
@@ -289,7 +299,7 @@ async def klines_analysis(symbol, interval="15m", limit=None, source=None):
         f"【{sym} {interval}】共{len(c)}根{cap_txt}｜{stamp(srv)}{src_txt}",
         lag_txt if lag_txt else "",
         f"现价 {f(last)}｜区间 {f(lowv)}~{f(hi)}｜近{n50}根前高/前低 {f(ph)}/{f(pl)}",
-        f"EMA20 {f(e20)}／EMA50 {f(e50)}／EMA200 {f(e200)} → {arr}{slope}",
+        f"MA{_P1} {f(e20)}／MA{_P2} {f(e50)}／MA{_P3} {f(e200)} → {arr}{slope}",
         f"ATR14 {f(a14)}" + (f"（{a14/last*100:.2f}%，1.5×ATR≈{f(a14*1.5)}，可作止损距离参考）" if a14 and last else ""),
         f"RSI14 {r14:.1f}" if r14 is not None else "RSI14 -",
         f"结构 {tag}｜近摆动高 {'/'.join(f(x) for x in h3) or '-'}｜近摆动低 {'/'.join(f(x) for x in l3) or '-'}",

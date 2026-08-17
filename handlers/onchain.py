@@ -490,10 +490,14 @@ def marks_text(marks, tf):
 
 
 def _ascii_title(t, tf):
-    """图表标题只能是 ASCII——镜像里没有中文字体，「牛来」会渲染成豆腐块。
-    所以中文名一律退回合约地址开头，图上认得出是哪个币就行，中文说明放在图下面。"""
-    sym = "".join(c for c in (t.get("symbol") or "") if c.isascii() and c.isprintable())
-    sym = sym.strip() or (t.get("address") or "")[:10]
+    """图表标题。**装了中文字体就用真名**（镜像里有 fonts-noto-cjk），
+    没装才退回 ASCII——中文名硬画出来是一排豆腐块，比显示合约地址还糟。"""
+    from handlers.annotchart import cjk_font
+    raw = (t.get("symbol") or "").strip()
+    if cjk_font() and raw:
+        return f"[{raw}] {tf} {t.get('chain', '')}"
+    sym = "".join(c for c in raw if c.isascii() and c.isprintable()).strip()
+    sym = sym or (t.get("address") or "")[:10]
     return f"[{sym}] {tf} {t.get('chain', '')}"
 
 
@@ -547,8 +551,10 @@ async def build_chart(t, tf="1h"):
 
     mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit",
                                wick="inherit", volume="in")
-    style = mpf.make_mpf_style(base_mpf_style="charles", marketcolors=mc,
-                               gridstyle=":", gridcolor="#e0e0e0")
+    from handlers.annotchart import apply_cjk
+    style = mpf.make_mpf_style(**apply_cjk(
+        dict(base_mpf_style="charles", marketcolors=mc,
+             gridstyle=":", gridcolor="#e0e0e0")))
     buf = _io.BytesIO()
     try:
         mpf.plot(df, type="candle", volume=True, style=style, addplot=aps,

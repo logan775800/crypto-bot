@@ -347,3 +347,35 @@ def test_okx_turnover_is_derived_from_base_volume(monkeypatch):
     u = asyncio.run(K.universe("okx", S.SWAP))
     assert u[0]["turnover"] == 500
     assert u[0]["change"] == pytest.approx(25.0)
+
+
+# ── 均线口径统一 + 中文字体 + OKX 持仓量代理 ─────────────────────
+def test_okx_oi_period_is_mapped():
+    """rubik 只认 5m / 1H / 1D——直接把 "15m" 传过去会静默拿到空列表，
+    表现成"这家没有持仓量"，扫描就永远给不出拥挤度。"""
+    per, ratio = K._OKX_OI_PERIOD["15m"]
+    assert per == "5m" and ratio == 3          # 13 根 15m ≈ 39 根 5m，跨度一样
+    assert K._OKX_OI_PERIOD["4h"][0] == "1H"
+    assert K._OKX_OI_PERIOD["1d"][0] == "1D"
+
+
+def test_okx_oi_uses_the_mapped_period(monkeypatch):
+    calls = []
+
+    class C:
+        async def get(self, url, params=None):
+            calls.append(params or {})
+            return FakeResp({"code": "0",
+                             "data": [[str(i), str(100 + i), "1"] for i in range(60)]})
+    monkeypatch.setattr(S, "client", lambda: C())
+    rows = asyncio.run(K.oi_series("BTC", "okx", "15m", 13))
+    assert calls[0]["period"] == "5m"
+    assert len(rows) == 39                     # 13 × 3
+
+
+def test_okx_oi_empty_on_error(monkeypatch):
+    class C:
+        async def get(self, url, params=None):
+            return FakeResp({"code": "51000", "msg": "period error"})
+    monkeypatch.setattr(S, "client", lambda: C())
+    assert asyncio.run(K.oi_series("BTC", "okx", "15m", 13)) == []

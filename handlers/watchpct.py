@@ -166,9 +166,24 @@ async def add_watch(chat_id, symbol, pct, set_by, market="auto", exchange=None):
     exchange 不传时用会话默认数据源（/source 设的），传了就只认这一家。
     """
     from handlers import source as src_mod
-    symbol = norm_symbol(symbol)
+    from handlers import onchain as oc
     if pct <= 0:
         return False, "百分比要大于 0"
+
+    # 链上代币：标的是合约地址，不能走 norm_symbol（那会 .upper() 把 Solana
+    # 的 base58 地址改坏，也会把结尾像 USDT 的地址截断）
+    if oc.is_address(symbol):
+        addr = symbol.strip()
+        price, t = await oc.price_of(addr)
+        if price is None:
+            return False, ("链上查不到这个地址的交易对，监控没建立。\n"
+                           "确认地址没抄错，或者这个币还没有 DEX 池子。")
+        return _store(chat_id, addr, pct, set_by, price,
+                      src_mod.onchain_label(t["chain_key"]), "onchain",
+                      name=t["symbol"], extra={"chain": t["chain_key"],
+                                               "liq": t["liq"]})
+
+    symbol = norm_symbol(symbol)
     if exchange is None:
         exchange, pref_market = src_mod.get_pref(chat_id)
         if market == "auto":            # 命令里没写「合约/现货」才用默认里的
@@ -183,25 +198,52 @@ async def add_watch(chat_id, symbol, pct, set_by, market="auto", exchange=None):
                           if exchange != "auto" else "")
                        + "用交易所里的交易对基名试试（如 KORU、RAM、DOGE）")
 
+    return _store(chat_id, symbol, pct, set_by, price, src, market)
+
+
+def disp(w):
+    """一条监控给用户看的名字。链上的标的是 42 位合约地址，直接显示没法读。"""
+    name = w.get("name")
+    sym = w.get("symbol", "")
+    if name:
+        return f"{name}（{sym[:6]}…{sym[-4:]}）" if len(sym) > 14 else name
+    return sym
+
+
+def _store(chat_id, symbol, pct, set_by, price, src, market, name=None, extra=None):
+    """落盘 + 生成回执。交易所和链上共用，免得两边各写一份存储格式。"""
     lst = data.setdefault("watchpct", [])
     mine = [w for w in lst if w["chat_id"] == chat_id]
     existed = any(w["symbol"] == symbol for w in mine)
     if not existed and len(mine) >= MAX_PER_CHAT:
         return False, f"最多同时盯 {MAX_PER_CHAT} 个币，先 /unwatchpct 取消几个"
     lst[:] = [w for w in lst if not (w["chat_id"] == chat_id and w["symbol"] == symbol)]
-    lst.append({
+    item = {
         "chat_id": chat_id, "symbol": symbol, "pct": pct, "market": market,
         "base": price, "src": src, "last_ts": 0, "set_by": set_by,
-    })
+    }
+    if name:
+        item["name"] = name
+    if extra:
+        item.update(extra)
+    lst.append(item)
     save_data()
+
     verb = "已更新" if existed else "已开启"
-    mkt_tag = "（合约）" if market == "swap" else ("（现货）" if market == "spot" else "")
+    onchain = market == "onchain"
+    mkt_tag = "" if onchain else (
+        "（合约）" if market == "swap" else ("（现货）" if market == "spot" else ""))
     # OKX/Bybit 永续走 WebSocket 秒级实时；其余走约1分钟轮询
     realtime = "⚡ 秒级实时(WebSocket)" if src in ("OKX永续", "Bybit永续") else "约1分钟轮询"
-    return True, (
-        f"👁 {verb}持续波动监控：*{symbol}*{mkt_tag} 每涨跌超 *±{pct}%* 提醒\n"
-        f"当前基准 ${fmt(price)}（{src}）\n"
-        f"触发方式：{realtime}，报警后自动以新价为基准继续盯（{COOLDOWN//60}分钟冷却）。")
+    lines = [f"👁 {verb}持续波动监控：*{disp(item)}*{mkt_tag} 每涨跌超 *±{pct}%* 提醒",
+             f"当前基准 ${fmt(price)}（{src}）",
+             f"触发方式：{realtime}，报警后自动以新价为基准继续盯（{COOLDOWN//60}分钟冷却）。"]
+    if onchain:
+        liq = (extra or {}).get("liq") or 0
+        lines.append(f"池子 ${liq:,.0f}"
+                     + ("　⛔ 太浅，单笔大单就能打出假信号" if liq < 50_000 else ""))
+        lines.append("⚠️ 链上波动本来就比交易所大得多，阈值别设太小，否则会被刷屏")
+    return True, "\n".join(lines)
 
 
 def src_kb(symbol):
@@ -265,7 +307,7 @@ async def watchpcts(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     lines = ["👁 *持续波动监控*"]
     for w in mine:
-        lines.append(f"• {w['symbol']}  ±{w['pct']}%  基准 ${fmt(w['base'])}（{w.get('src','?')}）")
+        lines.append(f"• {disp(w)}  ±{w['pct']}%  基准 ${fmt(w['base'])}（{w.get('src','?')}）")
     lines.append("\n取消 /unwatchpct 币")
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
@@ -306,7 +348,7 @@ async def check_watchpct(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     w["chat_id"],
-                    f"{arrow} *{w['symbol']}*{mkt_tag} {ch:+.2f}%！\n"
+                    f"{arrow} *{disp(w)}*{mkt_tag} {ch:+.2f}%！\n"
                     f"${fmt(base)} → ${fmt(p)}（阈值 ±{w['pct']}%，{w.get('src','')}）",
                     parse_mode="Markdown")
             except Exception as e:

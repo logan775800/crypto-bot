@@ -385,6 +385,10 @@ def kline_kb(t, tf="1h"):
                              callback_data=f"oc:d:{t['chain_key']}:{t['address']}")]])
 
 
+# 链上的默认阈值比交易所高一档：链上池子浅，±5% 在小池子上一天能响几十次
+WATCH_PCTS = (10, 20, 50)
+
+
 def detail_kb(t):
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     rows = []
@@ -392,6 +396,11 @@ def detail_kb(t):
         rows.append([InlineKeyboardButton(
             f"📈 {k} K线", callback_data=f"oc:k:{t['chain_key']}:{t['pool']}:{k}")
             for k in ("1h", "4h", "1d")])
+    if t.get("address"):
+        # 监控入口必须在这里：查完了才知道要不要盯，让他退出去打命令等于不会用
+        rows.append([InlineKeyboardButton(
+            f"🔔 涨跌±{p}% 提醒", callback_data=f"oc:w:{t['address']}:{p}")
+            for p in WATCH_PCTS])
     if t.get("url"):
         rows.append([InlineKeyboardButton("🌐 在 DexScreener 打开", url=t["url"])])
     return InlineKeyboardMarkup(rows) if rows else None
@@ -628,6 +637,20 @@ async def on_button(query, context):
         await _reply_md(query.message, render_token(t, pools), detail_kb(t))
         return
 
+    if what == "w":                       # 监控：oc:w:<代币地址>:<百分比>
+        addr = bits[2] if len(bits) > 2 else ""
+        try:
+            pct = float(bits[3]) if len(bits) > 3 else 10.0
+        except ValueError:
+            pct = 10.0
+        await query.answer("建立监控…")
+        from handlers.watchpct import add_watch
+        chat_id = query.message.chat_id if query.message else 0
+        who = query.from_user.first_name if query.from_user else "我"
+        ok, msg = await add_watch(chat_id, addr, pct, who)
+        await _reply_md(query.message, msg + ("\n\n取消发 /watchpcts 看列表" if ok else ""))
+        return
+
     if what == "k":                       # K线：oc:k:<链>:<池子地址>:<周期>
         chain = bits[2] if len(bits) > 2 else ""
         pool = bits[3] if len(bits) > 3 else ""
@@ -677,3 +700,15 @@ async def _reply_md(message, text, kb=None):
         log.warning(f"链上详情 Markdown 失败，降级: {e}")
         await message.reply_text(text.replace("*", "").replace("`", ""),
                                  reply_markup=kb)
+
+
+async def price_of(addr):
+    """按合约地址取现价（监控/预警轮询用）。返回 (价格, 代币) 或 (None, None)。"""
+    try:
+        t, _pools = await by_address(addr)
+    except Exception as e:
+        log.warning(f"链上取价失败 {addr[:12]}: {e}")
+        return None, None
+    if not t or not t.get("price"):
+        return None, None
+    return t["price"], t

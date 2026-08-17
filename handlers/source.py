@@ -91,8 +91,37 @@ def label_of(ex, market):
     return LABEL.get((ex, market), "")
 
 
+# 链上代币不是"交易所×市场"，它是"链×合约地址"。但监控/预警的存储和轮询
+# 全都按 (标的, 数据源标签) 组织，所以把链上也表达成一个标签，整条链路就能复用：
+# 标签 "链上BNB链"，标的存合约地址。price_at 认出这个前缀就走 DEX 查询。
+ONCHAIN = "onchain"
+ONCHAIN_PREFIX = "链上"
+
+
+def onchain_label(chain_key):
+    from handlers import onchain as oc
+    cn = oc.CHAINS.get(chain_key, {}).get("cn", chain_key)
+    return f"{ONCHAIN_PREFIX}{cn}"
+
+
+def is_onchain_label(label):
+    return bool(label) and label.startswith(ONCHAIN_PREFIX)
+
+
+def onchain_chain(label):
+    """"链上BNB链" → "bsc"；认不出返回空串。"""
+    from handlers import onchain as oc
+    cn = (label or "")[len(ONCHAIN_PREFIX):]
+    for k, v in oc.CHAINS.items():
+        if v["cn"] == cn:
+            return k
+    return ""
+
+
 def split_label(label):
     """"Bybit永续" → ("bybit", "swap")；认不出返回 (auto, auto)。"""
+    if is_onchain_label(label):
+        return ONCHAIN, onchain_chain(label)
     return FROM_LABEL.get(label or "", (AUTO, AUTO))
 
 
@@ -200,6 +229,10 @@ async def price(symbol, ex=AUTO, market=AUTO):
 
 async def price_at(symbol, label):
     """从指定标签的源取价（盯盘轮询用：必须和基准同一个源，否则涨跌算歪）。"""
+    if is_onchain_label(label):
+        from handlers import onchain as oc
+        p, _t = await oc.price_of(symbol)      # 链上的"标的"就是合约地址
+        return p
     ex, market = split_label(label)
     if ex == AUTO:
         p, _ = await price(symbol)
@@ -213,9 +246,16 @@ async def prices_at(symbols, label):
     用逐个单点查而不是拉全量 tickers：预警通常只有几个到几十个币，
     单点查每次 1KB 上下，全量表一次就是几百 KB，60 秒一轮划不来。
     """
-    ex, market = split_label(label)
     syms = list(dict.fromkeys(symbols))
     out = {}
+    if is_onchain_label(label):
+        from handlers import onchain as oc
+        for raw in syms:
+            p, _t = await oc.price_of(raw)
+            if p:
+                out[raw] = p
+        return out
+    ex, market = split_label(label)
     sem = asyncio.Semaphore(MAX_PARALLEL)
     c = client()
 
@@ -269,6 +309,14 @@ async def price_for(chat_id, symbol, override=None):
     override 是存在预警/监控条目里的标签，比默认优先——这就是「默认 + 单条覆盖」
     这套选择方式的全部含义，别在调用方各写一遍。
     """
+    from handlers import onchain as oc
+    # 合约地址是无歧义的：不管默认源设的是哪家交易所，地址一律走链上查
+    if oc.is_address(symbol):
+        p, t = await oc.price_of(symbol)
+        return (p, onchain_label(t["chain_key"])) if p else (None, None)
+    if override and is_onchain_label(override):
+        p, _t = await oc.price_of(symbol)
+        return (p, override) if p else (None, None)
     if override:
         ex, market = split_label(override)
     else:

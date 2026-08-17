@@ -218,10 +218,11 @@ def test_confirm_rejects_a_wick(monkeypatch):
     from handlers import watchpct as W
     now = time.time() * 1000
 
-    async def fake_ohlcv(chain, pool, tf, limit=6):
-        return [[now - 900_000 * 2, 1, 1, 1, 1.0, 10],
+    async def fake_ohlcv(chain, pool, tf, limit=6, why=False):
+        rows = [[now - 900_000 * 2, 1, 1, 1, 1.0, 10],
                 [now - 900_000, 1, 1.5, 1, 1.02, 10],      # 已收盘：只走了 2%
                 [now - 60_000, 1, 1.5, 1, 1.3, 10]]        # 还没收盘
+        return (rows, "") if why else rows
     monkeypatch.setattr(OC, "ohlcv", fake_ohlcv)
     w = {"pct": 20, "chain": "bsc", "pool": "0xp"}
     ok, why = asyncio.run(W._confirm_onchain(w, 1.0))
@@ -232,10 +233,11 @@ def test_confirm_accepts_a_real_move(monkeypatch):
     from handlers import watchpct as W
     now = time.time() * 1000
 
-    async def fake_ohlcv(chain, pool, tf, limit=6):
-        return [[now - 900_000 * 2, 1, 1, 1, 1.0, 10],
+    async def fake_ohlcv(chain, pool, tf, limit=6, why=False):
+        rows = [[now - 900_000 * 2, 1, 1, 1, 1.0, 10],
                 [now - 900_000, 1, 1.4, 1, 1.35, 10],      # 已收盘就在高位
                 [now - 60_000, 1, 1.4, 1, 1.36, 10]]
+        return (rows, "") if why else rows
     monkeypatch.setattr(OC, "ohlcv", fake_ohlcv)
     ok, _why = asyncio.run(W._confirm_onchain({"pct": 20, "chain": "bsc",
                                                "pool": "0xp"}, 1.0))
@@ -247,7 +249,7 @@ def test_confirm_without_klines_does_not_block(monkeypatch):
     from handlers import watchpct as W
 
     async def none_ohlcv(*a, **k):
-        return []
+        return ([], "429") if k.get("why") else []
     monkeypatch.setattr(OC, "ohlcv", none_ohlcv)
     ok, _why = asyncio.run(W._confirm_onchain({"pct": 20, "chain": "bsc",
                                                "pool": "0xp"}, 1.0))
@@ -280,11 +282,12 @@ def watch_env(monkeypatch):
     async def fake_price_at(sym, label):
         return box["price"]
 
-    async def fake_ohlcv(chain, pool, tf, limit=6):
+    async def fake_ohlcv(chain, pool, tf, limit=6, why=False):
         now = time.time() * 1000
-        return [[now - 900_000 * 2, 1, 1, 1, box["price"], 10],
+        rows = [[now - 900_000 * 2, 1, 1, 1, box["price"], 10],
                 [now - 900_000, 1, 1, 1, box["price"], 10],
                 [now - 60_000, 1, 1, 1, box["price"], 10]]
+        return (rows, "") if why else rows
 
     async def fake_by_address(addr, chain=None):
         return tok(), 1
@@ -369,14 +372,50 @@ def test_unconfirmed_move_is_marked_and_base_not_reset(watch_env, monkeypatch):
     重设了就等于承认这个插针价是真的。"""
     box, w, W = watch_env
 
-    async def wick_ohlcv(chain, pool, tf, limit=6):
+    async def wick_ohlcv(chain, pool, tf, limit=6, why=False):
         now = time.time() * 1000
-        return [[now - 900_000 * 2, 1, 1, 1, 1.0, 10],
+        rows = [[now - 900_000 * 2, 1, 1, 1, 1.0, 10],
                 [now - 900_000, 1, 1.6, 1, 1.01, 10],     # 收盘只有 +1%
                 [now - 60_000, 1, 1.6, 1, 1.5, 10]]
+        return (rows, "") if why else rows
     monkeypatch.setattr(OC, "ohlcv", wick_ohlcv)
     box["price"] = 1.5
     ctx = Ctx()
     asyncio.run(W.check_watchpct(ctx))
     assert any("未确认" in m for m in ctx.bot.sent)
     assert w["base"] == 1.0, "未确认就不该重设基准"
+
+
+# ── 限频：实测 GeckoTerminal 连打第 3 次就 429 ────────────────────
+def test_alert_includes_security_so_completeness_is_not_permanently_short():
+    """告警里原来没查安全检查，于是完整度**永远**是 5/6「缺安全检查」——
+    一条必现的假缺失，看几次之后这一行就没人信了。"""
+    import inspect
+    from handlers import watchpct as W
+    src = inspect.getsource(W._push_move)
+    assert "tokensec" in src
+    assert "completeness(t, sec)" in src
+
+
+def test_kline_failure_says_why():
+    """限频和"这个池子没被索引"是两回事，都塌成"拿不到K线"，
+    用户只会理解成"你的数据又缺了"。"""
+    assert "限频" in OC.GT_WHY["429"]
+    assert "索引" in OC.GT_WHY["404"]
+
+
+def test_confirm_reports_the_reason(monkeypatch):
+    from handlers import watchpct as W
+
+    async def limited(*a, **k):
+        return ([], "429") if k.get("why") else []
+    monkeypatch.setattr(OC, "ohlcv", limited)
+    ok, why = asyncio.run(W._confirm_onchain({"pct": 20, "chain": "bsc",
+                                              "pool": "0xp"}, 1.0))
+    assert ok is None and "限频" in why
+
+
+def test_gt_throttle_settings_are_conservative():
+    """免费额度突发卡得极死，最小间隔不能设太小。"""
+    assert OC._GT_MIN_GAP >= 2.0
+    assert OC._GT_RETRIES >= 1

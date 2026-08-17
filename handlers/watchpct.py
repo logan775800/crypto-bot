@@ -386,6 +386,7 @@ async def check_watchpct(context: ContextTypes.DEFAULT_TYPE):
             # ── 收盘确认：链上一笔大单就能戳出一根插针，那个价成交不到量。
             # 用**已收盘**的 15m K 线复核，没确认就不当成信号（但也不丢，标出来）──
             ok, why = await _confirm_onchain(w, base)
+            # ok 为 None 时 why 是失败原因，下面统一拼进 confirm_note
             if ok is False:
                 confirm_note = f"（{why}，未收盘确认——先当噪音看）"
                 # 未确认的不重设基准：等真走出来再报
@@ -393,7 +394,8 @@ async def check_watchpct(context: ContextTypes.DEFAULT_TYPE):
                 changed = True
                 await _push_move(context, w, base, p, ch, confirm_note, unconfirmed=True)
                 continue
-            confirm_note = "（已用收盘K线确认）" if ok else "（拿不到K线，未确认）"
+            confirm_note = ("（已用收盘K线确认）" if ok
+                            else f"（未收盘确认：{why or '拿不到K线'}）")
 
         await _push_move(context, w, base, p, ch, confirm_note)
         w["base"] = p          # 以新价为基准继续盯
@@ -412,11 +414,14 @@ async def _confirm_onchain(w, base):
     """
     from handlers import onchain as oc
     try:
-        rows = await oc.ohlcv(w.get("chain"), w.get("pool"), CONFIRM_TF, limit=6)
-    except Exception:
-        return None, ""
+        rows, err = await oc.ohlcv(w.get("chain"), w.get("pool"), CONFIRM_TF,
+                                   limit=6, why=True)
+    except Exception as e:
+        return None, f"取K线异常：{str(e)[:40]}"
     if not rows:
-        return None, ""
+        # 说清是限频还是这个池子没被索引——笼统一句"拿不到K线"，
+        # 用户只会理解成"你的数据又缺了"
+        return None, oc.GT_WHY.get(err, "拿不到K线")
     marks = oc.kline_marks(rows, CONFIRM_TF)
     closed = rows[:-1] if marks.get("unclosed") else rows
     if not closed:
@@ -446,11 +451,24 @@ async def _push_move(context, w, base, p, ch, note="", unconfirmed=False):
         except Exception as e:
             logging.debug(f"链上告警取详情失败: {e}")
         if t:
-            got, total, missing = oc.completeness(t)
+            sec = None
+            try:
+                from handlers import tokensec as ts
+                sec = await ts.check(w.get("chain") or t.get("chain_key"),
+                                     w["symbol"])
+            except Exception as e:
+                logging.debug(f"链上告警取安全检查失败: {e}")
+            got, total, missing = oc.completeness(t, sec)
             lines.append(f"💧 池子 ${t['liq']:,.0f}　滑点 {oc.slippage_text(t['liq'])}")
             lines.append(f"📊 数据完整度 {got}/{total}"
                          + (f"（缺：{'、'.join(missing)}）" if missing else ""))
-            ok, why = oc.gate(t)
+            if sec and sec.get("ok"):
+                from handlers import tokensec as ts2
+                icon, one = ts2.verdict(sec)
+                lines.append(f"🔐 安全 {icon} {one}")
+                for d in (sec.get("dangers") or [])[:2]:
+                    lines.append(f"　 {d}")
+            ok, why = oc.gate(t, sec)
             if not ok:
                 lines.append("")
                 lines.append(oc.gate_text(why))

@@ -27,6 +27,10 @@ def pair(sym, name, liq, chain="ethereum", addr="0xabc", chg=1.0, fdv=0,
 
 
 class FakeResp:
+    """限频层要看 status_code，所以假响应也得有。"""
+
+    status_code = 200
+
     def __init__(self, payload):
         self._p = payload
 
@@ -51,8 +55,10 @@ class FakeClient:
 
 
 @pytest.fixture(autouse=True)
-def _clear_cache():
+def _clear_cache(monkeypatch):
     OC._cache.clear()
+    monkeypatch.setattr(OC, "_GT_MIN_GAP", 0)      # 测试里不必真等限频间隔
+    OC._gt_last[0] = 0.0
     yield
     OC._cache.clear()
 

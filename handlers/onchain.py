@@ -141,6 +141,57 @@ async def _get(url, params=None):
     return r.json()
 
 
+# ---------- GeckoTerminal 限频（实测：连打第 3 次就 429）----------
+# 免费额度名义 30 次/分钟，但**突发**卡得极死。K线确认、热门榜、画图都走它，
+# 一轮告警里连着几个请求就会撞上——而撞上的表现是"拿不到K线"，
+# 用户看到的是数据缺失，根本看不出是限频。所以这里做三件事：
+#   1. 全局串行 + 最小间隔，从源头别打爆；
+#   2. 429 退避重试；
+#   3. 失败原因往上传，让调用方能说清是限频还是这个池子没被索引。
+_GT_MIN_GAP = 2.2          # 两次 GT 请求的最小间隔（秒）
+_GT_RETRIES = 2
+_gt_lock = None
+_gt_last = [0.0]
+
+
+async def _gt(path, params=None):
+    """请求 GeckoTerminal → (数据, 错误类型)。错误类型：""/"429"/"404"/"net"。"""
+    global _gt_lock
+    import asyncio
+    if _gt_lock is None:
+        _gt_lock = asyncio.Lock()
+    for attempt in range(_GT_RETRIES + 1):
+        async with _gt_lock:
+            wait = _GT_MIN_GAP - (time.monotonic() - _gt_last[0])
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _gt_last[0] = time.monotonic()
+            try:
+                r = await src_mod.client().get(
+                    f"{GT}{path}", params=params or {},
+                    headers={"User-Agent": "Mozilla/5.0"})
+            except Exception as e:
+                log.debug(f"GT 请求异常 {path}: {e}")
+                return None, "net"
+        if r.status_code == 200:
+            return r.json(), ""
+        if r.status_code == 429:
+            if attempt < _GT_RETRIES:
+                await asyncio.sleep(1.5 * (attempt + 1))
+                continue
+            return None, "429"
+        if r.status_code == 404:
+            return None, "404"
+        log.debug(f"GT 返回 {r.status_code} {path}")
+        return None, "net"
+    return None, "429"
+
+
+GT_WHY = {"429": "行情源限频（免费额度打满了），过一会儿再试",
+          "404": "这个池子行情源还没索引到（新池常见）",
+          "net": "行情源没连通"}
+
+
 def _f(d, *path, default=0.0):
     cur = d
     for k in path:
@@ -303,7 +354,9 @@ async def trending(chain=DEFAULT_CHAIN):
     if hit and time.monotonic() - hit[0] < _CACHE_TTL:
         return hit[1]
     net = CHAINS[chain]["gt"]
-    d = await _get(f"{GT}/networks/{net}/trending_pools", {"page": 1})
+    d, err = await _gt(f"/networks/{net}/trending_pools", {"page": 1})
+    if err or not d:
+        raise RuntimeError(GT_WHY.get(err, "行情源没连通"))
     out = []
     for x in (d.get("data") or []):
         a = x.get("attributes") or {}
@@ -326,23 +379,34 @@ async def trending(chain=DEFAULT_CHAIN):
 TF = {"15m": ("minute", 15), "1h": ("hour", 1), "4h": ("hour", 4), "1d": ("day", 1)}
 
 
-async def ohlcv(chain_key, pool, tf="1h", limit=200):
-    """链上 K 线 → [[毫秒, 开, 高, 低, 收, 量], ...] 旧→新。取不到返回 []。"""
+_OHLCV_TTL = 60            # 同一个池子同一周期，60 秒内不重复取（限频太紧）
+
+
+async def ohlcv(chain_key, pool, tf="1h", limit=200, why=False):
+    """链上 K 线 → [[毫秒, 开, 高, 低, 收, 量], ...] 旧→新。取不到返回 []。
+
+    why=True 时返回 (rows, 错误类型)——调用方要能告诉用户是限频还是没索引，
+    而不是笼统一句"拿不到K线"。
+    """
     if chain_key not in CHAINS or not pool:
-        return []
+        return ([], "参数") if why else []
+    key = ("ohlcv", chain_key, pool, tf, min(limit, 1000))
+    hit = _cache.get(key)
+    if hit and time.monotonic() - hit[0] < _OHLCV_TTL:
+        return (hit[1], "") if why else hit[1]
     frame, agg = TF.get(tf, TF["1h"])
     net = CHAINS[chain_key]["gt"]
-    try:
-        d = await _get(f"{GT}/networks/{net}/pools/{pool}/ohlcv/{frame}",
+    d, err = await _gt(f"/networks/{net}/pools/{pool}/ohlcv/{frame}",
                        {"aggregate": agg, "limit": min(limit, 1000)})
-    except Exception as e:
-        log.warning(f"链上K线失败 {chain_key}/{pool} {tf}: {e}")
-        return []
+    if err or not d:
+        log.debug(f"链上K线失败 {chain_key}/{pool} {tf}: {err}")
+        return ([], err) if why else []
     rows = ((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
     out = [[int(r[0]) * 1000, float(r[1]), float(r[2]), float(r[3]), float(r[4]),
             float(r[5] or 0)] for r in rows if r and r[0]]
     out.sort(key=lambda x: x[0])          # 接口给的是新→旧，指标和画图都要旧→新
-    return out
+    _cache[key] = (time.monotonic(), out)
+    return (out, "") if why else out
 
 
 TF_MS = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}

@@ -47,7 +47,8 @@ MODULE_CN = {
     "handlers.bybit": "🏦 交易所专区",
     "handlers.gate": "🏦 交易所专区",
     "handlers.source": "🏦 交易所专区",       # /source 选用哪家的价
-    "handlers.onchain": "🔍 机会发现",        # 链上代币：交易所还没上的那一段
+    "handlers.onchain": "🔍 机会发现",
+    "handlers.breakout": "🔍 机会发现",
     "handlers.steady": "🔍 机会发现",
     "handlers.changelog": "🧭 菜单与帮助",
     "handlers.plan": "📋 交易计划",

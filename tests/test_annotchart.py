@@ -3,7 +3,8 @@
 import pytest
 
 from handlers.annotchart import (
-    _ema_series, levels, caption, _ascii_structure, _STRUCT_ASCII,
+    _ma_series, ma_align, levels, caption, _ascii_structure, _STRUCT_ASCII,
+    MA_PERIODS,
 )
 
 
@@ -17,36 +18,69 @@ def _rows(closes, highs=None, lows=None, vols=None):
              str(closes[i]), str(vols[i]), "0"] for i in range(n)]
 
 
-class TestEmaSeries:
+class TestMaSeries:
+    """均线是 MA3/13/23（简单均线），和破位扫描同一套——
+    图上画的和信号用的必须是同一个东西，否则看到的和报的对不上。"""
+
     def test_length_always_matches_input(self):
         # 长度对不上，mplfinance 的 addplot 会直接抛 —— 图整个发不出来
-        for n in (5, 20, 50, 200):
-            assert len(_ema_series([1.0] * 300, n)) == 300
+        for n in MA_PERIODS:
+            assert len(_ma_series([1.0] * 300, n)) == 300
 
     def test_leading_values_are_none_until_seeded(self):
-        s = _ema_series([1.0] * 100, 20)
-        assert s[:19] == [None] * 19
-        assert s[19] is not None
+        s = _ma_series([1.0] * 100, 23)
+        assert s[:22] == [None] * 22
+        assert s[22] is not None
 
     def test_too_short_gives_all_none(self):
-        # EMA200 在只有 100 根时必须整条为 None，而不是崩掉或给假值
-        assert _ema_series([1.0] * 100, 200) == [None] * 100
+        assert _ma_series([1.0] * 10, 23) == [None] * 10
 
-    def test_constant_series_ema_equals_the_constant(self):
-        assert _ema_series([5.0] * 100, 20)[-1] == pytest.approx(5.0)
+    def test_constant_series_equals_the_constant(self):
+        assert _ma_series([5.0] * 100, 13)[-1] == pytest.approx(5.0)
 
-    def test_matches_marketdata_ema(self):
-        # 图上的线必须和 AI 读到的数字同源，否则两边说的不是一回事
-        from handlers.marketdata import ema
-        closes = [float(i) for i in range(1, 301)]
-        assert _ema_series(closes, 20)[-1] == pytest.approx(ema(closes, 20))
+    def test_is_a_simple_average(self):
+        closes = [float(i) for i in range(1, 101)]
+        assert _ma_series(closes, 3)[-1] == pytest.approx((98 + 99 + 100) / 3)
+
+    def test_rolling_sum_matches_bruteforce(self):
+        """滚动求和是增量算的，累积误差会悄悄漂——和暴力平均对一遍。"""
+        closes = [float((i * 7919) % 101) + 1 for i in range(300)]
+        ser = _ma_series(closes, 13)
+        for i in (13, 100, 299):
+            assert ser[i] == pytest.approx(sum(closes[i - 12:i + 1]) / 13)
+
+
+class TestMaAlign:
+    def test_rising_series_is_bullish(self):
+        assert ma_align([float(i) for i in range(1, 60)]) == 1
+
+    def test_falling_series_is_bearish(self):
+        assert ma_align([float(i) for i in range(60, 1, -1)]) == -1
+
+    def test_tight_chop_is_neither(self):
+        """三根粘在 0.05% 以内 = 还没选边，这时候的"突破"最容易被立刻打回来。"""
+        closes = [100.0 + (0.01 if i % 2 else -0.01) for i in range(60)]
+        assert ma_align(closes) == 0
+
+    def test_alignment_needs_separation_not_just_order(self):
+        """光看大小关系不够——等幅震荡也能排出单调顺序。
+
+        注意这条只挡得住"贴在一起"的情况：大幅等幅震荡算出来的均线间距
+        （实测 0.28%）和真趋势（ETH 那例 0.32%）是一个量级，靠间距分不开，
+        真正把它挡在门外的是破位扫描那边的**箱体**条件。
+        """
+        flat = [100.0] * 40 + [100.02] * 20
+        assert ma_align(flat) == 0
+
+    def test_too_short_is_neither(self):
+        assert ma_align([1.0, 2.0]) == 0
 
 
 class TestLevels:
     def test_basic_keys_present(self):
         lv = levels(_rows([float(i) for i in range(1, 301)]))
         for k in ("last", "atr", "structure", "prior_high", "prior_low",
-                  "vwap", "ema20", "ema50", "ema200", "rsi"):
+                  "vwap", "ma", "ma_align", "rsi"):
             assert k in lv
 
     def test_last_is_final_close(self):
@@ -138,11 +172,10 @@ class TestCaption:
             cap = caption("BTC", "1h", levels(_rows([float(i) for i in range(1, n + 1)])))
             assert "None" not in cap, f"{n} 根时 caption 里漏出了 None：{cap}"
 
-    def test_unavailable_emas_are_omitted_not_shown_as_none(self):
-        # 只有 100 根 → EMA200 算不出来，图上也不画，说明里就不该列
+    def test_unavailable_mas_are_omitted_not_shown_as_none(self):
+        # 根数不够时长周期均线算不出来，图上也不画，说明里就不该列
         cap = caption("BTC", "1h", levels(_rows([float(i) for i in range(1, 101)])))
-        assert "EMA20" in cap and "EMA50" in cap
-        assert "EMA200" not in cap
+        assert "MA3" in cap and "MA13" in cap
 
 
 class TestAsciiStructure:

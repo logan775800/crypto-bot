@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -129,6 +129,7 @@ BOT_COMMANDS = [
     BotCommand("source", "📡 默认数据源(用哪家交易所的价)"),
     BotCommand("changelog", "📋 这一版更新了什么"),
     BotCommand("onchain", "🔗 链上代币(交易所没上的币)"),
+    BotCommand("breakout", "🚀 5分钟破位(箱体+均线顺势)"),
     BotCommand("btcregime", "🧭 BTC市场环境(变化时提醒)"),
     BotCommand("watchpct", "👁 持续波动监控(指定币±%)"),
     BotCommand("watchpcts", "👁 我的波动监控列表"),
@@ -381,6 +382,11 @@ async def post_init(application):
         logging.info(f"已加载 {len(COIN_IDS)} 种币")
     except Exception as e:
         logging.error(f"加载币种列表失败，使用默认: {e}")
+    # 5分钟破位：默认订阅（只种一次，退订后不会被重启塞回来）
+    try:
+        breakout.seed_all()
+    except Exception as e:
+        logging.error(f"破位默认订阅初始化失败: {e}")
     # 设置 Telegram 原生命令菜单
     commands = BOT_COMMANDS
     try:
@@ -510,6 +516,9 @@ def main():
     # 链上代币：交易所没上的币先在 DEX 跑，这里补的就是那一段
     app.add_handler(CommandHandler("onchain", onchain.onchain_cmd))
     app.add_handler(CommandHandler("dex", onchain.onchain_cmd))
+    # 5分钟箱体破位（均线顺势才报），默认推到审批群
+    app.add_handler(CommandHandler("breakout", breakout.breakout_cmd))
+    app.add_handler(CommandHandler("bo", breakout.breakout_cmd))
     app.add_handler(CommandHandler("btcregime", regime.btcregime))
     app.add_handler(CommandHandler("checklist", checklist.checklist))
     app.add_handler(CommandHandler("upstreak", streak.upstreak))
@@ -618,6 +627,7 @@ def main():
     jq.run_repeating(indicator_alert.check_ti_alerts, interval=900, first=45)  # 技术指标告警，每15分钟
     jq.run_repeating(market_alert.scan_market, interval=300, first=30)  # 市场异动扫描
     jq.run_repeating(contract_alert.scan_contracts, interval=300, first=40)  # 合约异动兜底轮询(币安主路+WS安全网)，每5分钟
+    jq.run_repeating(breakout.job, interval=300, first=90)  # 5分钟箱体破位（均线顺势），每5分钟
     jq.run_repeating(pumpalert.scan_pump, interval=60, first=65)  # Bybit全永续15m急涨急跌，每60秒
     jq.run_repeating(news.push_news, interval=3600, first=120)  # 新闻推送
     jq.run_repeating(unlock.check_unlocks, interval=86400, first=180)  # 解锁检查，每天

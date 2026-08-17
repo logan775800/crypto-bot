@@ -516,20 +516,17 @@ async def build_chart(t, tf="1h"):
     data = {"Open": [r[1] for r in rows], "High": [r[2] for r in rows],
             "Low": [r[3] for r in rows], "Close": closes,
             "Volume": [r[5] for r in rows]}
+    # 均线和交易所那边统一成 MA3/13/23（handlers/annotchart.MA_PERIODS）——
+    # 两处画不同的线，同一个人看两张图会得出两套结论
+    from handlers.annotchart import MA_PERIODS, MA_COLORS, _ma_series
     aps = []
-    for n, color in ((20, "#2962ff"), (50, "#ff6d00")):
-        if len(closes) > n:
-            k = 2 / (n + 1)
-            e = sum(closes[:n]) / n
-            ser = [None] * (n - 1) + [e]
-            for v in closes[n:]:
-                e = v * k + e * (1 - k)
-                ser.append(e)
-            data[f"E{n}"] = ser
+    for n in MA_PERIODS:
+        if len(closes) >= n:
+            data[f"MA{n}"] = _ma_series(closes, n)
     df = pd.DataFrame(data, index=pd.DatetimeIndex(idx))
-    for n, color in ((20, "#2962ff"), (50, "#ff6d00")):
-        if f"E{n}" in df:
-            aps.append(mpf.make_addplot(df[f"E{n}"], color=color, width=0.9))
+    for n, color in zip(MA_PERIODS, MA_COLORS):
+        if f"MA{n}" in df and df[f"MA{n}"].notna().any():
+            aps.append(mpf.make_addplot(df[f"MA{n}"], color=color, width=1.0))
 
     # 异常标记也画到图上：光在文字里说，看图的时候还是会把插针当成真实高低点
     marks = kline_marks(rows, tf)
@@ -568,7 +565,7 @@ async def build_chart(t, tf="1h"):
     if t.get("pool"):
         head.append(f"池子 `{_short(t['pool'])}`——K线是**这一个池**的，不是全链均价")
     body = marks_text(marks, tf)
-    tail = ["蓝线 EMA20／橙线 EMA50"]
+    tail = ["🟡MA3　🔵MA13　🟣MA23"]
     if marks["wicks"]:
         tail.append("紫 ✕ = 插针")
     if marks["vol_spikes"]:

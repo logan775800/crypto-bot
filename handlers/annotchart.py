@@ -4,7 +4,7 @@
 那张是「这币最近什么样」；这张是「这单怎么打」——任意周期 + 结构位 + 止损距离都标出来。
 
 画什么：
-  EMA20/50/200 三条线（趋势与排列）
+  MA3/MA13/MA23 三条线（顺势与否看排列，和破位扫描同一套）
   近端摆动高/低（结构失效位——止损该放的地方，不是拍脑袋）
   近50根前高/前低（流动性密集区，止盈参考）
   区间 VWAP
@@ -23,7 +23,7 @@ from handlers import marketdata as md
 log = logging.getLogger(__name__)
 
 DEFAULT_IV = "1h"
-PLOT_BARS = 120        # 画最近 120 根；均线用全量算好再截，保证 EMA200 有值
+PLOT_BARS = 120        # 画最近 120 根；均线用全量算好再截，保证长周期均线有值
 
 
 async def _klines(symbol, interval, limit=400, source=None):
@@ -40,19 +40,54 @@ async def _klines(symbol, interval, limit=400, source=None):
     return rows, meta
 
 
-def _ema_series(closes, n):
-    """逐根 EMA 序列（marketdata.ema 只给最后一个值，画线要整条）。
-    前 n-1 根没有值 → None，mplfinance 会自动断开不画。"""
+# 均线周期：MA3 / MA13 / MA23。
+# 短中长三根，3 贴着价格走、13 是中期、23 是这套打法的生命线——
+# 三根同向才叫"顺势"，缠在一起就是箱体，这也是破位扫描的判定依据（handlers/breakout.py），
+# 图上画的和信号用的必须是同一套，否则看到的和报的对不上。
+MA_PERIODS = (3, 13, 23)
+MA_COLORS = ("#f5b800", "#2962ff", "#8e44ad")
+
+
+def _ma_series(closes, n):
+    """逐根简单移动平均。前 n-1 根没有值 → None，mplfinance 会自动断开不画。"""
     if len(closes) < n:
         return [None] * len(closes)
-    k = 2 / (n + 1)
     out = [None] * (n - 1)
-    e = sum(closes[:n]) / n
-    out.append(e)
-    for v in closes[n:]:
-        e = v * k + e * (1 - k)
-        out.append(e)
+    run = sum(closes[:n])
+    out.append(run / n)
+    for i in range(n, len(closes)):
+        run += closes[i] - closes[i - n]
+        out.append(run / n)
     return out
+
+
+# 三根均线之间至少要拉开这么多（占价格%）才算"排好队"。
+# 光看大小关系不够：完美震荡的序列也能排出单调顺序，但三根粘在 0.1% 以内，
+# 那就是缠绕，不是顺势——这种时候的"突破"最容易立刻被打回来。
+MIN_MA_SPREAD_PCT = 0.05
+
+
+def ma_align(closes, periods=MA_PERIODS):
+    """三根均线是否顺势 → 1(多头排列) / -1(空头排列) / 0(缠绕)。
+
+    顺势 = 排列 + 拉开距离：MA3>MA13>MA23 且首尾间距够大才算多头，反之空头。
+    """
+    vals = []
+    for n in periods:
+        ser = _ma_series(closes, n)
+        if not ser or ser[-1] is None:
+            return 0
+        vals.append(ser[-1])
+    ref = closes[-1] or vals[0]
+    if not ref:
+        return 0
+    if abs(vals[0] - vals[-1]) / abs(ref) * 100 < MIN_MA_SPREAD_PCT:
+        return 0                     # 粘在一起 = 还没选边
+    if vals[0] > vals[1] > vals[2]:
+        return 1
+    if vals[0] < vals[1] < vals[2]:
+        return -1
+    return 0
 
 
 def levels(rows, plot_bars=PLOT_BARS):
@@ -78,7 +113,10 @@ def levels(rows, plot_bars=PLOT_BARS):
         "prior_high": max(h[-n50:]),
         "prior_low": min(lo[-n50:]),
         "rsi": md.rsi(c, 14),
-        "ema20": md.ema(c, 20), "ema50": md.ema(c, 50), "ema200": md.ema(c, 200),
+        # 均线换成 MA3/13/23（和破位扫描同一套）——图上画的和说明里写的必须一致
+        "ma": {n: (_ma_series(c, n)[-1] if len(c) >= n else None)
+               for n in MA_PERIODS},
+        "ma_align": ma_align(c),
     }
     # VWAP 只按可见窗口算（见 docstring）
     w = min(plot_bars, len(c))
@@ -116,16 +154,14 @@ def _ascii_structure(lv):
 
 def caption(symbol, interval, lv):
     sym = md.norm(symbol).replace("USDT", "")
-    arr = "数据不足"
-    e20, e50, e200 = lv.get("ema20"), lv.get("ema50"), lv.get("ema200")
     last = lv["last"]
-    if e20 and e50 and e200:
-        if last > e20 > e50 > e200:
-            arr = "多头排列 📈"
-        elif last < e20 < e50 < e200:
-            arr = "空头排列 📉"
-        else:
-            arr = f"缠绕（价{'上' if last > e20 else '下'}EMA20）"
+    mas = lv.get("ma") or {}
+    align = lv.get("ma_align", 0)
+    arr = {1: "多头排列 📈（MA3>MA13>MA23）",
+           -1: "空头排列 📉（MA3<MA13<MA23）"}.get(
+        align, "缠绕——三根粘在一起，还在箱体里")
+    if not any(v is not None for v in mas.values()):
+        arr = "数据不足"
     lines = [
         f"📐 *{sym} {interval}* 现价 {md.f(last)}",
         f"结构 {lv['structure']}｜均线 {arr}"
@@ -133,10 +169,10 @@ def caption(symbol, interval, lv):
         "",
         "*图上的线*",
     ]
-    # K线不够长时 EMA50/200 算不出来，图上也不会画——那就别在说明里列它
-    emas = [(f"🟡EMA20 {md.f(e20)}", e20), (f"🔵EMA50 {md.f(e50)}", e50),
-            (f"🟣EMA200 {md.f(e200)}", e200)]
-    shown = [t for t, v in emas if v is not None]
+    # K线不够长时长周期均线算不出来，图上也不会画——那就别在说明里列它
+    icons = ("🟡", "🔵", "🟣")
+    shown = [f"{ic}MA{n} {md.f(mas.get(n))}"
+             for ic, n in zip(icons, MA_PERIODS) if mas.get(n) is not None]
     lines.append("　".join(shown) if shown else "均线数据不足")
     if lv.get("swing_high") or lv.get("swing_low"):
         lines.append(f"⬛ 摆动高/低 {_n(lv.get('swing_high'))} / {_n(lv.get('swing_low'))}"
@@ -169,18 +205,16 @@ async def build_chart(symbol, interval=DEFAULT_IV, source=None):
 
     lv = levels(rows)
     closes = [float(x[4]) for x in rows]
-    e20 = _ema_series(closes, 20)
-    e50 = _ema_series(closes, 50)
-    e200 = _ema_series(closes, 200)
+    ma = {n: _ma_series(closes, n) for n in MA_PERIODS}
 
     idx = [datetime.datetime.utcfromtimestamp(int(x[0]) / 1000) for x in rows]
     df = pd.DataFrame(
         {"Open": [float(x[1]) for x in rows], "High": [float(x[2]) for x in rows],
          "Low": [float(x[3]) for x in rows], "Close": closes,
          "Volume": [float(x[5]) for x in rows],
-         "E20": e20, "E50": e50, "E200": e200},
+         **{f"MA{n}": ma[n] for n in MA_PERIODS}},
         index=pd.DatetimeIndex(idx))
-    # 均线整条算完再截尾：否则最后 120 根里 EMA200 全是空的
+    # 均线整条算完再截尾：否则最后 120 根里长周期均线全是空的
     df = df.tail(PLOT_BARS)
 
     sym = md.norm(symbol).replace("USDT", "")
@@ -189,7 +223,7 @@ async def build_chart(symbol, interval=DEFAULT_IV, source=None):
     style = mpf.make_mpf_style(base_mpf_style="charles", marketcolors=mc,
                                gridstyle=":", facecolor="white")
     aps = []
-    for col, color in (("E20", "#f5b800"), ("E50", "#2962ff"), ("E200", "#8e44ad")):
+    for col, color in zip([f"MA{n}" for n in MA_PERIODS], MA_COLORS):
         if df[col].notna().any():
             aps.append(mpf.make_addplot(df[col], color=color, width=1.1))
 
@@ -259,7 +293,7 @@ async def achart(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📐 *标注图表*——把结构位/止损距离画在图上\n\n"
             "`/achart BTC`　默认 1h\n"
             "`/achart SOL 15m`　周期：5m/15m/30m/1h/4h/1d\n\n"
-            "图上会标：EMA20/50/200、摆动高低点（结构失效位=止损该放的地方）、"
+            "图上会标：MA3/13/23、摆动高低点（结构失效位=止损该放的地方）、"
             "前高前低（流动性区=止盈参考）、VWAP、1.5×ATR 止损带。",
             parse_mode="Markdown")
         return

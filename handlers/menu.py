@@ -130,6 +130,8 @@ CATS = {
                                callback_data=f"stdy:{STEADY_DEFAULT_DAYS}:0")],
          [InlineKeyboardButton("📊 合约涨跌榜", callback_data="ctr:top"),
           InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")],
+         [InlineKeyboardButton("🚀 5分钟破位（箱体+均线顺势）",
+                               callback_data="bo:scan")],
          [InlineKeyboardButton("🔗 链上代币专区", callback_data="cat_onchain")]]),
     "cat_calc": (
         "🧮 *交易工具*\n\n"
@@ -479,6 +481,11 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("ev:"):
         from handlers import events as _events
         await _events.on_button(query, context)
+
+    # ---- 5分钟破位（箱体 + 均线顺势）----
+    elif d.startswith("bo:"):
+        from handlers import breakout as _bo
+        await _bo.on_button(query, context)
 
     # ---- 链上代币专区（DEX，交易所还没上的币）----
     elif d == "cat_onchain":

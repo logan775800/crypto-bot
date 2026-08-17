@@ -127,7 +127,9 @@ CATS = {
          [InlineKeyboardButton("🌱 缓步增长（可选天数）",
                                callback_data=f"stdy:{STEADY_DEFAULT_DAYS}:0")],
          [InlineKeyboardButton("📊 合约涨跌榜", callback_data="ctr:top"),
-          InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")]]),
+          InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")],
+         [InlineKeyboardButton("🔗 链上代币（交易所没上的）",
+                               callback_data="oc:t:bsc")]]),
     "cat_calc": (
         "🧮 *交易工具*\n\n"
         "下单前的三件事：这是哪个合约、扣完成本还剩多少、这个止损能开多大。",
@@ -476,6 +478,11 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("ev:"):
         from handlers import events as _events
         await _events.on_button(query, context)
+
+    # ---- 链上代币（DEX，交易所没上的币）----
+    elif d.startswith("oc:"):
+        from handlers import onchain as _oc
+        await _oc.on_button(query, context)
 
     # ---- 更新日志（这一版改了什么）----
     elif d.startswith("cl:"):

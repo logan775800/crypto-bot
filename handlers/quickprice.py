@@ -203,6 +203,19 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # 引导式链上查询：点了「查某个币」之后发来的这条
+    if context.user_data.pop("await_onchain", None):
+        from handlers import onchain as _oc
+        await _oc._send_query(update.message, text)
+        return
+
+    # 合约地址直接查链上——地址是无歧义的，不可能是别的意思，
+    # 而且长度远超币名，落到下面的查价分支只会报"不支持的币种"
+    from handlers import onchain as _oc
+    if _oc.is_address(text):
+        await _oc._send_query(update.message, text)
+        return
+
     if " " in text or len(text) > 12 or len(text) < 1:
         return
     # 群里只把"像币代码"的消息(纯ASCII字母/数字)当查询；

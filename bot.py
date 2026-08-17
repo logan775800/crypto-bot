@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -128,6 +128,7 @@ BOT_COMMANDS = [
     BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
     BotCommand("source", "📡 默认数据源(用哪家交易所的价)"),
     BotCommand("changelog", "📋 这一版更新了什么"),
+    BotCommand("onchain", "🔗 链上代币(交易所没上的币)"),
     BotCommand("btcregime", "🧭 BTC市场环境(变化时提醒)"),
     BotCommand("watchpct", "👁 持续波动监控(指定币±%)"),
     BotCommand("watchpcts", "👁 我的波动监控列表"),
@@ -506,6 +507,9 @@ def main():
     app.add_handler(CommandHandler("source", source.source_cmd))
     # 更新日志：这一版改了什么（启动播报也会带上当前版本这段）
     app.add_handler(CommandHandler("changelog", changelog.changelog_cmd))
+    # 链上代币：交易所没上的币先在 DEX 跑，这里补的就是那一段
+    app.add_handler(CommandHandler("onchain", onchain.onchain_cmd))
+    app.add_handler(CommandHandler("dex", onchain.onchain_cmd))
     app.add_handler(CommandHandler("btcregime", regime.btcregime))
     app.add_handler(CommandHandler("checklist", checklist.checklist))
     app.add_handler(CommandHandler("upstreak", streak.upstreak))

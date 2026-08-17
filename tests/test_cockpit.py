@@ -5,7 +5,7 @@ from handlers.cockpit import trend_state, next_levels, suggest, _pos_block, acco
 
 
 def _a(**kw):
-    base = {"last": 100.0, "ema20": 95.0, "ema50": 90.0,
+    base = {"last": 100.0, "ma_ref": 95.0, "ma_ref_period": 23,
             "structure": "上升结构(HH+HL)",
             "swing_high": 110.0, "swing_low": 92.0,
             "prior_high": 115.0, "prior_low": 88.0}
@@ -15,31 +15,31 @@ def _a(**kw):
 
 class TestTrendState:
     def test_long_with_trend(self):
-        st, danger = trend_state("long", _a(last=100, ema20=95, structure="上升结构(HH+HL)"))
+        st, danger = trend_state("long", _a(last=100, ma_ref=95, structure="上升结构(HH+HL)"))
         assert "顺势" in st and danger is False
 
     def test_long_counter_trend_is_dangerous(self):
-        st, danger = trend_state("long", _a(last=90, ema20=95, structure="下降结构(LH+LL)"))
+        st, danger = trend_state("long", _a(last=90, ma_ref=95, structure="下降结构(LH+LL)"))
         assert "逆势" in st and danger is True
 
     def test_long_below_ema_is_flagged(self):
-        st, danger = trend_state("long", _a(last=90, ema20=95, structure="震荡/不明确"))
+        st, danger = trend_state("long", _a(last=90, ma_ref=95, structure="震荡/不明确"))
         assert danger is True and "跌破" in st
 
     def test_short_with_trend(self):
-        st, danger = trend_state("short", _a(last=90, ema20=95, structure="下降结构(LH+LL)"))
+        st, danger = trend_state("short", _a(last=90, ma_ref=95, structure="下降结构(LH+LL)"))
         assert "顺势" in st and danger is False
 
     def test_short_counter_trend_is_dangerous(self):
-        st, danger = trend_state("short", _a(last=100, ema20=95, structure="上升结构(HH+HL)"))
+        st, danger = trend_state("short", _a(last=100, ma_ref=95, structure="上升结构(HH+HL)"))
         assert "逆势" in st and danger is True
 
     def test_short_above_ema_is_flagged(self):
-        st, danger = trend_state("short", _a(last=100, ema20=95, structure="震荡/不明确"))
+        st, danger = trend_state("short", _a(last=100, ma_ref=95, structure="震荡/不明确"))
         assert danger is True and "站上" in st
 
     def test_missing_data_is_not_dangerous(self):
-        st, danger = trend_state("long", {"last": None, "ema20": None})
+        st, danger = trend_state("long", {"last": None, "ma_ref": None})
         assert st == "数据不足" and danger is False
 
 
@@ -129,7 +129,7 @@ class TestPosBlock:
         pos = _pos(mark="0.0000118")
         pos["avgPrice"] = "0.000012"
         block = _pos_block({"symbol": "PEPEUSDT", "pos": pos,
-                            "last": 0.0000118, "ema20": 0.0000115,
+                            "last": 0.0000118, "ma_ref": 0.0000115,
                             "structure": "震荡/不明确"})
         assert "0.00 →" not in block          # 均价不能塌成 0.00
         assert "0.000012" in block

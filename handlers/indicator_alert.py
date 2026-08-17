@@ -1,4 +1,4 @@
-"""技术指标告警：订阅某币后，日线 RSI 进入超买/超卖、或 MA7/MA30 金叉/死叉时主动推送。
+"""技术指标告警：订阅某币后，日线 RSI 进入超买/超卖、或 MA3/MA23 金叉/死叉时主动推送。
 复用 api 的日线序列（CoinGecko，OKX 回退）+ indicators 的 rsi/sma。
 基于"状态切换"触发，只在状态发生变化时推送一次，避免刷屏。
 """
@@ -21,10 +21,12 @@ def _rsi_state(r):
     return "neutral"
 
 
-def _ma_state(ma7, ma30):
-    if not ma7 or not ma30:
+def _ma_state(ma_fast, ma_slow):
+    """短均线在生命线之上/之下 → bull/bear。周期由 annotchart.MA_PERIODS 定，
+    参数名别再写死成 ma7/ma30——口径换过一次，写死的名字就是下一次误判的起点。"""
+    if not ma_fast or not ma_slow:
         return None
-    return "bull" if ma7 > ma30 else "bear"
+    return "bull" if ma_fast > ma_slow else "bear"
 
 
 # /rsialert BTC —— 开关订阅（同一 chat + 币 已存在则取消）
@@ -35,7 +37,7 @@ async def rsi_alert(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "用法：`/rsialert BTC`\n"
             "订阅后，该币日线出现以下情况会主动提醒你：\n"
             "• RSI 进入超买(≥70)/超卖(≤30)\n"
-            "• MA7/MA30 金叉(转多)/死叉(转空)\n\n"
+            "• MA3/MA23 金叉(转多)/死叉(转空)\n\n"
             "再发一次同样命令即可取消；`/rsialerts` 查看已订阅。",
             parse_mode="Markdown")
         return
@@ -100,9 +102,14 @@ async def check_ti_alerts(context: ContextTypes.DEFAULT_TYPE):
             if not prices or len(prices) < 31:
                 continue
             r = rsi(prices, 14)
-            ma7 = sma(prices, 7)
-            ma30 = sma(prices, 30)
-            computed[sym] = (_rsi_state(r), _ma_state(ma7, ma30), r)
+            # 均线口径全局统一成 MA3/13/23（handlers/annotchart.MA_PERIODS）——
+            # 金叉/死叉看短均线 MA3 与生命线 MA23（原来是 MA7/MA30）
+            from handlers.annotchart import MA_PERIODS, _ma_series
+            def _last(n):
+                ser = _ma_series(prices, n)
+                return ser[-1] if ser and ser[-1] is not None else None
+            computed[sym] = (_rsi_state(r),
+                             _ma_state(_last(MA_PERIODS[0]), _last(MA_PERIODS[-1])), r)
         except Exception as e:
             logging.error(f"指标告警取价/计算出错 {sym}: {e}")
 
@@ -125,15 +132,18 @@ async def check_ti_alerts(context: ContextTypes.DEFAULT_TYPE):
             s["rsi_state"] = new_rsi
             changed = True
 
-        # 均线金叉/死叉
-        prev_ma = s.get("ma_state")
+        # 均线金叉/死叉。
+        # 键名从 ma_state 换成 ma_state_ma3：口径变了，旧状态是按 MA7/MA30 记的，
+        # 沿用它会在换版后凭空推一次"金叉"。新键首轮取到 None → 只记录不推送。
+        from handlers.annotchart import MA_PERIODS as _MP
+        prev_ma = s.get("ma_state_ma3")
         if new_ma and new_ma != prev_ma and prev_ma is not None:
             if new_ma == "bull":
-                msgs.append("MA7 上穿 MA30 金叉 📈 转多头")
+                msgs.append(f"MA{_MP[0]} 上穿 MA{_MP[-1]} 金叉 📈 转多头")
             else:
-                msgs.append("MA7 下穿 MA30 死叉 📉 转空头")
+                msgs.append(f"MA{_MP[0]} 下穿 MA{_MP[-1]} 死叉 📉 转空头")
         if new_ma != prev_ma:
-            s["ma_state"] = new_ma
+            s["ma_state_ma3"] = new_ma
             changed = True
 
         if msgs:

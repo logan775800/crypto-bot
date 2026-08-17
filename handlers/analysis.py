@@ -42,12 +42,15 @@ async def analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif r["rsi"] >= 70: bear += 1
 
         lines.append("\n【均线】")
-        if r.get("ma7"): lines.append(f"MA7: ${r['ma7']:,.2f}")
-        if r.get("ma30"): lines.append(f"MA30: ${r['ma30']:,.2f}")
+        # 周期从 analyze() 带出来（MA3/13/23），别在这里写死——写死就会和图上又对不上
+        _p1, _p2, _p3 = r.get("ma_periods", (3, 13, 23))
+        for _n, _k in ((_p1, "ma_fast"), (_p2, "ma_mid"), (_p3, "ma_slow")):
+            if r.get(_k): lines.append(f"MA{_n}: ${r[_k]:,.2f}")
         if r.get("ma_signal"):
             lines.append(r['ma_signal'])
+            # 缠绕既不算多也不算空——以前的 else 会把它记成看空，凭空多一票
             if "多头" in r['ma_signal']: bull += 1
-            else: bear += 1
+            elif "空头" in r['ma_signal']: bear += 1
 
         lines.append("\n【MACD】")
         if macd_signal:

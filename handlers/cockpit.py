@@ -39,8 +39,13 @@ async def _analyze_one(sym, pos):
         lo = [float(x[3]) for x in rows]
         if len(c) >= 30:
             out["last"] = c[-1]
-            out["ema20"] = md.ema(c, 20)
-            out["ema50"] = md.ema(c, 50)
+            # 均线口径全局统一成 MA3/13/23（handlers/annotchart.MA_PERIODS）——
+            # 这里以前是 EMA20/50，驾驶舱说"跌破均线"和图上画的不是同一根。
+            # 顺势与否看生命线 MA23（跨度和原来的 EMA20 相当）；ema50 从来没人用，删掉。
+            from handlers.annotchart import MA_PERIODS, _ma_series
+            _ser = _ma_series(c, MA_PERIODS[-1])
+            out["ma_ref"] = _ser[-1] if _ser and _ser[-1] is not None else None
+            out["ma_ref_period"] = MA_PERIODS[-1]
             tag, h3, l3 = md.structure(h, lo)
             out["structure"] = tag
             out["swing_high"] = h3[0] if h3 else None
@@ -61,29 +66,30 @@ async def _analyze_one(sym, pos):
 
 def trend_state(side, a):
     """顺势 / 逆势 / 结构破坏。给建议动作用。返回 (状态, 是否危险)。"""
-    e20 = a.get("ema20")
+    ref = a.get("ma_ref")
     last = a.get("last")
     struct = a.get("structure", "")
-    if not (e20 and last):
+    if not (ref and last):
         return "数据不足", False
+    _n = a.get("ma_ref_period", 23)
     up_struct = "上升" in struct
     down_struct = "下降" in struct
-    price_up = last > e20
+    price_up = last > ref
     if side == "long":
         if price_up and up_struct:
             return "顺势 ✅", False
         if not price_up and down_struct:
-            return "逆势 ⚠️（多单处于 1h 下降结构+价在EMA20下）", True
+            return f"逆势 ⚠️（多单处于 1h 下降结构+价在MA{_n}下）", True
         if not price_up:
-            return "结构走弱 ⚠️（价跌破 1h EMA20）", True
+            return f"结构走弱 ⚠️（价跌破 1h MA{_n}）", True
         return "过渡", False
     else:   # short
         if not price_up and down_struct:
             return "顺势 ✅", False
         if price_up and up_struct:
-            return "逆势 ⚠️（空单处于 1h 上升结构+价在EMA20上）", True
+            return f"逆势 ⚠️（空单处于 1h 上升结构+价在MA{_n}上）", True
         if price_up:
-            return "结构走强 ⚠️（价站上 1h EMA20）", True
+            return f"结构走强 ⚠️（价站上 1h MA{_n}）", True
         return "过渡", False
 
 

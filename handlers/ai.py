@@ -374,14 +374,17 @@ async def ai_analyze(update: Update, context: ContextTypes.DEFAULT_TYPE):
         r = do_analyze(prices)
         macd_line, macd_sig = macd(prices)
 
-        # 组织数据给AI
+        # 组织数据给AI。均线周期跟 analyze() 走（MA3/13/23），标签写死会让 AI
+        # 按错的口径解读——它只能信我们告诉它的名字。
+        _p1, _p2, _p3 = r.get("ma_periods", (3, 13, 23))
         data_text = (
             f"币种: {symbol}\n"
             f"当前价: ${cur['price']:,.2f}\n"
             f"24h涨跌: {cur['change']:+.2f}%\n"
             f"RSI(14): {r.get('rsi', 0):.1f}\n"
-            f"MA7: ${r.get('ma7', 0):,.2f}\n"
-            f"MA30: ${r.get('ma30', 0):,.2f}\n"
+            f"MA{_p1}: ${r.get('ma_fast') or 0:,.2f}\n"
+            f"MA{_p2}: ${r.get('ma_mid') or 0:,.2f}\n"
+            f"MA{_p3}: ${r.get('ma_slow') or 0:,.2f}\n"
             f"MACD: {macd_sig}\n"
             f"近期价格: {[round(p) for p in prices[-7:]]}"
         )
@@ -414,8 +417,10 @@ async def build_ai_text(symbol):
         return "数据获取失败"
     r = do_analyze(prices)
     ml, ms = macd(prices)
+    _p1, _p2, _p3 = r.get("ma_periods", (3, 13, 23))
     data_text = (f"币种:{symbol} 价${cur['price']:,.2f} 24h{cur['change']:+.2f}% "
-                 f"RSI:{r.get('rsi',0):.1f} MA7:${r.get('ma7',0):,.0f} MA30:${r.get('ma30',0):,.0f} MACD:{ms}")
+                 f"RSI:{r.get('rsi',0):.1f} MA{_p1}:${r.get('ma_fast') or 0:,.0f} "
+                 f"MA{_p2}:${r.get('ma_mid') or 0:,.0f} MA{_p3}:${r.get('ma_slow') or 0:,.0f} MACD:{ms}")
     reply = await ask_ai(f"分析这些技术指标：{data_text}，给简洁趋势解读")
     # AI 输出是自由文本，可能含 _ * ` 等字符，转义后再嵌入 Markdown，避免整条消息渲染失败
     return f"🤖 *{symbol} AI分析*\n\n{escape_md(reply)}\n\n⚠️ 不构成投资建议"

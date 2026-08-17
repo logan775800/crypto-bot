@@ -239,7 +239,7 @@ SYSTEM = (
     "你是嵌在一个 Telegram 加密行情机器人里的智能交易助手，用简体中文回答。"
     "用户是做加密杠杆永续合约的活跃交易者（主玩 Bybit/OKX）。\n\n"
     "你有一整套 Bybit 永续的实时数据工具——**别猜、别口头点评，先取数再下结论**：\n"
-    "- get_klines(币, 周期)：多周期量化（EMA排列/斜率、ATR14+止损距离、RSI、摆动高低点与"
+    "- get_klines(币, 周期)：多周期量化（MA3/13/23排列/斜率、ATR14+止损距离、RSI、摆动高低点与"
     "HH-HL/LH-LL 结构、量能倍数、VWAP、前高前低、近8根OHLCV）\n"
     "- get_oi_history(币, 周期)：OI 历史 + 价格/OI 四象限（谁在推动、是否拥挤）\n"
     "- get_funding_history(币)：资金费率历史/预测/是否极端 + 基差(永续溢价折价)\n"
@@ -348,8 +348,8 @@ TOOLS = [
     # 多周期量化分析（Bybit永续）
     {"type": "function", "function": {
         "name": "get_klines",
-        "description": ("Bybit永续指定周期的K线量化分析：已在服务端算好 EMA20/50/200与排列、"
-                        "EMA20斜率、ATR14(含1.5×ATR止损距离)、RSI14、摆动高低点与市场结构"
+        "description": ("Bybit永续指定周期的K线量化分析：已在服务端算好 MA3/13/23与排列、"
+                        "MA3斜率、ATR14(含1.5×ATR止损距离)、RSI14、摆动高低点与市场结构"
                         "(HH/HL、LH/LL)、量能倍数、区间VWAP、前高前低，并附最近8根OHLCV。"
                         "做趋势/结构/止损距离判断时必用。"),
         "parameters": {"type": "object", "properties": {**_SYM, "interval": _IV},
@@ -380,7 +380,7 @@ TOOLS = [
         "parameters": {"type": "object", "properties": _SYM, "required": ["symbol"]}}},
     {"type": "function", "function": {
         "name": "get_market_context",
-        "description": ("市场联动：BTC/ETH 的 15m/1h/4h 涨跌与EMA20位置、资金费率，加恐惧贪婪指数。"
+        "description": ("市场联动：BTC/ETH 的 15m/1h/4h 涨跌与MA23位置、资金费率，加恐惧贪婪指数。"
                         "分析山寨币时必须先看这个——BTC破位时山寨多头计划要降仓/取消。"),
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {

@@ -47,25 +47,33 @@ def analyze(prices):
         else:
             result["rsi_signal"] = "中性"
 
-    # 均线
-    ma7 = sma(prices, 7)
-    ma30 = sma(prices, 30)
-    result["ma7"] = ma7
-    result["ma30"] = ma30
+    # 均线口径全局统一成 MA3/13/23（handlers/annotchart.MA_PERIODS）——
+    # 这里以前是 MA7/MA30，于是同一个币：图上按 MA3/13/23 画、/scan 按 MA3/13/23 判，
+    # 而 /analyze 和 /ai 按 MA7/MA30 说话，三者能给出不同的"多头/空头"。
+    # 函数内导入：annotchart 会拉起 telegram/marketdata 那条链，模块级导入太重。
+    from handlers.annotchart import MA_PERIODS, _ma_series, ma_align
+    p1, p2, p3 = MA_PERIODS
+    result["ma_periods"] = MA_PERIODS
 
-    # 均线趋势判断
-    if ma7 and ma30:
-        if ma7 > ma30:
-            result["ma_signal"] = "短期均线在长期之上 📈 (偏多头)"
-        else:
-            result["ma_signal"] = "短期均线在长期之下 📉 (偏空头)"
+    def _last(n):
+        ser = _ma_series(prices, n)
+        return ser[-1] if ser and ser[-1] is not None else None
 
-    # 价格相对均线
-    if ma7:
-        if cur > ma7:
-            result["price_signal"] = "价格在7日均线之上"
-        else:
-            result["price_signal"] = "价格在7日均线之下"
+    m1, m2, m3 = _last(p1), _last(p2), _last(p3)
+    result["ma_fast"], result["ma_mid"], result["ma_slow"] = m1, m2, m3
+
+    # 排列判定复用 ma_align：光比大小不够，三根粘一起是缠绕不是顺势（见 annotchart）
+    align = ma_align(prices)
+    if align > 0:
+        result["ma_signal"] = f"MA{p1}>MA{p2}>MA{p3} 多头排列 📈"
+    elif align < 0:
+        result["ma_signal"] = f"MA{p1}<MA{p2}<MA{p3} 空头排列 📉"
+    elif m1 and m3:
+        result["ma_signal"] = "均线缠绕，方向未定 ⏸"
+
+    # 价格相对生命线（MA23）——短均线贴着价格走，用它判"站上/跌破"没有意义
+    if m3:
+        result["price_signal"] = f"价格在 MA{p3} 之{'上' if cur > m3 else '下'}"
 
     return result
 

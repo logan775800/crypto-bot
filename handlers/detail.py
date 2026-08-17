@@ -371,10 +371,10 @@ def _build_signal_text(o, h, l, c, v):
     # 同一个币在三个地方能得出三种"排列"，用户没法知道该信哪个。
     from handlers.annotchart import MA_PERIODS
     _P1, _P2, _P3 = MA_PERIODS
-    ma7 = sma(closes, _P1)
-    ma25 = sma(closes, _P2)
-    ma99 = sma(closes, _P3)
-    ma25_prev = sma(closes[:-3], _P2) if len(closes) > _P2 + 3 else None
+    ma_fast = sma(closes, _P1)
+    ma_mid = sma(closes, _P2)
+    ma_slow = sma(closes, _P3)
+    ma_mid_prev = sma(closes[:-3], _P2) if len(closes) > _P2 + 3 else None
     mh = macd_hist(closes)
     r = _rsi(closes, 14)
     ax = _adx(highs, lows, closes, 14)
@@ -388,8 +388,8 @@ def _build_signal_text(o, h, l, c, v):
     parts = []  # 综合信号后缀原因
 
     # —— 趋势 ——
-    if ma7 and ma25:
-        if ma7 > ma25:
+    if ma_fast and ma_mid:
+        if ma_fast > ma_mid:
             score += 1
             trend_ma = f"MA{_P1}>MA{_P2} 短期偏强"
         else:
@@ -397,8 +397,8 @@ def _build_signal_text(o, h, l, c, v):
             trend_ma = f"MA{_P1}<MA{_P2} 短期偏弱"
     else:
         trend_ma = "均线数据不足"
-    if ma25 and ma25_prev:
-        if ma25 > ma25_prev:
+    if ma_mid and ma_mid_prev:
+        if ma_mid > ma_mid_prev:
             trend_dir = f"MA{_P2} 上行"; score += 1
         else:
             trend_dir = f"MA{_P2} 下行"; score -= 1

@@ -486,9 +486,15 @@ async def market_context():
                 c = [float(x[4]) for x in rows]
                 if len(c) < 21:
                     continue
-                e20 = ema(c, 20)
+                # 口径和 klines_analysis / 图表一致：生命线 MA23，不再是 EMA20
+                from handlers.annotchart import MA_PERIODS, _ma_series
+                _n = MA_PERIODS[-1]
+                _ser = _ma_series(c, _n)
+                ref = _ser[-1] if _ser and _ser[-1] is not None else None
+                if ref is None:
+                    continue
                 chg = (c[-1] - c[-21]) / c[-21] * 100
-                parts.append(f"{iv} {chg:+.2f}%/{'价上EMA20' if c[-1] > e20 else '价下EMA20'}")
+                parts.append(f"{iv} {chg:+.2f}%/{'价上' if c[-1] > ref else '价下'}MA{_n}")
             except Exception:
                 continue
         try:

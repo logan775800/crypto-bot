@@ -121,7 +121,7 @@ async def portfolio_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # A：技术分析图（价格+均线+布林带）
 from api import get_daily_ohlc_prices
-from indicators import sma, bollinger
+from indicators import bollinger   # 均线不再走 sma()，改用 annotchart 的统一实现
 
 async def analyze_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -143,15 +143,14 @@ async def analyze_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         times = [datetime.datetime.fromtimestamp(p[0]/1000) for p in raw]
         prices = [p[1] for p in raw]
 
-        # 算每个点的 MA7、MA30、布林带（滑动）
-        ma7_line = []
-        ma30_line = []
+        # 均线口径全局统一成 MA3/13/23（handlers/annotchart.MA_PERIODS）——
+        # 这张图以前画 MA7/MA30，和日线蜡烛图、/scan、AI 说的都不是一套。
+        from handlers.annotchart import MA_PERIODS, MA_COLORS, _ma_series
+        ma_lines = {n: _ma_series(prices, n) for n in MA_PERIODS}
         boll_up = []
         boll_low = []
         for i in range(len(prices)):
             window = prices[:i+1]
-            ma7_line.append(sma(window, 7) if len(window) >= 7 else None)
-            ma30_line.append(sma(window, 30) if len(window) >= 30 else None)
             b = bollinger(window, 20) if len(window) >= 20 else None
             boll_up.append(b["upper"] if b else None)
             boll_low.append(b["lower"] if b else None)
@@ -159,9 +158,9 @@ async def analyze_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plt.figure(figsize=(12, 6))
         # 价格
         plt.plot(times, prices, color="black", linewidth=1.5, label="价格")
-        # 均线
-        plt.plot(times, ma7_line, color="orange", linewidth=1, label="MA7")
-        plt.plot(times, ma30_line, color="blue", linewidth=1, label="MA30")
+        # 均线（颜色也和标注图/蜡烛图统一）
+        for n, color in zip(MA_PERIODS, MA_COLORS):
+            plt.plot(times, ma_lines[n], color=color, linewidth=1, label=f"MA{n}")
         # 布林带通道（填充）
         valid_idx = [i for i in range(len(times)) if boll_up[i] is not None]
         if valid_idx:
@@ -186,7 +185,8 @@ async def analyze_chart(update: Update, context: ContextTypes.DEFAULT_TYPE):
         change = (prices[-1] - prices[0]) / prices[0] * 100
         await update.message.reply_photo(
             photo=buf,
-            caption=f"📊 {symbol} 技术分析图\n当前 ${prices[-1]:,.2f} | 35天 {change:+.2f}%\n黑=价格 橙=MA7 蓝=MA30 灰=布林带"
+            caption=(f"📊 {symbol} 技术分析图\n当前 ${prices[-1]:,.2f} | 35天 {change:+.2f}%\n"
+                     f"黑=价格 " + " ".join(f"MA{n}" for n in MA_PERIODS) + " 灰=布林带")
         )
     except Exception as e:
         logging.error(f"技术分析图出错: {e}")

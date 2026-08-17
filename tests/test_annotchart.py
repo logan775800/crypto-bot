@@ -252,6 +252,72 @@ class TestMaConsistency:
         from handlers import breakout
         assert "ma_align" in inspect.getsource(breakout.detect)
 
+    # ── 下面这批是 v1.24.2 补的护栏 ──────────────────────────────
+    # v1.24.0 声称"全局统一"，实际漏了 /analyze、/ai、/chartanalyze、驾驶舱、
+    # 指标告警、BTC/ETH 联动六处，而当时的护栏只盖了上面四个模块，所以漏网无人发现。
+    # 判据一律用「算出来的值」而不是 grep 源码——源码里写没写 MA_PERIODS 不代表算对了。
+
+    def test_analyze_returns_the_shared_periods(self):
+        from indicators import analyze
+        from handlers.annotchart import MA_PERIODS, _ma_series
+        closes = [100 + i * 0.7 for i in range(60)]      # 稳定上行
+        r = analyze(closes)
+        assert r["ma_periods"] == MA_PERIODS
+        for key, n in zip(("ma_fast", "ma_mid", "ma_slow"), MA_PERIODS):
+            assert r[key] == pytest.approx(_ma_series(closes, n)[-1])
+        assert "多头排列" in r["ma_signal"]
+        assert f"MA{MA_PERIODS[-1]}" in r["price_signal"]
+        assert "ma7" not in r and "ma30" not in r        # 旧键必须彻底消失
+
+    def test_analyze_calls_a_tangle_a_tangle(self):
+        """缠绕不能被算成看空——analysis.py 的计分以前用 else 兜底，凭空多一票空。"""
+        from indicators import analyze
+        closes = [100.0] * 60
+        assert "缠绕" in analyze(closes)["ma_signal"]
+
+    def test_cockpit_trend_uses_the_lifeline(self):
+        import inspect
+        from handlers import cockpit
+        from handlers.annotchart import MA_PERIODS
+        src = inspect.getsource(cockpit._analyze_one)
+        assert "MA_PERIODS" in src and "ema(c, 20)" not in src
+        st, danger = cockpit.trend_state(
+            "long", {"last": 90.0, "ma_ref": 95.0, "ma_ref_period": MA_PERIODS[-1],
+                     "structure": "震荡/不明确"})
+        assert f"MA{MA_PERIODS[-1]}" in st and danger is True
+
+    @staticmethod
+    def _code_only(fn):
+        """剥掉注释再判——注释里写「以前是 MA7/MA30」是解释，不是残留口径。
+        （这条护栏第一次就是被自己的注释绊倒的。）"""
+        import inspect
+        return "\n".join(ln.split("#")[0] for ln in inspect.getsource(fn).splitlines())
+
+    def test_chart_and_market_context_dropped_the_old_periods(self):
+        from handlers import chart, marketdata
+        csrc = self._code_only(chart.analyze_chart)
+        assert "MA_PERIODS" in csrc
+        assert "sma(window, 7)" not in csrc and "MA30" not in csrc
+        msrc = self._code_only(marketdata.market_context)
+        assert "MA_PERIODS" in msrc and "EMA20" not in msrc
+
+    def test_indicator_alert_cross_uses_the_same_periods(self):
+        import inspect
+        from handlers import indicator_alert
+        src = inspect.getsource(indicator_alert)
+        assert "MA_PERIODS" in src
+        assert "sma(prices, 7)" not in src and "sma(prices, 30)" not in src
+        # 换口径后旧状态键必须弃用，否则换版当天会凭空推一次金叉
+        assert "ma_state_ma3" in src
+
+    def test_ai_tool_descriptions_match_the_data_they_return(self):
+        """给 AI 的工具描述必须和实际数值口径一致——说 EMA20 却给 MA3 的值，
+        模型不会报错，只会把短均线当长均线解读。这是最难发现的一类不一致。"""
+        from handlers import chat
+        blob = repr(chat.TOOLS) + chat.SYSTEM
+        assert "EMA" not in blob.upper().replace("MA3/13/23", "")
+        assert "MA3/13/23" in blob and "MA23" in blob
+
 
 class TestCjkFont:
     """图上的中文：装了字体就用真名，没装才退回 ASCII。

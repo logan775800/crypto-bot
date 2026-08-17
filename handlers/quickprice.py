@@ -69,13 +69,20 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 引导式命令：菜单里点了「净盈亏比/回测/合约身份…」，这条就是参数行。
     # 放在最前面（AI 会话之后）——用户刚点完按钮，下一条一定是参数，
     # 落到"当币名查价"会得到一个莫名其妙的结果。
-    if context.user_data.get("await_cmd"):
+    from handlers import guided
+    _cmd, _skip = guided.should_handle(context, "await_cmd", update, text)
+    if _skip:
+        return          # 群里的闲聊：静默放行，不回"格式不对"去刷屏
+    if _cmd:
         from handlers.menu import run_awaited_cmd
         if await run_awaited_cmd(update, context, text):
             return
 
     # 地址追踪：用户点了"添加地址"，现在发来的是以太坊地址
-    if context.user_data.get("await_track_addr"):
+    _v, _skip = guided.should_handle(context, "await_track_addr", update, text)
+    if _skip:
+        return
+    if _v:
         import re as _re
         cand = text.strip()
         if not _re.match(r"^0x[0-9a-fA-F]{40}$", cand):
@@ -88,7 +95,9 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 引导式实盘开仓：点按钮选完 币/方向/杠杆 后，发来的是「保证金 价格 [tp= sl=]」
-    ro = context.user_data.get("await_ropen")
+    ro, _skip = guided.should_handle(context, "await_ropen", update, text)
+    if _skip:
+        return
     if ro:
         parts = text.replace(",", " ").replace("，", " ").split()
         if len(parts) < 2:
@@ -109,7 +118,10 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 引导式实盘开仓：点了「其他币」，发来的是币名
-    if context.user_data.get("await_ropen_coin"):
+    _v, _skip = guided.should_handle(context, "await_ropen_coin", update, text)
+    if _skip:
+        return
+    if _v:
         cand = text.strip()
         if " " in cand or len(cand) > 12:
             await update.message.reply_text("请发单个币名，例如 ARB（取消发 /menu）")
@@ -120,7 +132,9 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 引导式改止损：点了持仓的「改止损」，发来的是新止损价
-    rsl = context.user_data.get("await_rsl")
+    rsl, _skip = guided.should_handle(context, "await_rsl", update, text)
+    if _skip:
+        return
     if rsl:
         try:
             price = float(text.replace(",", "").replace("$", "").replace("，", ""))
@@ -133,7 +147,10 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 引导式：用户点了"持续波动监控"，现在发来的是「币 百分比」
-    if context.user_data.get("await_watchpct"):
+    _v, _skip = guided.should_handle(context, "await_watchpct", update, text)
+    if _skip:
+        return
+    if _v:
         parts = text.split()
         if len(parts) < 2:
             await update.message.reply_text("请发「币 百分比」，例如 `DOGE 5`（取消发 /menu）",
@@ -158,7 +175,10 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 引导式预警：用户点了"查其他币"，现在发来的是"要设预警的币名"
-    if context.user_data.get("await_alert_coin"):
+    _v, _skip = guided.should_handle(context, "await_alert_coin", update, text)
+    if _skip:
+        return
+    if _v:
         cand = text.upper()
         if not cand or " " in cand or len(cand) > 12:
             await update.message.reply_text("请发送单个币名，例如 pepe（取消发 /menu）")
@@ -180,7 +200,9 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 引导式预警：用户刚点了"选币→选方向"，现在发来的是触发价格
-    pending = context.user_data.get("await_alert")
+    pending, _skip = guided.should_handle(context, "await_alert", update, text)
+    if _skip:
+        return
     if pending:
         try:
             target = float(text.replace(",", "").replace("$", "").replace("，", ""))
@@ -204,7 +226,11 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # 引导式链上查询：点了「查某个币」之后发来的这条
-    if context.user_data.pop("await_onchain", None):
+    _v, _skip = guided.should_handle(context, "await_onchain", update, text)
+    if _skip:
+        return
+    if _v:
+        guided.clear(context, "await_onchain")
         from handlers import onchain as _oc
         await _oc._send_query(update.message, text)
         return

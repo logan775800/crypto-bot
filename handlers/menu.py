@@ -530,7 +530,9 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.answer("未知功能")
             return
         tip, cmd = ASK[key]
-        context.user_data["await_cmd"] = cmd
+        from handlers import guided
+        guided.arm_chat(context, "await_cmd",
+                        query.message.chat_id if query.message else 0, cmd)
         await safe_edit(query, tip + "\n\n_直接发消息即可，发 /menu 取消_",
                         parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup([_back()]))
@@ -548,7 +550,9 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from handlers import datameta
             await datameta.datacheck(_fake_update(query), _FakeCtx([s], context))
             return
-        context.user_data["await_cmd"] = cmd
+        from handlers import guided
+        guided.arm_chat(context, "await_cmd",
+                        query.message.chat_id if query.message else 0, cmd)
         await query.answer()
         await query.message.reply_text(
             tip.format(s=s) + "\n\n_直接发消息即可，发 /menu 取消_",
@@ -615,8 +619,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         action = d.split(":", 1)[1]
         if action == "alertcoin":
             # 预警场景：记下"等用户发币名来设预警"，quickprice 会接住
-            context.user_data["await_alert_coin"] = True
-            await safe_edit(query, 
+            from handlers import guided
+            guided.arm_chat(context, "await_alert_coin",
+                            query.message.chat_id if query.message else 0)
+            await safe_edit(query,
                 "🔍 *给其他币设预警*\n\n发送币名即可，例如 `pepe`、`arb`\n"
                 "（发完会让你选涨破/跌破；取消发 /menu）",
                 parse_mode="Markdown")
@@ -864,7 +870,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # 选好方向 → 等用户发价格（存到 user_data，quickprice 会接住）
     elif d.startswith("alertset:"):
         _, symbol, direction = d.split(":")
-        context.user_data["await_alert"] = {"symbol": symbol, "direction": direction}
+        from handlers import guided
+        guided.arm_chat(context, "await_alert",
+                        query.message.chat_id if query.message else 0,
+                        {"symbol": symbol, "direction": direction})
         arrow = "涨破" if direction == "above" else "跌破"
         await safe_edit(query, 
             f"🔔 *{symbol} {arrow}提醒*\n\n请直接发送触发价格，例如 `65000`\n"
@@ -896,7 +905,9 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 持续波动监控：引导用户发「币 百分比」，quickprice 接住
     elif d == "watchpct_start":
-        context.user_data["await_watchpct"] = True
+        from handlers import guided
+        guided.arm_chat(context, "await_watchpct",
+                        query.message.chat_id if query.message else 0)
         from handlers import source as _source
         _ex, _mk = _source.get_pref(query.message.chat_id if query.message else 0)
         await safe_edit(query, 
@@ -1543,7 +1554,9 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text, kb = track_panel(query.message.chat_id)
         await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
     elif d == "trackadd":
-        context.user_data["await_track_addr"] = True
+        from handlers import guided
+        guided.arm_chat(context, "await_track_addr",
+                        query.message.chat_id if query.message else 0)
         await safe_edit(query, "🐋 发送要追踪的以太坊地址(0x 开头 42 位)，我就开始盯它。\n(取消发 /menu)")
     elif d.startswith("trackdel:"):
         from storage import data as _d, save_data as _s

@@ -861,7 +861,9 @@ async def on_button(query, context):
     bits = query.data.split(":")
     what = bits[1] if len(bits) > 1 else ""
     if what == "ask":
-        context.user_data["await_onchain"] = True
+        from handlers import guided
+        guided.arm_chat(context, "await_onchain",
+                        query.message.chat_id if query.message else 0)
         await query.answer()
         await safe_edit(query,
                         "🔗 *查链上代币*\n\n直接发**合约地址**最准（`0x…` 或 Solana 地址）；\n"

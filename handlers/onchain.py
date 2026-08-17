@@ -175,6 +175,9 @@ def _pair(p):
         "sells": _f(p, "txns", "h24", "sells"),
         "created_ms": int(created) if created else 0,
         "url": p.get("url") or "",
+        # 画 K 线要的是**池子地址**（不是代币地址）——GeckoTerminal 的 OHLCV 按池子给
+        "pool": p.get("pairAddress") or "",
+        "chain_key": DS2KEY.get(p.get("chainId"), ""),
     }
 
 
@@ -282,12 +285,124 @@ async def trending(chain=DEFAULT_CHAIN):
 
 
 # ---------- 渲染 ----------
+# ---------- K 线 ----------
+# GeckoTerminal 的 OHLCV 按**池子**给，不是按代币；周期用 timeframe+aggregate 组合表达
+TF = {"15m": ("minute", 15), "1h": ("hour", 1), "4h": ("hour", 4), "1d": ("day", 1)}
+
+
+async def ohlcv(chain_key, pool, tf="1h", limit=200):
+    """链上 K 线 → [[毫秒, 开, 高, 低, 收, 量], ...] 旧→新。取不到返回 []。"""
+    if chain_key not in CHAINS or not pool:
+        return []
+    frame, agg = TF.get(tf, TF["1h"])
+    net = CHAINS[chain_key]["gt"]
+    try:
+        d = await _get(f"{GT}/networks/{net}/pools/{pool}/ohlcv/{frame}",
+                       {"aggregate": agg, "limit": min(limit, 1000)})
+    except Exception as e:
+        log.warning(f"链上K线失败 {chain_key}/{pool} {tf}: {e}")
+        return []
+    rows = ((d.get("data") or {}).get("attributes") or {}).get("ohlcv_list") or []
+    out = [[int(r[0]) * 1000, float(r[1]), float(r[2]), float(r[3]), float(r[4]),
+            float(r[5] or 0)] for r in rows if r and r[0]]
+    out.sort(key=lambda x: x[0])          # 接口给的是新→旧，指标和画图都要旧→新
+    return out
+
+
+def _ascii_title(t, tf):
+    """图表标题只能是 ASCII——镜像里没有中文字体，「牛来」会渲染成豆腐块。
+    所以中文名一律退回合约地址开头，图上认得出是哪个币就行，中文说明放在图下面。"""
+    sym = "".join(c for c in (t.get("symbol") or "") if c.isascii() and c.isprintable())
+    sym = sym.strip() or (t.get("address") or "")[:10]
+    return f"[{sym}] {tf} {t.get('chain', '')}"
+
+
+async def build_chart(t, tf="1h"):
+    """链上代币的 K 线图。返回 (图, 说明) 或 None。"""
+    rows = await ohlcv(t.get("chain_key"), t.get("pool"), tf)
+    if len(rows) < 10:
+        return None
+    try:
+        import datetime
+        import io as _io
+        import pandas as pd
+        import mplfinance as mpf
+    except Exception as e:
+        log.error(f"链上K线绘图库缺失: {e}")
+        return None
+
+    closes = [r[4] for r in rows]
+    idx = [datetime.datetime.utcfromtimestamp(r[0] / 1000) for r in rows]
+    data = {"Open": [r[1] for r in rows], "High": [r[2] for r in rows],
+            "Low": [r[3] for r in rows], "Close": closes,
+            "Volume": [r[5] for r in rows]}
+    aps = []
+    for n, color in ((20, "#2962ff"), (50, "#ff6d00")):
+        if len(closes) > n:
+            k = 2 / (n + 1)
+            e = sum(closes[:n]) / n
+            ser = [None] * (n - 1) + [e]
+            for v in closes[n:]:
+                e = v * k + e * (1 - k)
+                ser.append(e)
+            data[f"E{n}"] = ser
+    df = pd.DataFrame(data, index=pd.DatetimeIndex(idx))
+    for n, color in ((20, "#2962ff"), (50, "#ff6d00")):
+        if f"E{n}" in df:
+            aps.append(mpf.make_addplot(df[f"E{n}"], color=color, width=0.9))
+
+    mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit",
+                               wick="inherit", volume="in")
+    style = mpf.make_mpf_style(base_mpf_style="charles", marketcolors=mc,
+                               gridstyle=":", gridcolor="#e0e0e0")
+    buf = _io.BytesIO()
+    try:
+        mpf.plot(df, type="candle", volume=True, style=style, addplot=aps,
+                 title=_ascii_title(t, tf), figsize=(11, 6.5), tight_layout=True,
+                 savefig=dict(fname=buf, dpi=90, format="png"))
+    except Exception as e:
+        log.error(f"链上K线绘图失败: {e}")
+        return None
+    buf.seek(0)
+    hi, lo = max(r[2] for r in rows), min(r[3] for r in rows)
+    cap = "\n".join([
+        f"📈 *{escape_md(t['symbol'])}*　{tf}　{t['chain_cn']}",
+        f"现价 *${fmt_price(closes[-1])}*　区间 ${fmt_price(lo)}~${fmt_price(hi)}",
+        f"{len(rows)} 根K线　池 ${t['liq']:,.0f}",
+        "蓝线 EMA20／橙线 EMA50",
+        "⚠️ 链上池子浅，单笔大单就能画出长影线——K线形态的参考价值远低于交易所",
+    ])
+    return buf, cap
+
+
+def kline_kb(t, tf="1h"):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    row = [InlineKeyboardButton(("•" if k == tf else "") + k,
+                                callback_data=f"oc:k:{t['chain_key']}:{t['pool']}:{k}")
+           for k in TF]
+    return InlineKeyboardMarkup([row, [
+        InlineKeyboardButton("📄 代币详情",
+                             callback_data=f"oc:d:{t['chain_key']}:{t['address']}")]])
+
+
+def detail_kb(t):
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = []
+    if t.get("pool") and t.get("chain_key"):
+        rows.append([InlineKeyboardButton(
+            f"📈 {k} K线", callback_data=f"oc:k:{t['chain_key']}:{t['pool']}:{k}")
+            for k in ("1h", "4h", "1d")])
+    if t.get("url"):
+        rows.append([InlineKeyboardButton("🌐 在 DexScreener 打开", url=t["url"])])
+    return InlineKeyboardMarkup(rows) if rows else None
+
+
 def render_token(t, pools=1, same_name=0):
     lines = [f"🔗 *{escape_md(t['symbol'])}*"
              + (f"　{escape_md(t['name'])}" if t["name"] else ""),
              f"{t['chain_cn']}　{escape_md(t['dex'])}",
              "━━━━━━━━━━━━━━",
-             f"价格 ${fmt_price(t['price'])}",
+             f"💵 *当前价 ${fmt_price(t['price'])}*",
              f"24h {t['chg24']:+.1f}%　1h {t['chg1h']:+.1f}%",
              f"流动性 ${t['liq']:,.0f}　24h量 ${t['vol24']:,.0f}"]
     if t["fdv"]:
@@ -321,14 +436,33 @@ def render_list(items, q, total):
     for i, t in enumerate(items[:TOP_N], 1):
         lines.append(f"{i}. {flag_of(t)} *{escape_md(t['symbol'])}*"
                      f"（{escape_md(t['name'][:18])}）{t['chain_cn']}")
-        lines.append(f"　 ${fmt_price(t['price'])}　24h {t['chg24']:+.1f}%　"
+        lines.append(f"　 现价 *${fmt_price(t['price'])}*　24h {t['chg24']:+.1f}%　"
                      f"池 ${t['liq']:,.0f}")
         lines.append(f"　 `{t['address']}`")
     if total > TOP_N:
         lines.append(f"\n还有 {total - TOP_N} 个没列——同名太多正是链上的常态，"
                      f"用合约地址查才准")
-    lines.append("\n⚠️ 链上代币风险远高于交易所币，不构成投资建议")
+    lines.append("\n👇 点下面的按钮看详情和 K 线图")
+    lines.append("⚠️ 链上代币风险远高于交易所币，不构成投资建议")
     return "\n".join(lines)
+
+
+def list_kb(items):
+    """搜索结果每条给一个按钮。
+
+    只给一串文字的话，用户想看详情就得手工把合约地址复制出来再发一遍——
+    中间那段手工搬运正是「看完就算了」的原因（分析结果闭环那次已经吃过一回教训）。
+    """
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    rows = []
+    for i, t in enumerate(items[:TOP_N], 1):
+        if not t.get("chain_key") or not t.get("address"):
+            continue
+        rows.append([InlineKeyboardButton(
+            f"{i}. {t['symbol'][:8]} {t['chain_cn']}　详情+K线",
+            callback_data=f"oc:d:{t['chain_key']}:{t['address']}")])
+    rows.append([InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")])
+    return InlineKeyboardMarkup(rows)
 
 
 def render_trending(items, chain):
@@ -422,16 +556,18 @@ async def _send_query(message, q):
                                  f"可能是还没有 DEX 池子，或地址抄错了。")
                 return
             await safe_reply(message, render_token(t, pools),
-                             parse_mode="Markdown")
+                             reply_markup=detail_kb(t), parse_mode="Markdown")
             return
         items, total = await by_name(q)
         if not items:
             await safe_reply(message, f"链上没搜到「{q}」。换个写法，或直接发合约地址。")
             return
         if total == 1:
-            await safe_reply(message, render_token(items[0]), parse_mode="Markdown")
+            await safe_reply(message, render_token(items[0]),
+                             reply_markup=detail_kb(items[0]), parse_mode="Markdown")
             return
-        await safe_reply(message, render_list(items, q, total), parse_mode="Markdown")
+        await safe_reply(message, render_list(items, q, total),
+                         reply_markup=list_kb(items), parse_mode="Markdown")
     except Exception as e:
         log.error(f"链上查询失败 {q}: {e}")
         await safe_reply(message, f"查询失败：{str(e)[:80]}")
@@ -476,4 +612,68 @@ async def on_button(query, context):
         await safe_edit(query, render_trending(items, chain),
                         reply_markup=chain_kb(chain), parse_mode="Markdown")
         return
+    if what == "d":                       # 详情：oc:d:<链>:<代币地址>
+        chain, addr = (bits[2] if len(bits) > 2 else ""), (bits[3] if len(bits) > 3 else "")
+        await query.answer("查详情…")
+        try:
+            t, pools = await by_address(addr)
+        except Exception as e:
+            log.error(f"链上详情失败 {addr}: {e}")
+            await query.message.reply_text(f"查询失败：{str(e)[:80]}")
+            return
+        if not t:
+            await query.message.reply_text("这个地址查不到交易对了")
+            return
+        # 用 reply 而不是 edit：列表那条要留着，否则想看第二个候选还得重搜
+        await _reply_md(query.message, render_token(t, pools), detail_kb(t))
+        return
+
+    if what == "k":                       # K线：oc:k:<链>:<池子地址>:<周期>
+        chain = bits[2] if len(bits) > 2 else ""
+        pool = bits[3] if len(bits) > 3 else ""
+        tf = bits[4] if len(bits) > 4 else "1h"
+        await query.answer(f"画 {tf} K线…")
+        t = {"chain_key": chain, "pool": pool, "symbol": "", "address": pool,
+             "chain": chain, "chain_cn": CHAINS.get(chain, {}).get("cn", chain),
+             "liq": 0.0}
+        # 池子地址反查一下代币信息，图下面的说明才有币名和池子大小
+        try:
+            d = await _get(f"{DS}/latest/dex/pairs/{CHAINS.get(chain, {}).get('ds', chain)}/{pool}")
+            ps = d.get("pairs") or ([d.get("pair")] if d.get("pair") else [])
+            if ps and ps[0]:
+                t = _pair(ps[0])
+        except Exception as e:
+            log.debug(f"反查池子信息失败 {pool}: {e}")
+        r = await build_chart(t, tf)
+        if not r:
+            # 建议往**小**周期换：新池子在大周期上根本没几根
+            # （实测 3 天大的池子，1d 只有 4 根，而 15m 有 200 根）
+            smaller = [k for k in TF if list(TF).index(k) < list(TF).index(tf)] \
+                if tf in TF else list(TF)[:1]
+            tip = f"试试 {'／'.join(smaller)}" if smaller else "这个池子太新，还没有K线"
+            await query.message.reply_text(
+                f"画不出 {tf} K线——这个池子建得太新，大周期上还凑不够 10 根。{tip}")
+            return
+        buf, cap = r
+        try:
+            await query.message.reply_photo(photo=buf, caption=cap,
+                                            parse_mode="Markdown",
+                                            reply_markup=kline_kb(t, tf))
+        except Exception as e:
+            log.warning(f"链上K线发图失败，降级: {e}")
+            buf.seek(0)
+            await query.message.reply_photo(photo=buf, caption=cap.replace("*", ""),
+                                            reply_markup=kline_kb(t, tf))
+        return
+
     await query.answer("不认识的操作")
+
+
+async def _reply_md(message, text, kb=None):
+    """回消息，Markdown 挂了就降级——链上代币名什么字符都有，别为了排版把内容丢了。"""
+    try:
+        await message.reply_text(text, reply_markup=kb, parse_mode="Markdown")
+    except Exception as e:
+        log.warning(f"链上详情 Markdown 失败，降级: {e}")
+        await message.reply_text(text.replace("*", "").replace("`", ""),
+                                 reply_markup=kb)

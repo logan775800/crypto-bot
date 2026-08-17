@@ -317,3 +317,87 @@ def test_dead_pool_flag_and_warning():
     t = OC._pair(pair("X", "X", 220_193_272, vol=4, buys=1, sells=1))
     assert OC.flag_of(t) == "💀"
     assert any("不可信" in r for r in OC.risks(t))
+
+
+# ── 列表要能点进去 + K线 ─────────────────────────────────────────
+# 用户实测反馈：「看不到当前价格啊还有k线图之类的 你显示给我的这个是啥」——
+# 搜索结果只是一串文字，点不进去，要看详情得手工复制地址再发一遍。
+# 那段手工搬运正是「看完就算了」的原因（分析闭环那次已经吃过一回教训）。
+def test_search_list_has_a_button_per_result(client):
+    client({"dexscreener.com": {"pairs": [
+        pair("A", "AA", 1_000_000, chain="bsc", addr="0xa", vol=90_000,
+             buys=50, sells=45),
+        pair("B", "BB", 500_000, chain="solana", addr="Sol1", vol=50_000,
+             buys=40, sells=38),
+    ]}})
+    items, _t = asyncio.run(OC.by_name("x"))
+    cbs = [b.callback_data for row in OC.list_kb(items).inline_keyboard
+           for b in row if b.callback_data]
+    assert "oc:d:bsc:0xa" in cbs
+    assert "oc:d:sol:Sol1" in cbs
+
+
+def test_list_button_callbacks_fit_telegram_limit(client):
+    """Solana 地址 44 字符，加前缀不能超 64 字节。"""
+    long_sol = "djN5QdTLZGoCNwa2Q2BqKNKaZHoKn4J6BSZzWxVpump"
+    client({"dexscreener.com": {"pairs": [
+        pair("X", "X", 1_000_000, chain="solana", addr=long_sol, vol=90_000,
+             buys=50, sells=45)]}})
+    items, _t = asyncio.run(OC.by_name("x"))
+    for row in OC.list_kb(items).inline_keyboard:
+        for b in row:
+            if b.callback_data:
+                assert len(b.callback_data.encode()) <= 64
+
+
+def test_detail_card_leads_to_charts():
+    t = OC._pair(pair("X", "X", 1_000_000, chain="bsc", addr="0xa"))
+    t["pool"] = "0xpool"
+    cbs = [b.callback_data for row in OC.detail_kb(t).inline_keyboard
+           for b in row if b.callback_data]
+    assert any(c.startswith("oc:k:bsc:0xpool:") for c in cbs)
+
+
+def test_price_is_prominent_in_the_card():
+    """用户第一反应是「看不到当前价格」——价格必须一眼看见。"""
+    t = OC._pair(pair("X", "X", 1_000_000, chain="bsc"))
+    assert "当前价" in OC.render_token(t)
+
+
+def test_price_is_labelled_in_the_list():
+    t = OC._pair(pair("X", "X", 1_000_000, chain="bsc"))
+    assert "现价" in OC.render_list([t], "X", 1)
+
+
+def test_chart_needs_the_pool_address_not_the_token():
+    """GeckoTerminal 的 OHLCV 按池子给，拿代币地址去请求只会 404。"""
+    assert asyncio.run(OC.ohlcv("bsc", "")) == []
+
+
+def test_ohlcv_is_sorted_oldest_first(client):
+    """接口给的是新→旧，指标和画图都要旧→新。"""
+    client({"geckoterminal.com": {"data": {"attributes": {"ohlcv_list": [
+        [1786950000, 2, 2, 1, 1.5, 100],
+        [1786946400, 1, 1.2, 0.9, 1.0, 80],
+    ]}}}})
+    rows = asyncio.run(OC.ohlcv("bsc", "0xpool", "1h"))
+    assert [r[0] for r in rows] == [1786946400_000, 1786950000_000]
+    assert rows[-1][4] == 1.5
+
+
+def test_ohlcv_rejects_unknown_chain():
+    assert asyncio.run(OC.ohlcv("火币链", "0xpool")) == []
+
+
+def test_chart_title_is_ascii_only():
+    """镜像里没有中文字体，「牛来」会渲染成豆腐块——标题只能 ASCII。"""
+    t = {"symbol": "牛来", "address": "0xBEEA1D618e533a387D941F58a7d4c9b7bD377777",
+         "chain": "bsc"}
+    title = OC._ascii_title(t, "1h")
+    assert title.isascii()
+    assert "0xBEEA1D61" in title
+
+
+def test_chart_title_keeps_ascii_symbols():
+    t = {"symbol": "PEPE", "address": "0xa", "chain": "eth"}
+    assert "PEPE" in OC._ascii_title(t, "4h")

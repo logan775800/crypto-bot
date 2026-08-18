@@ -256,17 +256,18 @@ def test_blocked_attempts_are_audited_too():
 
 def test_withdraw_permission_is_flagged_loudly():
     """有提现权限的 key 是唯一「泄露=直接丢钱」的配置，必须刺眼。"""
-    _rows, risky = kg._perm_lines({"permissions": {"Wallet": ["Withdraw"]},
-                                   "ips": ["1.2.3.4"]})
+    _rows, risky, _notes = kg._perm_lines({"permissions": {"Wallet": ["Withdraw"]},
+                                           "ips": ["1.2.3.4"]})
     assert any("提现权限" in x for x in risky)
 
 
 def test_missing_ip_whitelist_is_flagged():
-    _rows, risky = kg._perm_lines({"permissions": {"Order": ["Order"]}, "ips": []})
+    _rows, risky, _notes = kg._perm_lines({"permissions": {"Order": ["Order"]},
+                                           "ips": []})
     assert any("IP 白名单" in x for x in risky)
 
 
 def test_clean_key_has_no_warnings():
-    _rows, risky = kg._perm_lines({"permissions": {"Order": ["Order"]},
-                                   "ips": ["1.2.3.4"]})
+    _rows, risky, _notes = kg._perm_lines({"permissions": {"ContractTrade": ["Order"]},
+                                           "ips": ["1.2.3.4"]})
     assert risky == []

@@ -55,10 +55,29 @@ async def key_info():
     return r or {}
 
 
+def ip_bound(info):
+    """这把 key 真的绑了 IP 吗？
+
+    ⚠️ **Bybit 对「不限制 IP」返回的是 `["*"]`，不是空列表。**
+    原来只判 `if info.get("ips")`，于是 `*` 被当成"绑了 IP"，
+    /keycheck 对着一把任何机器都能用的 key 打了绿勾说「这是该有的配置」——
+    安全功能里报平安报反了，比不报还糟。
+    """
+    ips = [str(x).strip() for x in (info.get("ips") or []) if str(x).strip()]
+    if not ips or any(x == "*" for x in ips):
+        return False, ips
+    return True, ips
+
+
+# 这个机器人只用永续合约。多勾的权限不会让它更好用，只是泄露时多一条路。
+NEEDED_PERMS = {"contracttrade"}
+
+
 def _perm_lines(info):
     perms = info.get("permissions") or {}
     rows = []
     risky = []
+    extra = []
     for group, items in perms.items():
         if not items:
             continue
@@ -66,13 +85,26 @@ def _perm_lines(info):
         # 提现权限是唯一一个「拿到 key 就能把钱转走」的权限
         if group.lower() == "wallet" and any(
                 "withdraw" in str(x).lower() for x in items):
-            risky.append("🚨 *这把 key 有提现权限* —— 交易机器人完全不需要它，"
+            risky.append("🚨 这把 key 有提现权限 —— 交易机器人完全不需要它，"
                          "去 Bybit 后台立刻取消勾选")
-    if info.get("ips"):
-        rows.append(f"　IP 白名单: {'、'.join(info['ips'])}")
+        elif group.lower() not in NEEDED_PERMS:
+            extra.append(group)
+
+    bound, ips = ip_bound(info)
+    if bound:
+        rows.append(f"　IP 白名单: {'、'.join(ips)}")
     else:
-        risky.append("⚠️ 没有绑定 IP 白名单 —— key 泄露后任何机器都能用它下单")
-    return rows, risky
+        rows.append("　IP 白名单: ❌ 未绑定（`*` = 不限任何 IP）")
+        risky.append("⚠️ 没有绑定 IP 白名单 —— key 泄露后任何机器都能用它下单。"
+                     "顺带一提：不绑 IP 的 key Bybit 只给 90 天，"
+                     "到期会静默失效（那天起账户类功能全变空，很难联想到是这个原因）")
+    notes = []
+    if extra:
+        notes.append(f"ℹ️ 这把 key 还开着 {'、'.join(extra)} —— 机器人只用永续合约，"
+                     "多勾的权限不会让它更好用，只是泄露时多几条路。"
+                     "不急，下次轮换时收窄就行")
+    # notes 和 risky 分开：多勾权限是建议，不该把"配置合格"那句绿勾顶掉
+    return rows, risky, notes
 
 
 async def _alive():
@@ -136,8 +168,11 @@ async def keycheck_cmd(update, context):
         # 走 Markdown 会被当成斜体标记吃掉下划线，他照着抄就是错的命令。
         await safe_reply(update.message, await _explain_failure(e, env))
         return
-    rows, risky = _perm_lines(info)
+    rows, risky, notes = _perm_lines(info)
+    bound, _ips = ip_bound(info)
     exp = info.get("expiredAt") or "永不过期"
+    if info.get("expiredAt") and not bound:
+        exp += "（不绑 IP 的 key 只有 90 天）"
     lines = ["🔐 *密钥体检*", f"环境：{env}",
              f"只读标记：{'是' if str(info.get('readOnly')) == '1' else '否（可下单）'}",
              f"到期：{exp}",
@@ -147,6 +182,8 @@ async def keycheck_cmd(update, context):
         lines += ["", *risky]
     else:
         lines += ["", "✅ 没有提现权限、且绑了 IP —— 这是交易机器人该有的配置"]
+    if notes:
+        lines += ["", *notes]
     lines += ["", "出事时立刻停手：`/killswitch on`（禁用所有实盘下单）",
               "查最近操作：`/audit`"]
     await safe_reply(update.message, "\n".join(lines), parse_mode="Markdown")

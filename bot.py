@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -40,6 +40,8 @@ HELP_TEXT = (
     "　└ 止损1%的短线单，光两次吃单手续费就能把毛1.2:1压到净0.98:1\n"
     "/scan 🔍 机会扫描：全市场按**可交易性**排序（趋势/流动性/拥挤/执行 四维打分）\n"
     "　└ 不是涨幅榜——涨幅第一名往往是最不该碰的那个\n"
+    "/microcap 💎 微市值扫描：四家交易所里流通市值<300万、而且**买得到**的币\n"
+    "　└ `/microcap 1000` 换上限(万)；会剔掉查不到市值的、代币化美股、和量对不上的\n"
     "/steady 🌱 缓步增长：找每天一点点往上磨的币（年化斜率×R²，不是按涨幅）\n"
     "　└ `/steady 60` 换窗口；会排除单日暴拉、深回撤、和代币化美股\n"
     "/events BTC ETH 🔔 事件预警：OI跳升/价OI结构切换/费率跨拥挤区/盘口翻转\n"
@@ -169,6 +171,7 @@ BOT_COMMANDS = [
     BotCommand("sym", "🔎 合约身份(哪个所/面值/单位)"),
     BotCommand("net", "💰 净盈亏比(扣费/滑点/资金费)"),
     BotCommand("scan", "🔍 机会扫描(可交易性评分)"),
+    BotCommand("microcap", "💎 微市值扫描(<300万且能下单)"),
     BotCommand("steady", "🌱 缓步增长(稳中有升的币)"),
     BotCommand("events", "🔔 事件预警(OI/费率/盘口切换)"),
     BotCommand("backtest", "🧪 规则回测(扣成本的净期望)"),
@@ -456,6 +459,7 @@ def main():
     # 机会扫描：按可交易性排序，不是按涨幅
     app.add_handler(CommandHandler("scan", scan.scan_cmd))
     # 缓步增长：找每天一点点往上磨的币（和 /scan、/upstreak 都不同）
+    app.add_handler(CommandHandler("microcap", microcap.microcap_cmd))
     app.add_handler(CommandHandler("steady", steady.steady_cmd))
     # 事件驱动预警：盯状态切换，每条带上下文
     app.add_handler(CommandHandler("events", events.events_cmd))

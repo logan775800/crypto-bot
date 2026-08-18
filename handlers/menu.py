@@ -132,6 +132,8 @@ CATS = {
           InlineKeyboardButton("⚡ 15m急涨急跌", callback_data="pump:top")],
          [InlineKeyboardButton("🚀 5分钟破位（箱体+均线顺势）",
                                callback_data="bo:scan")],
+         [InlineKeyboardButton("💎 微市值（<300万，能下单的）",
+                               callback_data="mc:300")],
          [InlineKeyboardButton("🔗 链上代币专区", callback_data="cat_onchain")]]),
     "cat_calc": (
         "🧮 *交易工具*\n\n"
@@ -504,6 +506,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("bo:"):
         from handlers import breakout as _bo
         await _bo.on_button(query, context)
+
+    elif d.startswith("mc:"):
+        from handlers import microcap as _mc
+        await _mc.on_button(query, context)
 
     # ---- 链上代币专区（DEX，交易所还没上的币）----
     elif d == "cat_onchain":

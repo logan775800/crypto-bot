@@ -417,7 +417,17 @@ def main():
     # 重启/部署也不丢——按钮引导流程(设监控/预警/开仓)不再因重启失效。
     # 文件放 /app（与 data.json 同为宿主机绑定挂载，force-recreate 不丢）。
     persistence = PicklePersistence(filepath="/app/ptb_persistence.pickle")
-    app = Application.builder().token(TOKEN).persistence(persistence).post_init(post_init).build()
+    # concurrent_updates：**一个慢操作不能把所有人堵住**。
+    # PTB 默认串行处理更新——动量回测要逐个拉 24 个币的日线，CoinGecko 强制
+    # 2 秒间隔、还会 429 退避，整轮几分钟。这期间任何人发的任何消息都在排队，
+    # 表现出来就是"机器人卡死了"：/menu 发出去石沉大海（真机 2026-08-18 18:05）。
+    # 这也是「回调应答过期」那类报错的根源（见 handlers/menu.py 的注释）。
+    #
+    # 数值而不是 True：给个上限，防止有人狂点按钮把任务数堆爆。
+    # 并发安全的前提已经具备：storage.save_data 是原子写（tmp + os.replace），
+    # 而后台定时任务本来就和消息处理并发跑，这条路径早就不是"绝对串行"了。
+    app = (Application.builder().token(TOKEN).persistence(persistence)
+           .post_init(post_init).concurrent_updates(32).build())
 
     # 基础
     app.add_handler(CommandHandler("start", start))

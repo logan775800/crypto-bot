@@ -209,12 +209,19 @@ async def momentum(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except ValueError:
         pass
 
-    await update.message.reply_text(
-        f"⏳ 回测动量轮动（宇宙{N}/回看{lookback}天/持{hold}/每{rebalance}天调仓）...\n"
-        f"需逐个拉日线，约需 30~60 秒,请稍候")
-    try:
-        text = await build_momentum_text(N, lookback, hold, rebalance)
-        await safe_reply(update.message, text, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"/momentum 出错: {type(e).__name__}: {e}")
-        await update.message.reply_text(f"回测失败（{type(e).__name__}），稍后再试。")
+    from handlers import busy
+    uid = update.effective_user.id
+    async with busy.guard(uid, "momentum") as ok:
+        if not ok:
+            await update.message.reply_text(busy.busy_text(uid, "momentum", "动量回测"))
+            return
+        await update.message.reply_text(
+            f"⏳ 回测动量轮动（宇宙{N}/回看{lookback}天/持{hold}/每{rebalance}天调仓）...\n"
+            f"需逐个拉 {N} 个币的日线，数据源有限流，可能要 1~3 分钟。\n"
+            f"这期间机器人的其他功能照常能用，跑完直接出结果。")
+        try:
+            text = await build_momentum_text(N, lookback, hold, rebalance)
+            await safe_reply(update.message, text, parse_mode="Markdown")
+        except Exception as e:
+            logging.error(f"/momentum 出错: {type(e).__name__}: {e}")
+            await update.message.reply_text(f"回测失败（{type(e).__name__}），稍后再试。")

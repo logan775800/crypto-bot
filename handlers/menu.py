@@ -783,14 +783,27 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(query, f"扫描失败：{str(e)[:80]}", reply_markup=back_to("cat_strategy"))
 
     elif d == "do_momentum":
-        await safe_edit(query, "⏳ 动量轮动回测中，需逐个拉日线，约 30~60 秒，请稍候…")
+        from handlers import busy
         from handlers.strategy import build_momentum_text
-        try:
-            await safe_edit(query, await build_momentum_text(),
-                            reply_markup=back_to("cat_strategy"), parse_mode="Markdown")
-        except Exception as e:
-            logging.error(f"菜单动量回测出错: {e}")
-            await safe_edit(query, f"回测失败：{str(e)[:80]}", reply_markup=back_to("cat_strategy"))
+        uid = query.from_user.id
+        async with busy.guard(uid, "momentum") as ok:
+            if not ok:
+                await query.answer(busy.busy_text(uid, "momentum", "动量回测"),
+                                   show_alert=True)
+            else:
+                await safe_edit(query, "⏳ 动量轮动回测中，需逐个拉 24 个币的日线，"
+                                       "数据源有限流，可能要 1~3 分钟。\n"
+                                       "**这期间机器人的其他功能照常能用**，"
+                                       "跑完直接出结果。",
+                                parse_mode="Markdown")
+                try:
+                    await safe_edit(query, await build_momentum_text(),
+                                    reply_markup=back_to("cat_strategy"),
+                                    parse_mode="Markdown")
+                except Exception as e:
+                    logging.error(f"菜单动量回测出错: {e}")
+                    await safe_edit(query, f"回测失败：{str(e)[:80]}",
+                                    reply_markup=back_to("cat_strategy"))
 
     # ============ 技术分析 ============
     elif d == "cat_analysis":

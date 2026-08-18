@@ -1655,22 +1655,56 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ============ 虚拟合约交易（模拟盘）============
     elif d == "cat_vtrade":
         kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💼 我的持仓/账户", callback_data="vpos_refresh")],
-            [InlineKeyboardButton("📜 交易历史/胜率", callback_data="vhist_show")],
+            [InlineKeyboardButton("💼 合约持仓/账户", callback_data="vpos_refresh"),
+             InlineKeyboardButton("🪙 现货持币", callback_data="vspot_show")],
+            [InlineKeyboardButton("📋 我的委托单", callback_data="vord_show"),
+             InlineKeyboardButton("📜 历史/胜率", callback_data="vhist_show")],
             [InlineKeyboardButton("🔴 实盘交易(Bybit)", callback_data="cat_rtrade")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
-        await safe_edit(query, 
-            "🎮 *虚拟合约交易*（模拟盘，用真实行情练手，不碰真钱 🔒私聊）\n\n"
-            "用命令下单：\n"
-            "`/vopen BTC long 1000 10` 开多（1000U 保证金 10x）\n"
-            "`/vopen ETH short 500 20` 开空\n"
+        await safe_edit(query,
+            "🎮 *虚拟交易*（模拟盘，真实行情，不碰真钱 🔒私聊）\n\n"
+            "*永续合约*（有杠杆、会爆仓、扣资金费）\n"
+            "`/vopen BTC long 1000 10` 市价开多（1000U 保证金 10x）\n"
+            "`/vopen BTC long 1000 10 60000` **挂限价委托**，到价才成交\n"
             "`/vclose BTC` 平仓（`/vclose BTC 50` 平一半）\n"
-            "`/vpos` 看持仓+浮盈+爆仓价\n"
-            "`/vhistory` 胜率/历史　`/vreset` 重置账户\n\n"
-            "初始本金 $10,000，含 0.05% 手续费、自动爆仓监控。\n"
+            "`/vtpsl BTC tp=70000 sl=58000` 挂止盈止损\n\n"
+            "*现货*（无杠杆、不会爆仓、不扣资金费）\n"
+            "`/vbuy BTC 1000` 花 1000U 市价买入\n"
+            "`/vbuy BTC 1000 58000` 挂限价买单\n"
+            "`/vsell BTC all` 卖出（`/vsell BTC all 70000` 限价卖）\n\n"
+            "*委托单*　`/vorders` 看挂单　`/vcancel 3` 撤单\n\n"
+            "初始本金 $10,000。挂单走 0.02% 挂单费率、吃单按你账户的真实费率，"
+            "开仓算真实滑点，后台每 60 秒盯爆仓/止盈损/挂单成交。\n"
             "⚠️ 模拟盘，不构成投资建议",
             reply_markup=kb, parse_mode="Markdown")
+
+    elif d == "vspot_show":
+        from handlers import vspot as _vs
+        from handlers.vtrade import _acct
+        a = _acct(str(query.from_user.id))
+        await safe_edit(query, await _vs.render(a),
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔄 刷新", callback_data="vspot_show"),
+                            InlineKeyboardButton("⬅️ 返回", callback_data="cat_vtrade")]]),
+                        parse_mode="Markdown")
+
+    elif d == "vord_show":
+        from handlers import vorders as _vo
+        from handlers.vtrade import _acct, get_prices
+        a = _acct(str(query.from_user.id))
+        syms = {o["sym"] for o in a.get("orders", [])}
+        prices = {}
+        if syms:
+            try:
+                prices = await get_prices(list(syms))
+            except Exception as e:
+                logging.warning(f"挂单面板取价失败: {e}")
+        await safe_edit(query, _vo.render(a, prices),
+                        reply_markup=InlineKeyboardMarkup([[
+                            InlineKeyboardButton("🔄 刷新", callback_data="vord_show"),
+                            InlineKeyboardButton("⬅️ 返回", callback_data="cat_vtrade")]]),
+                        parse_mode="Markdown")
 
     elif d == "vpos_refresh":
         from handlers.vtrade import render_vpos

@@ -272,26 +272,55 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"你已有 {symbol} 的持仓，先 `/vclose {symbol}` 平掉再开", parse_mode="Markdown")
         return
 
-    # 入场价：指定则用指定，否则取现价
+    # 入场价：指定 = **挂限价委托**（和实盘一样，等价格到了才成交），
+    # 不指定 = 市价立刻成交。
+    # 老行为是"指定价就假装以那个价成交了"——那会养出「我总能在想要的价位进场」
+    # 这个最贵的错觉，而挂多远、等多久、要不要追，恰恰是最该练的东西。
+    limit = None
     if len(args) >= 5:
         try:
-            entry = float(args[4])
+            limit = float(args[4])
         except ValueError:
             await safe_reply(update.message, "入场价要是数字")
             return
-        if entry <= 0:
+        if limit <= 0:
             await safe_reply(update.message, "入场价要大于 0")
             return
-    else:
-        try:
-            r = await get_price(symbol)
-        except Exception as e:
-            logging.error(f"vopen 查价出错: {e}")
-            r = None
-        if not r:
-            await safe_reply(update.message, f"取现价失败，稍后再试，或手动指定入场价：{str(e)[:80]}")
+    # 无论市价还是挂单都要先拿现价：挂单要判断"这个价现在是不是已经能成交了"
+    try:
+        r = await get_price(symbol)
+    except Exception as e:
+        logging.error(f"vopen 查价出错: {e}")
+        r = None
+    if not r:
+        await safe_reply(update.message, "取现价失败，稍后再试")
+        return
+    entry = r["price"]
+
+    from handlers import vorders as VO
+    if limit and not VO.will_fill_now(side, limit, entry):
+        cost = margin + margin * lev * FEE_RATE      # 冻结按兜底费率估，成交时按实际结
+        if cost > a["balance"] + 1e-9:
+            await safe_reply(update.message,
+                f"💸 余额不足\n可用 ${a['balance']:,.2f}，"
+                f"这张挂单要冻结 ${cost:,.2f}")
             return
-        entry = r["price"]
+        if len(a.get("orders", [])) >= VO.MAX_ORDERS:
+            await safe_reply(update.message, f"挂单太多（上限 {VO.MAX_ORDERS} 张），先撤几张")
+            return
+        o = VO.place(a, VO.PERP, symbol, side, limit,
+                     margin=margin, lev=lev, frozen=cost)
+        dir_txt = "开多 📈" if side == "long" else "开空 📉"
+        await safe_reply(update.message,
+            f"📋 *限价委托已挂*\n{symbol} {dir_txt} {lev:g}x\n"
+            f"挂单价 ${fmt(limit)}（现价 ${fmt(entry)}，差 "
+            f"{(limit-entry)/entry*100:+.2f}%）\n"
+            f"保证金 ${margin:,.2f}　已冻结 ${cost:,.2f}\n"
+            f"到价自动成交，走挂单费率 {VO.MAKER_RATE*100:g}%（比吃单便宜）\n\n"
+            f"撤单 `/vcancel {o['id']}`｜看挂单 `/vorders`", parse_mode="Markdown")
+        return
+    if limit:
+        entry = limit          # 挂价已经能立刻成交 = 吃单，按这个价走
 
     notional = margin * lev
     # 和实盘同构：入场价要算上真实滑点，数量要过合约规格。
@@ -307,29 +336,46 @@ async def vopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"（保证金 ${margin:,.2f} + 手续费 ${fee:,.2f}）")
         return
 
-    a["balance"] -= cost
+    text = open_position(a, symbol, side, margin, lev, entry, sim["fee_rate"],
+                         slip=sim["slip"], partial=sim["partial"],
+                         spec_note=sim.get("spec_note"))
+    await safe_reply(update.message, text, parse_mode="Markdown")
+
+
+def open_position(a, symbol, side, margin, lev, entry, fee_rate,
+                  tp=None, sl=None, slip=0.0, partial=False, spec_note=None):
+    """真正建仓的那一段。抽出来是为了让**挂单成交**走同一条路——
+    两套结算逻辑迟早会分叉，而分叉的那天没人会发现（模拟盘不会有人对账）。"""
+    notional = margin * lev
+    fee = notional * fee_rate
+    a["balance"] -= (margin + fee)
     a["positions"][symbol] = {
         "side": side, "margin": margin, "lev": lev, "entry": entry,
         "qty": notional / entry, "open_ts": time.time(), "open_fee": fee,
         "funding_paid": 0.0, "funding_ts": time.time(),
-        "fee_rate": sim["fee_rate"],
+        "fee_rate": fee_rate,
     }
+    if tp:
+        a["positions"][symbol]["tp"] = tp
+    if sl:
+        a["positions"][symbol]["sl"] = sl
     save_data()
     liq = _liq(a["positions"][symbol])
     dir_txt = "做多 📈" if side == "long" else "做空 📉"
-    await safe_reply(update.message,
+    return (
         f"✅ *虚拟开仓*\n"
         f"{symbol} {dir_txt} {lev:g}x\n"
-        f"入场价 ${fmt(entry)}" + (f"（含滑点 {sim['slip']:+.3f}%）" if sim["slip"] else "") + "\n"
-        + ("⚠️ 盘口深度不够这个名义，实盘会**部分成交**\n" if sim["partial"] else "")
-        + (f"{sim['spec_note']}\n" if sim.get("spec_note") else "")
+        f"入场价 ${fmt(entry)}" + (f"（含滑点 {slip:+.3f}%）" if slip else "") + "\n"
+        + ("⚠️ 盘口深度不够这个名义，实盘会**部分成交**\n" if partial else "")
+        + (f"{spec_note}\n" if spec_note else "")
         + f"保证金 ${margin:,.2f}｜仓位 ${notional:,.2f}\n"
-        f"手续费 -${fee:,.2f}（费率 {sim['fee_rate']*100:.3f}%）\n"
-        f"理论爆仓价 ${fmt(liq)}\n"
+        f"手续费 -${fee:,.2f}（费率 {fee_rate*100:.3f}%）\n"
+        + (f"止盈 ${fmt(tp)}\n" if tp else "")
+        + (f"止损 ${fmt(sl)}\n" if sl else "")
+        + f"理论爆仓价 ${fmt(liq)}\n"
         f"剩余可用 ${a['balance']:,.2f}\n\n"
         f"平仓 `/vclose {symbol}`｜查仓 `/vpos`\n"
-        f"模拟盘，不构成投资建议",
-        parse_mode="Markdown")
+        f"模拟盘，不构成投资建议")
 
 
 # ============ 平仓 ============
@@ -698,6 +744,12 @@ async def vtpsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def check_liquidations(context: ContextTypes.DEFAULT_TYPE):
+    # 挂单和爆仓/止盈损查的是同一批价格，放同一个任务里跑，别多打一轮接口
+    try:
+        from handlers import vorders as VO
+        await VO.check_orders(context)
+    except Exception as e:
+        logging.error(f"挂单检查出错: {e}")
     accts = data.get("vtrade", {})
     if not accts:
         return

@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -155,6 +155,11 @@ BOT_COMMANDS = [
     BotCommand("vopen", "🎮 虚拟开仓(模拟合约)"),
     BotCommand("vpos", "🎮 虚拟持仓/账户"),
     BotCommand("vclose", "🎮 虚拟平仓"),
+    BotCommand("vbuy", "🛒 虚拟现货买入"),
+    BotCommand("vsell", "💱 虚拟现货卖出"),
+    BotCommand("vspot", "🪙 虚拟现货持币"),
+    BotCommand("vorders", "📋 虚拟委托单(挂单)"),
+    BotCommand("vcancel", "❌ 撤销虚拟挂单"),
     BotCommand("vhistory", "🎮 虚拟交易胜率/历史"),
     BotCommand("trade", "🎛 实盘交易台(点按钮操作)"),
     BotCommand("ropen", "🔴 实盘限价开仓(Bybit)"),
@@ -550,6 +555,11 @@ def main():
     app.add_handler(CommandHandler("vclose", vtrade.vclose))
     app.add_handler(CommandHandler("vpos", vtrade.vpos))
     app.add_handler(CommandHandler("vtrade", vtrade.vpos))
+    app.add_handler(CommandHandler("vbuy", vspot.vbuy))
+    app.add_handler(CommandHandler("vsell", vspot.vsell))
+    app.add_handler(CommandHandler("vspot", vspot.vspot))
+    app.add_handler(CommandHandler("vorders", vorders.vorders_cmd))
+    app.add_handler(CommandHandler("vcancel", vorders.vcancel_cmd))
     app.add_handler(CommandHandler("vhistory", vtrade.vhistory))
     app.add_handler(CommandHandler("vreset", vtrade.vreset))
     # Bybit 实盘手动交易（管理员，默认模拟盘）

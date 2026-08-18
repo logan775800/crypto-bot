@@ -19,8 +19,29 @@ async def startup_notify(context: ContextTypes.DEFAULT_TYPE):
     """启动播报带上本版改了什么——光一个版本号对使用者没有信息量。"""
     from config import VERSION
     from handlers.changelog import startup_text
-    await notify_admin(context, startup_text(VERSION))
+    await notify_admin(context, startup_text(VERSION) + _live_warning())
     await announce_update(context, VERSION)
+
+
+def _live_warning():
+    """连的是实盘就在启动播报里说一声（只发管理员那条）。
+
+    重启、改 .env、部署都会走这里，而「现在连的是真钱账户还是模拟盘」不会主动
+    告诉任何人——只有去发 /version 才看得到。真钱的事不该靠人记得去查。
+    顺带把下单总开关的状态一并报出来：开关是关着的话，他点开仓会被拒，
+    到时候又要排查半天。
+    """
+    try:
+        from bybit_trade import BYBIT_API_KEY, _mode
+        if not BYBIT_API_KEY or _mode() != "live":
+            return ""
+        from handlers.keyguard import trading_enabled
+        sw = "✅ 开启" if trading_enabled() else "🔴 已禁用"
+        return (f"\n\n🔴 *当前连的是 Bybit 实盘*（真钱）\n"
+                f"下单总开关：{sw}　停手发 `/killswitch on`")
+    except Exception as e:
+        logging.warning(f"实盘提示生成失败: {e}")
+        return ""
 
 
 async def announce_update(context, version):

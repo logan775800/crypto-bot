@@ -4,7 +4,7 @@
 盘口薄得吃两万U就滑 1%。那是**别人的利润**，不是你的机会。
 
 所以这里给四个独立维度打分，并且**分开显示**而不是揉成一个数：
-  • 趋势 —— 多周期 EMA 排列是否一致、斜率是否还在走
+  • 趋势 —— 多周期均线(MA3/13/23)排列是否一致、斜率是否还在走
   • 流动性 —— 24h 成交额 + 盘口实际深度（能不能进得去出得来）
   • 拥挤 —— 资金费极端度 + OI 暴增（分数越高越危险，是**减分项**）
   • 执行 —— 价差 + 按参考名义实算的滑点（进场就先亏多少）
@@ -223,7 +223,7 @@ async def _pool(ex="bybit", market="swap"):
 
 
 async def _tf_snapshot(sym, iv, limit=120, ex="bybit", market="swap"):
-    """某周期的 EMA 排列、斜率、ATR%。取不到就返回 None —— 缺周期不猜。"""
+    """某周期的均线排列(MA3/13/23)、斜率、ATR%。取不到就返回 None —— 缺周期不猜。"""
     try:
         from handlers import klines as kl
         rows, _meta = await kl.fetch(sym, iv, limit, ex, market)

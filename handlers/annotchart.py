@@ -140,7 +140,7 @@ def apply_cjk(style_kwargs=None):
 def levels(rows, plot_bars=PLOT_BARS):
     """算出要标在图上的关键位。纯函数，方便测。
 
-    plot_bars = 图上实际画出来的根数。ATR/RSI/EMA/摆动点要用**全量**算才准，
+    plot_bars = 图上实际画出来的根数。ATR/RSI/均线/摆动点要用**全量**算才准，
     但 VWAP 是「这段区间的平均成本」——必须跟可见区间同口径，否则算出来的线
     落在画布外，caption 却还说「图上的线：VWAP」，等于骗人。"""
     h = [float(x[2]) for x in rows]

@@ -808,7 +808,7 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📐 *标注图表*——把结构位画在图上，不用对着数字脑补\n\n"
             "`/achart BTC`　默认 1h\n"
             "`/achart SOL 15m`　周期 5m/15m/30m/1h/4h/1d\n\n"
-            "图上标：🟡EMA20 🔵EMA50 🟣EMA200、⬛摆动高低点(结构失效位=止损该放的地方)、"
+            "图上标：🟡MA3 🔵MA13 🟣MA23、⬛摆动高低点(结构失效位=止损该放的地方)、"
             "🔴前高🟢前低(流动性区=止盈参考)、⚪VWAP、🟠1.5×ATR止损带。\n"
             "出图后可点【🤖 AI 解读这张图】。",
             reply_markup=back_to("cat_analysis"), parse_mode="Markdown")

@@ -310,6 +310,22 @@ class TestMaConsistency:
         # 换口径后旧状态键必须弃用，否则换版当天会凭空推一次金叉
         assert "ma_state_ma3" in src
 
+    def test_help_text_does_not_promise_the_old_periods(self):
+        """给用户看的说明也算口径的一部分：菜单里写着「图上标 🟡EMA20 🔵EMA50
+        🟣EMA200」，而图上画的其实是 MA3/13/23——颜色对得上、名字全错。
+        这类过期文案和错的代码一样会误导人，而且更难发现（没人会去测文案）。
+
+        regime.py 的 4h EMA20/50/200 是**故意保留**的：它判的是几十天尺度的
+        市场环境，换成 MA23（4h × 23 ≈ 4 天）意思就变了。它自己写明了口径，
+        不算对不上。backtest 的策略定义同理。
+        """
+        import pathlib
+        root = pathlib.Path(__file__).resolve().parent.parent
+        for name in ("bot.py", "handlers/menu.py"):
+            src = (root / name).read_text(encoding="utf-8")
+            for bad in ("EMA20", "EMA50", "EMA200"):
+                assert bad not in src, f"{name} 里还写着 {bad}，图上画的是 MA3/13/23"
+
     def test_ai_tool_descriptions_match_the_data_they_return(self):
         """给 AI 的工具描述必须和实际数值口径一致——说 EMA20 却给 MA3 的值，
         模型不会报错，只会把短均线当长均线解读。这是最难发现的一类不一致。"""

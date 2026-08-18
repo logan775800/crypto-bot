@@ -75,6 +75,47 @@ def _perm_lines(info):
     return rows, risky
 
 
+async def _alive():
+    """这把 key 在**当前端点**上到底能不能用？用查余额验（只读）。
+
+    /v5/user/query-api 挂了不等于 key 无效——它可能只是不让这类 key 调。
+    拿一个肯定该通的只读接口再试一次，两者一对比就能分清是
+    「端点/密钥错了」还是「只是这个接口调不了」。
+    """
+    from handlers.rtrade import _client
+    try:
+        bal = await _client().wallet_balance("USDT")
+        return True, bal.get("totalEquity")
+    except Exception as e:
+        return False, str(e)[:80]
+
+
+async def _explain_failure(err, env):
+    """把 query-api 的失败讲成人话——顺便一定要说清当时在打哪个端点。
+
+    这条以前只甩交易所原话 + 一张排查表，**连自己在打哪个端点都没写**，
+    而「端点对不上」恰恰是排查表里的第一条。看的人没法自己对号入座。
+    """
+    from bybit_trade import is_auth_error, AUTH_HINT
+    ok, detail = await _alive()
+    head = [f"❌ 密钥体检失败", f"当前环境：{env}",
+            f"交易所原话：`{str(err)[:120]}`", ""]
+    if ok:
+        return "\n".join(head + [
+            f"但**同一把 key 查余额是通的**（总权益 {detail}）——",
+            "说明密钥和端点都没问题，只是这把 key 调不了「查询API信息」这个接口"
+            "（Bybit 对部分 key 不开放它）。",
+            "",
+            "✅ 实盘下单/持仓/余额这些**不受影响**。",
+            "⚠️ 但我没法替你自动核对**提现权限**和**IP 白名单**了，"
+            "去 Bybit 网页后台 API 管理里自己看一眼：",
+            "　· 提现权限必须**没勾**",
+            "　· 必须绑 IP（不绑的话 90 天自动失效，泄露了谁都能拿去下单）"])
+    return "\n".join(head + [
+        f"同一把 key 查余额也不通（{detail}）——那就是密钥或端点的问题。",
+        "", AUTH_HINT if is_auth_error(err) else "检查 .env 里的 key/secret 是否配好。"])
+
+
 async def keycheck_cmd(update, context):
     """/keycheck —— 这把密钥到底有哪些权限。"""
     from handlers.util import safe_reply
@@ -91,14 +132,8 @@ async def keycheck_cmd(update, context):
     try:
         info = await key_info()
     except Exception as e:
-        # 401 的真因九成是「key 和端点对不上」（Bybit 两套模拟盘 key 不通用），
-        # 而交易所只回一句 API key is invalid。把排查表直接贴给他，
-        # 别让他为了看一句提示去 SSH 服务器。
-        from bybit_trade import is_auth_error, AUTH_HINT
-        extra = f"\n\n{AUTH_HINT}" if is_auth_error(e) else \
-            "\n（未配置密钥、或该 key 无 query-api 权限）"
-        await safe_reply(update.message,
-                         f"查询失败：{str(e)[:120]}{extra}")
+        await safe_reply(update.message, await _explain_failure(e, env),
+                         parse_mode="Markdown")
         return
     rows, risky = _perm_lines(info)
     exp = info.get("expiredAt") or "永不过期"

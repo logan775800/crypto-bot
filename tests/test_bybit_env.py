@@ -116,8 +116,9 @@ def test_hint_points_at_the_probe():
 
 
 def test_keycheck_surfaces_the_hint():
-    """他不该为了看一句提示去 SSH 服务器——/keycheck 里也要能看到。"""
+    """他不该为了看一句提示去 SSH 服务器——/keycheck 里也要能看到。
+    （排查表现在由 _explain_failure 统一输出，见 test_keycheck_diag.py）"""
     import inspect
     from handlers import keyguard
-    src = inspect.getsource(keyguard.keycheck_cmd)
+    src = inspect.getsource(keyguard._explain_failure)
     assert "AUTH_HINT" in src and "is_auth_error" in src

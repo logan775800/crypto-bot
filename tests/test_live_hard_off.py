@@ -16,8 +16,14 @@ from handlers import keyguard as K
 @pytest.fixture(autouse=True)
 def _restore():
     old = os.environ.get("LIVE_TRADING")
+    old_mode = os.environ.get("BYBIT_TESTNET")
+    os.environ["BYBIT_TESTNET"] = "false"      # 默认按实盘测，硬开关才有意义
     storage.data.pop("trading_disabled", None)
     yield
+    if old_mode is None:
+        os.environ.pop("BYBIT_TESTNET", None)
+    else:
+        os.environ["BYBIT_TESTNET"] = old_mode
     if old is None:
         os.environ.pop("LIVE_TRADING", None)
     else:
@@ -69,3 +75,32 @@ def test_compose_passes_it_through():
     src = (pathlib.Path(__file__).resolve().parent.parent
            / "docker-compose.yml").read_text(encoding="utf-8")
     assert "LIVE_TRADING" in src
+
+
+# ── 只关实盘，不关模拟盘 ─────────────────────────────────────
+@pytest.mark.parametrize("mode", ["demo", "true"])
+def test_hard_off_does_not_block_simulation(mode):
+    """这个开关的意思是「我不做实盘」，不是「我不做交易」。
+    他把 BYBIT_TESTNET 切到 demo 想练手，结果开仓被一个叫 LIVE_TRADING 的
+    开关拦住——说不通，而且极难自己想明白。"""
+    os.environ["LIVE_TRADING"] = "off"
+    os.environ["BYBIT_TESTNET"] = mode
+    assert K.hard_disabled() is False
+    assert K.trading_enabled() is True
+
+    import bybit_trade
+    bybit_trade._guard_order({"symbol": "BTCUSDT", "reduceOnly": False})  # 不抛
+
+
+def test_hard_off_still_blocks_live():
+    os.environ["LIVE_TRADING"] = "off"
+    os.environ["BYBIT_TESTNET"] = "false"
+    assert K.hard_disabled() is True
+
+
+def test_killswitch_still_applies_to_simulation():
+    """软开关是紧急停手，模拟盘照样该听——两个开关管的事不一样。"""
+    os.environ["LIVE_TRADING"] = "off"
+    os.environ["BYBIT_TESTNET"] = "demo"
+    storage.data["trading_disabled"] = True
+    assert K.trading_enabled() is False

@@ -34,16 +34,27 @@ def trading_enabled():
         对一个不打算碰实盘的人来说，这个默认值是反的。
       • /killswitch on/off —— 软开关，出事时一键停手，存 data.json。
     """
-    import os
-    if os.environ.get("LIVE_TRADING", "").strip().lower() in ("off", "0", "false", "no"):
+    if hard_disabled():
         return False
     return not (data.get("trading_disabled") or False)
 
 
 def hard_disabled():
-    """是不是被 .env 硬关了（命令改不动，得改配置重启）。"""
+    """是不是被 .env 硬关了（命令改不动，得改配置重启）。
+
+    **只在实盘模式下生效**。这个开关的意思是「我不做实盘」，
+    不是「我不做交易」——模拟盘下单该照常，否则他把 BYBIT_TESTNET 切到 demo
+    想练手，会发现开仓被一个名叫 LIVE_TRADING 的开关拦住，完全说不通。
+    """
     import os
-    return os.environ.get("LIVE_TRADING", "").strip().lower() in ("off", "0", "false", "no")
+    if os.environ.get("LIVE_TRADING", "").strip().lower() not in (
+            "off", "0", "false", "no"):
+        return False
+    try:
+        from bybit_trade import _mode
+        return _mode() == "live"
+    except Exception:
+        return True          # 判断不了就按最保守的来
 
 
 def set_trading(on, who=None, why=""):

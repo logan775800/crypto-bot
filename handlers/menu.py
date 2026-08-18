@@ -1852,10 +1852,18 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers import rtrade
         _, sym, side = d.split(":")
         await rtrade.guided_lev(query, sym, side)
+    elif d.startswith("topm:"):
+        _, sym, side, lev, mgn = d.split(":")
+        await rtrade.guided_price(query, context, sym, side, lev, mgn)
+
+    elif d.startswith("topx:"):
+        _, sym, side, lev = d.split(":")
+        await rtrade.guided_amount(query, context, sym, side, lev)
+
     elif d.startswith("topl:"):
         from handlers import rtrade
         _, sym, side, lev = d.split(":")
-        await rtrade.guided_amount(query, context, sym, side, lev)
+        await rtrade.guided_margin(query, context, sym, side, lev)
     elif d.startswith("tcls:"):
         from handlers import rtrade
         _, sym, pct = d.split(":")

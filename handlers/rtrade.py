@@ -806,8 +806,77 @@ async def guided_lev(query, symbol, side):
                     reply_markup=kb, parse_mode="Markdown")
 
 
+MARGIN_CHOICES = [50, 100, 200, 500, 1000]
+
+
+async def guided_margin(query, context, symbol, side, lev):
+    """选保证金——按钮档位，别让他打字。
+
+    他的原话：「保证金一定要吗？」。要，它决定仓位大小（保证金×杠杆=仓位价值），
+    但**不该靠打字**。档位按真实可用余额过滤：列出他根本下不起的数字只会浪费一次点击。
+    """
+    dir_txt = "多" if side == "long" else "空"
+    equity = None
+    try:
+        bal = await _client().wallet_balance("USDT")
+        equity = float(bal.get("totalAvailableBalance") or bal.get("totalEquity") or 0)
+    except Exception as e:
+        log.debug(f"引导开仓取余额失败: {e}")
+
+    rows = []
+    fixed = [m for m in MARGIN_CHOICES if equity is None or m <= equity]
+    for i in range(0, len(fixed), 3):
+        rows.append([InlineKeyboardButton(
+            f"{m}U", callback_data=f"topm:{symbol}:{side}:{lev}:{m}")
+            for m in fixed[i:i + 3]])
+    if equity:
+        pcts = [(p, round(equity * p)) for p in (0.1, 0.25, 0.5)]
+        row = [InlineKeyboardButton(f"{int(p*100)}% {v}U",
+                                    callback_data=f"topm:{symbol}:{side}:{lev}:{v}")
+               for p, v in pcts if v >= 10]
+        if row:
+            rows.append(row)
+    rows.append([InlineKeyboardButton("✍️ 自己输",
+                                      callback_data=f"topx:{symbol}:{side}:{lev}")])
+    rows.append([InlineKeyboardButton("⬅️ 换杠杆", callback_data=f"topd:{symbol}:{side}")])
+    bal_txt = f"　可用 ${equity:,.2f}" if equity else ""
+    await safe_edit(query,
+        f"➕ *{symbol.replace('USDT','')} {dir_txt} {lev}x* {_env_tag()}{bal_txt}\n\n"
+        f"选保证金（保证金 × 杠杆 = 仓位价值，{lev}x 下 100U 保证金 = {100*float(lev):g}U 仓位）",
+        reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
+
+
+async def guided_price(query, context, symbol, side, lev, margin):
+    """保证金选完，只剩价格要填。"""
+    from handlers import guided as G
+    G.arm_chat(context, "await_ropen",
+               query.message.chat_id if query.message else 0,
+               value={"symbol": symbol, "side": side, "lev": float(lev),
+                      "margin": float(margin)})
+    dir_txt = "多" if side == "long" else "空"
+    px = ""
+    try:
+        px = f"　现价 ${await _client().last_price(symbol):,.6g}"
+    except Exception as e:
+        log.debug(f"引导开仓取价失败: {e}")
+    await safe_edit(query,
+        f"➕ *{symbol.replace('USDT','')} {dir_txt} {lev}x*　保证金 {margin}U"
+        f"　{_env_tag()}{px}\n\n"
+        f"发一个**限价**给我，例如 `62000`\n"
+        f"想带止盈止损：`62000 sl=60000 tp=68000`\n"
+        f"取消发 /menu",
+        parse_mode="Markdown")
+
+
 async def guided_amount(query, context, symbol, side, lev):
-    context.user_data["await_ropen"] = {"symbol": symbol, "side": side, "lev": float(lev)}
+    """老路径：保证金和价格一起打字。留着给「✍️ 自己输」用。"""
+    from handlers import guided as G
+    # 这里以前是直接写 context.user_data["await_ropen"]，绕过了 guided：
+    # 于是这个状态**永不过期、跨会话生效**——正是 v1.23.1 修掉的那个坑，
+    # 这个调用点当时漏了。真机上他隔了很久发一句话，被当成实盘开仓的参数。
+    G.arm_chat(context, "await_ropen",
+               query.message.chat_id if query.message else 0,
+               value={"symbol": symbol, "side": side, "lev": float(lev)})
     dir_txt = "多" if side == "long" else "空"
     await safe_edit(query,
         f"➕ *{symbol.replace('USDT','')} {dir_txt} {lev}x* {_env_tag()}\n\n"

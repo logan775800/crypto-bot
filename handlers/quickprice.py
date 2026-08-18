@@ -99,20 +99,34 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if _skip:
         return
     if ro:
+        from handlers.rtrade import _parse_kv, prepare_open, _env_tag
+        # 提示里必须带账户标识：这套引导和虚拟盘长得几乎一样，
+        # 而这边一确认就是**真钱**。真机上他就是在这条路上问「保证金一定要吗」，
+        # 当时那句提示一个字都没提这是实盘。
+        tag = _env_tag()
         parts = text.replace(",", " ").replace("，", " ").split()
-        if len(parts) < 2:
-            await update.message.reply_text("请发「保证金 价格」，例如 `1000 62000`（取消发 /menu）",
-                                            parse_mode="Markdown")
-            return
+        preset = ro.get("margin")          # 保证金已经按钮选过了 → 只要一个价格
         try:
-            margin = float(parts[0]); price = float(parts[1])
-        except ValueError:
-            await update.message.reply_text("保证金和价格要是数字，例如 `1000 62000`",
-                                            parse_mode="Markdown")
+            if preset:
+                margin, price = float(preset), float(parts[0])
+                rest = parts[1:]
+            else:
+                margin, price = float(parts[0]), float(parts[1])
+                rest = parts[2:]
+        except (ValueError, IndexError):
+            hint = (f"发一个**价格**给我，例如 `62000`"
+                    if preset else "请发「保证金 价格」，例如 `1000 62000`")
+            await update.message.reply_text(
+                f"{tag} 开仓：{hint}（取消发 /menu）", parse_mode="Markdown")
             return
-        from handlers.rtrade import _parse_kv, prepare_open
-        tp, sl = _parse_kv(parts[2:])
-        context.user_data.pop("await_ropen", None)
+        if margin <= 0 or price <= 0:
+            await update.message.reply_text(
+                f"{tag} 保证金和价格都要大于 0。\n"
+                f"保证金决定仓位大小（保证金 × 杠杆 = 仓位价值），不能是 0。\n"
+                f"不想自己算就退回去用按钮选档位。", parse_mode="Markdown")
+            return
+        tp, sl = _parse_kv(rest)
+        guided.clear(context, "await_ropen")
         await prepare_open(update.message, context, ro["symbol"], ro["side"],
                            margin, ro["lev"], price, tp, sl)
         return

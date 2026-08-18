@@ -113,6 +113,43 @@ def test_button_handler_still_raises_other_errors(monkeypatch):
         asyncio.run(menu.button_handler(_update(), None))
 
 
+# ------------------------------------------------- 应答过期（点击时机器人正忙）
+TOO_OLD = "Query is too old and response timeout expired or query id is invalid"
+
+
+def test_expired_answer_does_not_kill_the_click(monkeypatch):
+    """线上现象（2026-08-18 09:00，每日播报同时）：点链上搜索结果里的按钮，
+    管理员收到一条 traceback，用户那一下**什么都没发生**。
+
+    根因：_dispatch 第一行就是 query.answer()，它抛 BadRequest 直接把整个
+    分发打断，后面真正干活的分支根本没跑到。应答只是消个转圈，不该决定成败。
+    """
+    ran = []
+
+    async def answer(*a, **k):
+        raise BadRequest(TOO_OLD)
+
+    q = types.SimpleNamespace(data="menu_main", answer=answer)
+    upd = types.SimpleNamespace(callback_query=q)
+
+    async def fake_edit(query, text, **kw):
+        ran.append(text)
+
+    monkeypatch.setattr(menu, "safe_edit", fake_edit)
+    asyncio.run(menu._dispatch(upd, None))
+    assert ran, "应答过期后主菜单还是得渲染出来"
+
+
+def test_button_handler_swallows_expired_answer(monkeypatch):
+    """子模块会对同一个 query 再应答一次，忙的时候同样会过期。
+    活已经干完了，不该为一个消不掉的转圈推 traceback 给管理员。"""
+    async def boom(update, context):
+        raise BadRequest(TOO_OLD)
+
+    monkeypatch.setattr(menu, "_dispatch", boom)
+    asyncio.run(menu.button_handler(_update(), None))      # 不抛就是通过
+
+
 def test_dispatch_is_still_wired():
     """button_handler 必须真的把活转给 _dispatch，别拆着拆着拆断了。"""
     seen = []

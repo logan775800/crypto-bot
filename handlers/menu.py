@@ -446,19 +446,37 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     推给管理员——用户那边什么事都没有，管理员却被一条正常操作刷屏。
 
     刷新出一样的内容本来就不是错误，是**无事发生**。这里咽掉它。
+
+    「Query is too old」同理：子模块（onchain 等）会再应答一次同一个 query，
+    机器人忙的时候这次应答也会过期。活已经干完了，没必要为一个消不掉的转圈
+    推一条 traceback 给管理员。
+
     其余异常照旧往上抛，别把真问题一起藏了。
     """
     try:
         await _dispatch(update, context)
     except BadRequest as e:
-        if "not modified" not in str(e).lower():
+        msg = str(e).lower()
+        if "not modified" in msg:
+            log.debug(f"按钮重渲染内容未变，忽略：{update.callback_query.data}")
+        elif "query is too old" in msg or "query id is invalid" in msg:
+            log.warning(f"回调应答过期，忽略：{update.callback_query.data}")
+        else:
             raise
-        log.debug(f"按钮重渲染内容未变，忽略：{update.callback_query.data}")
 
 
 async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    # 回调 query 的有效期很短。PTB 默认**串行**处理更新，前一个慢操作（链上搜索、
+    # AI 问答、全市场扫描）没跑完，后面的点击就在队列里排着；轮到应答时 query 已过期，
+    # Telegram 回 BadRequest: Query is too old。
+    # 以前这一行会把整个 dispatch 打断：用户那一下点击**什么都没发生**（按钮像坏了），
+    # 管理员还收到一条带 traceback 的「机器人异常」。
+    # 应答只是消掉按钮上的转圈，失败不影响后面真正干活——咽掉它，只记日志。
+    try:
+        await query.answer()
+    except BadRequest as e:
+        log.warning(f"回调应答过期（点击时机器人正忙，操作照常执行）：{query.data}｜{e}")
     d = query.data
 
     # ---- 主菜单 ----

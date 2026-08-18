@@ -169,9 +169,22 @@ def test_detail_card_offers_monitoring():
     assert any(c.startswith(f"oc:w:{EVM}:") for c in cbs)
 
 
-def test_watch_buttons_use_higher_thresholds():
-    """链上默认阈值比交易所高一档：±5% 在小池子上一天能响几十次。"""
-    assert min(OC.WATCH_PCTS) >= 10
+def test_watch_offers_five_percent_but_keeps_the_throttles():
+    """±5% 是用户要的常用档，但链上池子浅，裸阈值一天能响几十次。
+    放开 5% 的前提是节流仍然在：5 分钟冷却 + 收盘确认。少了任何一条就不该放。"""
+    assert 5 in OC.WATCH_PCTS and min(OC.WATCH_PCTS) == 5
+    from handlers import watchpct as W
+    assert W.ONCHAIN_COOLDOWN >= 300
+    import inspect
+    src = inspect.getsource(W.check_watchpct)
+    assert "_confirm_onchain" in src
+
+
+def test_watch_buttons_stay_readable_on_phones():
+    """四档一行会被手机截断——每行最多两个。"""
+    for row in OC.detail_kb(token(EVM)).inline_keyboard:
+        if any((b.callback_data or "").startswith("oc:w:") for b in row):
+            assert len(row) <= 2
 
 
 def test_watch_callbacks_fit_telegram_limit():

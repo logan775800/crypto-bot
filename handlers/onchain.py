@@ -593,8 +593,12 @@ def kline_kb(t, tf="1h"):
                              callback_data=f"oc:d:{t['chain_key']}:{t['address']}")]])
 
 
-# 链上的默认阈值比交易所高一档：链上池子浅，±5% 在小池子上一天能响几十次
-WATCH_PCTS = (10, 20, 50)
+# 链上池子浅，±5% 在小池子上一天能响几十次——所以一开始最低只给到 10%。
+# 现在把 5% 放出来（用户明确要），前提是那批节流已经就位、不再是裸阈值：
+#   ONCHAIN_COOLDOWN 5 分钟／同方向同量级去重／15m 收盘确认（插针只标不当信号）／
+#   浅池 <$1万 建监控时直接警告／池子撤走自动停。
+# 顺序从小到大，5% 排第一——它是最常用的那档。
+WATCH_PCTS = (5, 10, 20, 50)
 
 
 def detail_kb(t):
@@ -606,9 +610,11 @@ def detail_kb(t):
             for k in ("1h", "4h", "1d")])
     if t.get("address"):
         # 监控入口必须在这里：查完了才知道要不要盯，让他退出去打命令等于不会用
-        rows.append([InlineKeyboardButton(
-            f"🔔 涨跌±{p}% 提醒", callback_data=f"oc:w:{t['address']}:{p}")
-            for p in WATCH_PCTS])
+        # 四档挤一行在手机上会被截成「涨跌±…」，两个一行才读得全
+        _w = [InlineKeyboardButton(f"🔔 涨跌±{p}% 提醒",
+                                   callback_data=f"oc:w:{t['address']}:{p}")
+              for p in WATCH_PCTS]
+        rows += [_w[i:i + 2] for i in range(0, len(_w), 2)]
     if t.get("address") and t.get("chain_key"):
         rows.append([InlineKeyboardButton(
             "🔐 安全检查（税/可卖性/LP/集中度）",

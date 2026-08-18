@@ -57,7 +57,14 @@ def _client():
 
 
 def _env_tag():
-    return "🧪模拟盘" if _is_testnet() else "🔴实盘"
+    """交易台/余额卡上的环境标。
+
+    三种分开写：两套模拟盘的钱是**不同的两个账户**，都标成「模拟盘」的话，
+    换了 key 却忘了改 BYBIT_TESTNET 时，屏幕上看不出任何异样。
+    """
+    from bybit_trade import _mode
+    return {"live": "🔴实盘", "demo": "🧪模拟交易",
+            "testnet": "🧪测试站"}.get(_mode(), "🧪模拟盘")
 
 
 async def _guard(update):

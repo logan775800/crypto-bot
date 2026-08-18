@@ -122,3 +122,14 @@ def test_keycheck_surfaces_the_hint():
     from handlers import keyguard
     src = inspect.getsource(keyguard._explain_failure)
     assert "AUTH_HINT" in src and "is_auth_error" in src
+
+
+@pytest.mark.parametrize("val,tag", [
+    ("false", "🔴实盘"), ("demo", "🧪模拟交易"), ("true", "🧪测试站"),
+])
+def test_trading_panel_tag_distinguishes_all_three(val, tag):
+    """两套模拟盘是**不同的两个账户**。都标成「模拟盘」的话，
+    换了 key 却忘改 BYBIT_TESTNET 时，屏幕上看不出任何异样。"""
+    _mod(val)
+    from handlers import rtrade
+    assert rtrade._env_tag() == tag

@@ -225,6 +225,33 @@ async def quick_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # 虚拟交易台：挂限价单时发来的价格
+    vp, _skip = guided.should_handle(context, "await_vprice", update, text)
+    if _skip:
+        return
+    if vp:
+        from handlers import vpanel as _vp
+        await _vp.on_price(update.message, context, vp, text)
+        return
+
+    # 虚拟交易台：点了「其他币」之后发来的币名
+    vc, _skip = guided.should_handle(context, "await_vcoin", update, text)
+    if _skip:
+        return
+    if vc:
+        from handlers import vpanel as _vp
+        await _vp.on_coin(update.message, context, vc, text)
+        return
+
+    # 虚拟交易台：改止盈止损
+    vs, _skip = guided.should_handle(context, "await_vsl", update, text)
+    if _skip:
+        return
+    if vs:
+        from handlers import vpanel as _vp
+        await _vp.on_sl(update.message, context, vs, text)
+        return
+
     # 引导式链上查询：点了「查某个币」之后发来的这条
     _v, _skip = guided.should_handle(context, "await_onchain", update, text)
     if _skip:

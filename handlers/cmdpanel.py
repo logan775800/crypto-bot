@@ -60,6 +60,7 @@ MODULE_CN = {
     "handlers.keyguard": "🛡 风险管理",
     "handlers.access": "🛡 风险管理",
     "handlers.vorders": "🎮 虚拟交易",
+    "handlers.vpanel": "🎮 虚拟交易",
     "handlers.vspot": "🎮 虚拟交易",      # 谁能用这个机器人
     "handlers.microcap": "🔍 机会发现",
     "handlers.privacy": "🛡 风险管理",

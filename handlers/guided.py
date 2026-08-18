@@ -74,7 +74,8 @@ def clear(context, *keys):
 # 中文名的币是真实存在的（链上代币「牛来」就是），所以"带中文=闲聊"这条
 # 不能一刀切。这几个引导态收的是**币名/地址**，必须放中文过去；
 # 其余收的是「DOGE 5」这类参数行，继续按纯 ASCII 卡死。
-CJK_OK_KEYS = {"await_onchain", "await_ropen_coin", "await_alert_coin"}
+CJK_OK_KEYS = {"await_onchain", "await_ropen_coin", "await_alert_coin",
+               "await_vcoin"}
 CJK_MAX_LEN = 12        # 中文币名再长也就几个字；长句是聊天
 # 中文闲聊几乎一定带这些；币名不会
 CHAT_PUNCT = re.compile(r"[，。！？、；：…?!~（）()\"'《》]")

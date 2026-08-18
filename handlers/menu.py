@@ -1655,6 +1655,8 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ============ 虚拟合约交易（模拟盘）============
     elif d == "cat_vtrade":
         kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎮 打开虚拟交易台（全按钮）",
+                                  callback_data="vg:home")],
             [InlineKeyboardButton("💼 合约持仓/账户", callback_data="vpos_refresh"),
              InlineKeyboardButton("🪙 现货持币", callback_data="vspot_show")],
             [InlineKeyboardButton("📋 我的委托单", callback_data="vord_show"),
@@ -1678,6 +1680,64 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "开仓算真实滑点，后台每 60 秒盯爆仓/止盈损/挂单成交。\n"
             "⚠️ 模拟盘，不构成投资建议",
             reply_markup=kb, parse_mode="Markdown")
+
+    # ---- 虚拟交易台（全按钮，不用记命令）----
+    elif d.startswith("vg:"):
+        from handlers import vpanel as _vp
+        bits = d.split(":")
+        act = bits[1] if len(bits) > 1 else "home"
+        try:
+            if act == "home":
+                await _vp.home(query)
+            elif act == "open":
+                await _vp.pick_symbol(query, "perp")
+            elif act == "buy":
+                await _vp.pick_symbol(query, "spot")
+            elif act == "perpsym":
+                await _vp.pick_side(query, bits[2])
+            elif act == "spotsym":
+                await _vp.pick_spot_amount(query, bits[2])
+            elif act == "side":
+                await _vp.pick_lev(query, bits[2], bits[3])
+            elif act == "lev":
+                await _vp.pick_margin(query, bits[2], bits[3], float(bits[4]))
+            elif act == "mgn":
+                await _vp.pick_type(query, bits[2], bits[3], float(bits[4]),
+                                    float(bits[5]))
+            elif act == "mkt":
+                await _vp.do_market(query, context, bits[2], bits[3],
+                                    float(bits[4]), float(bits[5]))
+            elif act == "lim":
+                await _vp.ask_price(query, context, "perp",
+                                    {"sym": bits[2], "side": bits[3],
+                                     "lev": float(bits[4]), "margin": float(bits[5])})
+            elif act == "coin":
+                await _vp.ask_coin(query, context, bits[2])
+            elif act == "sbuy":
+                await _vp.do_spot_buy(query, bits[2], float(bits[3]))
+            elif act == "sgo":
+                await _vp.do_spot_market(query, bits[2], float(bits[3]))
+            elif act == "slim":
+                await _vp.ask_price(query, context, "spot",
+                                    {"sym": bits[2], "quote": float(bits[3])})
+            elif act == "sl50":
+                await _vp.do_spot_sell(query, bits[2], 50)
+            elif act == "sall":
+                await _vp.do_spot_sell(query, bits[2], 100)
+            elif act == "cl":
+                await _vp.do_close(query, bits[2], float(bits[3]))
+            elif act == "sl":
+                await _vp.ask_sl(query, context, bits[2])
+            elif act == "ord":
+                await _vp.orders_panel(query)
+            elif act == "cx":
+                await _vp.do_cancel(query, bits[2])
+            else:
+                await query.answer("不认识的操作")
+        except Exception as e:
+            logging.error(f"虚拟交易台出错 {d}: {e}")
+            await safe_edit(query, f"操作失败：{str(e)[:80]}",
+                            reply_markup=back_to("vg:home"))
 
     elif d == "vspot_show":
         from handlers import vspot as _vs

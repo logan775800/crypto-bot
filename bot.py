@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -153,6 +153,7 @@ BOT_COMMANDS = [
     BotCommand("portfolio", "💼 我的持仓(私聊)"),
     BotCommand("ranking", "🏆 盈亏排行(私聊)"),
     BotCommand("vopen", "🎮 虚拟开仓(模拟合约)"),
+    BotCommand("vtrade", "🎮 虚拟交易台(全按钮，推荐)"),
     BotCommand("vpos", "🎮 虚拟持仓/账户"),
     BotCommand("vclose", "🎮 虚拟平仓"),
     BotCommand("vbuy", "🛒 虚拟现货买入"),
@@ -554,7 +555,7 @@ def main():
     app.add_handler(CommandHandler("vopen", vtrade.vopen))
     app.add_handler(CommandHandler("vclose", vtrade.vclose))
     app.add_handler(CommandHandler("vpos", vtrade.vpos))
-    app.add_handler(CommandHandler("vtrade", vtrade.vpos))
+    app.add_handler(CommandHandler("vtrade", vpanel.desk))
     app.add_handler(CommandHandler("vbuy", vspot.vbuy))
     app.add_handler(CommandHandler("vsell", vspot.vsell))
     app.add_handler(CommandHandler("vspot", vspot.vspot))

@@ -98,18 +98,18 @@ async def _explain_failure(err, env):
     """
     from bybit_trade import is_auth_error, AUTH_HINT
     ok, detail = await _alive()
-    head = [f"❌ 密钥体检失败", f"当前环境：{env}",
-            f"交易所原话：`{str(err)[:120]}`", ""]
+    head = ["❌ 密钥体检失败", f"当前环境：{env}",
+            f"交易所原话：{str(err)[:120]}", ""]
     if ok:
         return "\n".join(head + [
-            f"但**同一把 key 查余额是通的**（总权益 {detail}）——",
+            f"但同一把 key 查余额是通的（总权益 {detail}）——",
             "说明密钥和端点都没问题，只是这把 key 调不了「查询API信息」这个接口"
             "（Bybit 对部分 key 不开放它）。",
             "",
-            "✅ 实盘下单/持仓/余额这些**不受影响**。",
-            "⚠️ 但我没法替你自动核对**提现权限**和**IP 白名单**了，"
+            "✅ 实盘下单/持仓/余额这些不受影响。",
+            "⚠️ 但我没法替你自动核对提现权限和 IP 白名单了，"
             "去 Bybit 网页后台 API 管理里自己看一眼：",
-            "　· 提现权限必须**没勾**",
+            "　· 提现权限必须没勾",
             "　· 必须绑 IP（不绑的话 90 天自动失效，泄露了谁都能拿去下单）"])
     return "\n".join(head + [
         f"同一把 key 查余额也不通（{detail}）——那就是密钥或端点的问题。",
@@ -125,15 +125,16 @@ async def keycheck_cmd(update, context):
         return
     try:
         from bybit_trade import _mode, MODE_CN, _base_url
-        env = f"{MODE_CN[_mode()]}　`{_base_url()}`"
+        env = f"{MODE_CN[_mode()]}　{_base_url()}"
     except Exception:
         env = "?"
     await safe_reply(update.message, "🔐 查询密钥权限…")
     try:
         info = await key_info()
     except Exception as e:
-        await safe_reply(update.message, await _explain_failure(e, env),
-                         parse_mode="Markdown")
+        # 纯文本发：这段里全是 BYBIT_TESTNET 这种带下划线的标识符，
+        # 走 Markdown 会被当成斜体标记吃掉下划线，他照着抄就是错的命令。
+        await safe_reply(update.message, await _explain_failure(e, env))
         return
     rows, risky = _perm_lines(info)
     exp = info.get("expiredAt") or "永不过期"

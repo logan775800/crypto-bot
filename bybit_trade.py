@@ -82,19 +82,21 @@ def _base_url():
     return BASE_URLS[_mode()]
 
 
-AUTH_HINT = """401 API key is invalid —— 交易所说这把 key 在**当前端点**上不认识。
+# ⚠️ 这段是**纯文本**，发出去时绝不能带 parse_mode="Markdown"。
+# 里面全是 BYBIT_TESTNET / BYBIT_API_KEY 这种带下划线的标识符，Telegram 的
+# legacy Markdown 会把成对下划线当斜体标记吃掉——真机上就渲染成了
+# 「BYBITTESTNET=true」并且整段变斜体，照着抄必错。所以这里也不写 ** 和 `。
+AUTH_HINT = """API key is invalid —— 交易所说这把 key 在「当前端点」上不认识。
 按可能性排：
 
-1. **key 和端点对不上**（最常见）。Bybit 有两套模拟盘，key 不通用：
+1. key 和端点对不上（最常见）。Bybit 有两套模拟盘，key 不通用：
    · 在 testnet.bybit.com（要单独注册）建的 → BYBIT_TESTNET=true
    · 在主站右上角切「模拟交易 Demo」里建的 → BYBIT_TESTNET=demo
    · 实盘 key → BYBIT_TESTNET=false（先确认没提现权限、绑了服务器 IP）
-2. **值里混了引号或空格**。.env 里写 KEY="xxx" 会把引号一起当成 key。
-   验：docker compose exec crypto-bot python -c \\
-       "import os;k=os.environ['BYBIT_API_KEY'];print(repr(k),len(k))"
+2. 值里混了引号或空格。.env 里写 KEY="xxx" 会把引号一起当成 key。
 3. key 建好后没启用、已过期（绑 IP 的 key 90 天不用会失效）、或被删了。
 
-别猜是哪一种，让它自己试：
+别猜是哪一种，让它自己试（服务器上跑）：
     docker compose exec crypto-bot python bybit_trade.py probe
 三个端点各查一次余额（只读不下单），直接告诉你这把 key 属于哪套。"""
 

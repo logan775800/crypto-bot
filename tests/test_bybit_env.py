@@ -79,6 +79,42 @@ def test_hint_names_all_three_environments():
         assert token in m.AUTH_HINT
 
 
+def test_probe_tries_every_endpoint_and_restores_env(monkeypatch):
+    """挨个试三个端点，别让用户靠猜；试完必须把 BYBIT_TESTNET 还原，
+    否则探测本身会把运行环境改掉（探到 live 就更危险了）。"""
+    import asyncio
+    m = _mod("true")
+    monkeypatch.setattr(m, "BYBIT_API_KEY", "K" * 18)
+    monkeypatch.setattr(m, "BYBIT_API_SECRET", "S" * 20)
+    seen = []
+
+    class FakeClient:
+        async def wallet_balance(self, coin):
+            seen.append(m._mode())
+            if m._mode() != "demo":
+                raise RuntimeError("401 API key is invalid")
+            return {"totalEquity": "1000"}
+
+    monkeypatch.setattr(m, "BybitClient", FakeClient)
+    asyncio.run(m._probe())
+    assert seen == ["testnet", "demo", "live"], "三个端点都要试一遍"
+    assert os.environ["BYBIT_TESTNET"] == "true", "探测完必须还原环境"
+
+
+def test_probe_says_nothing_when_key_is_empty(monkeypatch, capsys):
+    """key 是空的说明容器没读到，这时候试端点毫无意义，要直说。"""
+    import asyncio
+    m = _mod("true")
+    monkeypatch.setattr(m, "BYBIT_API_KEY", "")
+    asyncio.run(m._probe())
+    assert "force-recreate" in capsys.readouterr().out
+
+
+def test_hint_points_at_the_probe():
+    m = _mod("true")
+    assert "probe" in m.AUTH_HINT
+
+
 def test_keycheck_surfaces_the_hint():
     """他不该为了看一句提示去 SSH 服务器——/keycheck 里也要能看到。"""
     import inspect

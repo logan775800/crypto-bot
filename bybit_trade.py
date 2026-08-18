@@ -92,7 +92,11 @@ AUTH_HINT = """401 API key is invalid —— 交易所说这把 key 在**当前�
 2. **值里混了引号或空格**。.env 里写 KEY="xxx" 会把引号一起当成 key。
    验：docker compose exec crypto-bot python -c \\
        "import os;k=os.environ['BYBIT_API_KEY'];print(repr(k),len(k))"
-3. key 建好后没启用、已过期（绑 IP 的 key 90 天不用会失效）、或被删了。"""
+3. key 建好后没启用、已过期（绑 IP 的 key 90 天不用会失效）、或被删了。
+
+别猜是哪一种，让它自己试：
+    docker compose exec crypto-bot python bybit_trade.py probe
+三个端点各查一次余额（只读不下单），直接告诉你这把 key 属于哪套。"""
 
 
 class BybitError(Exception):
@@ -357,6 +361,56 @@ async def _smoke():
     print("冒烟自测通过 ✅（未下任何单）")
 
 
+ENV_VALUE = {"testnet": "true", "demo": "demo", "live": "false"}
+
+
+async def _probe():
+    """三个端点各试一次，看哪个认这把 key —— 别再靠猜。
+
+    401 只说"key 无效"，不说"你打错门了"。而 Bybit 的 testnet / 主站模拟交易 /
+    实盘是三套独立的 key 体系，光看 key 本身（都是 18 位字母数字）分不出是哪套的。
+    挨个试一遍最省事：只查余额，只读，不下任何单。
+    """
+    if not BYBIT_API_KEY or not BYBIT_API_SECRET:
+        print("❌ key 或 secret 是空的 —— 容器没读到。"
+              "改完 .env 要 docker compose up -d --force-recreate")
+        return
+    print(f"key {BYBIT_API_KEY[:4]}…{BYBIT_API_KEY[-3:]}（{len(BYBIT_API_KEY)} 位）"
+          f"，三个端点挨个试（只查余额，不下单）\n")
+    orig = os.environ.get("BYBIT_TESTNET")
+    hit = None
+    try:
+        for mode in ("testnet", "demo", "live"):
+            os.environ["BYBIT_TESTNET"] = ENV_VALUE[mode]
+            try:
+                bal = await BybitClient().wallet_balance("USDT")
+                print(f"  ✅ {mode:<8} {_base_url():<34} 认这把 key"
+                      f"（总权益 {bal.get('totalEquity', '?')}）")
+                hit = hit or mode
+            except Exception as e:
+                why = "key 不属于这个环境" if is_auth_error(e) else str(e)[:70]
+                print(f"  ❌ {mode:<8} {_base_url():<34} {why}")
+    finally:
+        if orig is None:
+            os.environ.pop("BYBIT_TESTNET", None)
+        else:
+            os.environ["BYBIT_TESTNET"] = orig
+
+    print()
+    if hit:
+        print(f"→ 这把 key 属于 **{hit}**。在 .env 里设 "
+              f"BYBIT_TESTNET={ENV_VALUE[hit]} 然后 up -d --force-recreate")
+        if hit == "live":
+            print("  ⚠️ 这是**实盘** key。切之前先确认：没勾提现权限、绑了服务器 IP。"
+                  "建议先去建一把模拟盘 key 验完流程再上实盘。")
+    else:
+        print("→ 三个端点都不认。那就不是端点的问题了：\n"
+              "  · key 建好后没启用 / 已被删 / 已过期（绑 IP 的 key 90 天不用会失效）\n"
+              "  · secret 抄错了（key 对 secret 错，签名不过也是 401）\n"
+              "  · key 绑了 IP 白名单，但里面不是这台服务器的公网 IP\n"
+              "  去交易所后台重建一把，权限只勾合约，别勾提现。")
+
+
 def is_auth_error(e):
     """这个异常是不是「交易所不认这把 key」。401 是 Bybit 对 key 无效的回法。"""
     code = getattr(getattr(e, "response", None), "status_code", None)
@@ -365,7 +419,11 @@ def is_auth_error(e):
 
 if __name__ == "__main__":
     import asyncio
-    logging.basicConfig(level=logging.INFO)
+    import sys
+    logging.basicConfig(level=logging.WARNING)   # INFO 会把每条 httpx 请求刷出来
+    if len(sys.argv) > 1 and sys.argv[1] == "probe":
+        asyncio.run(_probe())
+        raise SystemExit(0)
     try:
         asyncio.run(_smoke())
     except Exception as e:

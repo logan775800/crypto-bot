@@ -3,6 +3,14 @@
 每次发版在最上面加一段。`/changelog` 看得到，启动播报会带上当前版本这一段。
 格式固定：`## vX.Y.Z　(日期)` + 若干 `- ` 条目，handlers/changelog.py 按这个格式解析。
 
+## v1.26.1　(2026-08-18)
+- 新增端点探测：`docker compose exec crypto-bot python bybit_trade.py probe`
+- 三个端点（testnet / 主站模拟交易 / 实盘）各查一次余额，直接告诉你这把 key
+  属于哪一套、该把 BYBIT_TESTNET 设成什么。只读，不下任何单
+- 三个都不认就不是端点的事，会列出剩下的可能：secret 抄错、key 没启用/已删/
+  已过期、IP 白名单里不是这台服务器
+- 探测完会把环境变量还原，不会因为试了一下就把运行环境改成实盘
+
 ## v1.26.0　(2026-08-18)
 - 支持 Bybit 的**主站「模拟交易 Demo」**：`BYBIT_TESTNET=demo`
 - 起因：配 key 时冒烟自测报 `401 API key is invalid`。Bybit 有**两套模拟盘**，

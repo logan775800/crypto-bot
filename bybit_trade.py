@@ -54,8 +54,45 @@ def _guard_order(body):
                            "恢复请发 /killswitch off")
 
 
+def _mode():
+    """live / demo / testnet。
+
+    Bybit 有**两套模拟盘**，key 互不通用，这是配置时最容易翻车的一处：
+      • testnet.bybit.com —— 独立注册的测试站，端点 api-testnet.bybit.com
+      • 主站里的「模拟交易 Demo Trading」—— 用你的实盘账号，端点 api-demo.bybit.com
+    在主站模拟交易里建的 key 拿去打 api-testnet，交易所只回一句
+    `401 API key is invalid`，完全看不出是端点选错了。
+    """
+    v = os.environ.get("BYBIT_TESTNET", "true").strip().lower()
+    if v in ("false", "0", "no"):
+        return "live"
+    if v in ("demo", "demo-trading", "sim"):
+        return "demo"
+    return "testnet"
+
+
+BASE_URLS = {"live": "https://api.bybit.com",
+             "demo": "https://api-demo.bybit.com",
+             "testnet": "https://api-testnet.bybit.com"}
+MODE_CN = {"live": "⚠️ 实盘 LIVE", "demo": "主站模拟交易 DEMO",
+           "testnet": "测试站 TESTNET"}
+
+
 def _base_url():
-    return "https://api-testnet.bybit.com" if _is_testnet() else "https://api.bybit.com"
+    return BASE_URLS[_mode()]
+
+
+AUTH_HINT = """401 API key is invalid —— 交易所说这把 key 在**当前端点**上不认识。
+按可能性排：
+
+1. **key 和端点对不上**（最常见）。Bybit 有两套模拟盘，key 不通用：
+   · 在 testnet.bybit.com（要单独注册）建的 → BYBIT_TESTNET=true
+   · 在主站右上角切「模拟交易 Demo」里建的 → BYBIT_TESTNET=demo
+   · 实盘 key → BYBIT_TESTNET=false（先确认没提现权限、绑了服务器 IP）
+2. **值里混了引号或空格**。.env 里写 KEY="xxx" 会把引号一起当成 key。
+   验：docker compose exec crypto-bot python -c \\
+       "import os;k=os.environ['BYBIT_API_KEY'];print(repr(k),len(k))"
+3. key 建好后没启用、已过期（绑 IP 的 key 90 天不用会失效）、或被删了。"""
 
 
 class BybitError(Exception):
@@ -303,8 +340,10 @@ def round_step(value, step, mode=ROUND_DOWN):
 
 # ── 冒烟自测：验证签名 & 连通，只读不下单 ──────────────────────────────
 async def _smoke():
-    env = "模拟盘 TESTNET" if _is_testnet() else "⚠️ 实盘 LIVE"
-    print(f"环境: {env}  base={_base_url()}")
+    print(f"环境: {MODE_CN[_mode()]}  base={_base_url()}")
+    k = BYBIT_API_KEY
+    print(f"key: {k[:4]}…{k[-3:] if len(k) > 7 else ''}（{len(k)} 位）"
+          if k else "key: ❌ 空 —— 容器没读到，改完 .env 要 up -d --force-recreate")
     c = BybitClient()
     print("→ 校验签名：查 USDT 余额 ...")
     bal = await c.wallet_balance("USDT")
@@ -318,10 +357,20 @@ async def _smoke():
     print("冒烟自测通过 ✅（未下任何单）")
 
 
+def is_auth_error(e):
+    """这个异常是不是「交易所不认这把 key」。401 是 Bybit 对 key 无效的回法。"""
+    code = getattr(getattr(e, "response", None), "status_code", None)
+    return code in (401, 403) or "API key is invalid" in str(e)
+
+
 if __name__ == "__main__":
     import asyncio
     logging.basicConfig(level=logging.INFO)
     try:
         asyncio.run(_smoke())
     except Exception as e:
+        # 401 光甩一句 "API key is invalid" 没法定位——最常见的原因是端点选错了
+        # （主站模拟交易的 key 打去了 testnet），而报错里一个字都没提这回事。
         print(f"❌ 自测失败: {e}")
+        if is_auth_error(e):
+            print("\n" + AUTH_HINT)

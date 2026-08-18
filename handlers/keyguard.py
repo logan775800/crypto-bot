@@ -83,16 +83,22 @@ async def keycheck_cmd(update, context):
         await safe_reply(update.message, "仅管理员")
         return
     try:
-        from bybit_trade import _is_testnet
-        env = "🧪 模拟盘" if _is_testnet() else "🔴 **实盘**"
+        from bybit_trade import _mode, MODE_CN, _base_url
+        env = f"{MODE_CN[_mode()]}　`{_base_url()}`"
     except Exception:
         env = "?"
     await safe_reply(update.message, "🔐 查询密钥权限…")
     try:
         info = await key_info()
     except Exception as e:
-        await safe_reply(update.message, f"查询失败：{str(e)[:80]}\n"
-                                         f"（未配置密钥、或该 key 无 query-api 权限）")
+        # 401 的真因九成是「key 和端点对不上」（Bybit 两套模拟盘 key 不通用），
+        # 而交易所只回一句 API key is invalid。把排查表直接贴给他，
+        # 别让他为了看一句提示去 SSH 服务器。
+        from bybit_trade import is_auth_error, AUTH_HINT
+        extra = f"\n\n{AUTH_HINT}" if is_auth_error(e) else \
+            "\n（未配置密钥、或该 key 无 query-api 权限）"
+        await safe_reply(update.message,
+                         f"查询失败：{str(e)[:120]}{extra}")
         return
     rows, risky = _perm_lines(info)
     exp = info.get("expiredAt") or "永不过期"

@@ -1,0 +1,87 @@
+"""Bybit 环境/端点选择。
+
+配置这把 key 时第一次就翻在这上面：主站「模拟交易 Demo」里建的 key 打去
+api-testnet.bybit.com，交易所只回 `401 API key is invalid`——一个字都没提
+是端点选错了。三套环境的 key 互不通用，选错就是这个症状。
+"""
+import importlib
+import os
+
+import pytest
+
+
+def _mod(val):
+    """按给定的 BYBIT_TESTNET 重新加载模块（它在导入时读环境变量）。"""
+    os.environ["BYBIT_TESTNET"] = val
+    import bybit_trade
+    return importlib.reload(bybit_trade)
+
+
+@pytest.fixture(autouse=True)
+def _restore():
+    old = os.environ.get("BYBIT_TESTNET")
+    yield
+    if old is None:
+        os.environ.pop("BYBIT_TESTNET", None)
+    else:
+        os.environ["BYBIT_TESTNET"] = old
+    import bybit_trade
+    importlib.reload(bybit_trade)
+
+
+@pytest.mark.parametrize("val,mode,host", [
+    ("true", "testnet", "api-testnet.bybit.com"),
+    ("demo", "demo", "api-demo.bybit.com"),
+    ("false", "live", "api.bybit.com"),
+])
+def test_three_environments(val, mode, host):
+    m = _mod(val)
+    assert m._mode() == mode
+    assert host in m._base_url()
+
+
+@pytest.mark.parametrize("val", ["", "yes", "TRUE", "随便写点什么"])
+def test_anything_unrecognised_stays_on_testnet(val):
+    """认不出来的值一律当模拟盘——防手滑上实盘，这条不能松。"""
+    assert _mod(val)._mode() == "testnet"
+
+
+@pytest.mark.parametrize("val", ["FALSE", "False", " false "])
+def test_live_needs_an_explicit_false(val):
+    assert _mod(val)._mode() == "live"
+
+
+def test_demo_is_not_treated_as_live():
+    """demo 是模拟交易，绝不能被当成实盘走 api.bybit.com。"""
+    m = _mod("demo")
+    assert "api.bybit.com" not in m._base_url()
+
+
+def test_auth_error_is_recognised():
+    m = _mod("true")
+
+    class Resp:
+        status_code = 401
+
+    class Err(Exception):
+        response = Resp()
+
+    assert m.is_auth_error(Err("401 API key is invalid"))
+    assert m.is_auth_error(RuntimeError("Client error 'API key is invalid'"))
+    assert not m.is_auth_error(RuntimeError("timeout"))
+
+
+def test_hint_names_all_three_environments():
+    """排查表必须把三个端点都点名——只说"检查 key 是否正确"等于没说。"""
+    m = _mod("true")
+    for token in ("testnet.bybit.com", "模拟交易", "BYBIT_TESTNET=demo",
+                  "BYBIT_TESTNET=false", "force-recreate" if False else "引号"):
+        assert token in m.AUTH_HINT
+
+
+def test_keycheck_surfaces_the_hint():
+    """他不该为了看一句提示去 SSH 服务器——/keycheck 里也要能看到。"""
+    import inspect
+    from handlers import keyguard
+    src = inspect.getsource(keyguard.keycheck_cmd)
+    assert "AUTH_HINT" in src and "is_auth_error" in src

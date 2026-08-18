@@ -3,6 +3,18 @@
 每次发版在最上面加一段。`/changelog` 看得到，启动播报会带上当前版本这一段。
 格式固定：`## vX.Y.Z　(日期)` + 若干 `- ` 条目，handlers/changelog.py 按这个格式解析。
 
+## v1.26.0　(2026-08-18)
+- 支持 Bybit 的**主站「模拟交易 Demo」**：`BYBIT_TESTNET=demo`
+- 起因：配 key 时冒烟自测报 `401 API key is invalid`。Bybit 有**两套模拟盘**，
+  key 互不通用、端点也不同——testnet.bybit.com 要单独注册走 api-testnet，
+  主站右上角切的「模拟交易」走 api-demo。以前只支持前者，
+  拿主站模拟交易的 key 去打 testnet 就是这个 401
+- 交易所对这种情况只回一句「API key is invalid」，一个字都不提端点。
+  现在 401 会直接列出三种可能（端点对不上／值里混了引号空格／key 没启用或过期），
+  `/keycheck` 里也看得到，不用 SSH 上服务器
+- 冒烟自测会先打印当前端点和 key 的位数——key 是空的就说明改完 .env 忘了 force-recreate
+- 认不出来的 BYBIT_TESTNET 值仍然一律当模拟盘（防手滑上实盘）
+
 ## v1.25.3　(2026-08-18)
 - 修：菜单里【标注图表】的说明写着「图上标 🟡EMA20 🔵EMA50 🟣EMA200」，
   而图上画的其实是 MA3/13/23——颜色对得上、名字全错。帮助里那条也一样

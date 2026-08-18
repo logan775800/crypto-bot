@@ -25,8 +25,25 @@ AUDIT_MAX = 500          # 审计日志留最近多少条
 
 
 def trading_enabled():
-    """实盘下单总开关。默认开，但一旦关掉就必须显式打开。"""
+    """实盘下单总开关。默认开，但一旦关掉就必须显式打开。
+
+    两层：
+      • `.env` 的 LIVE_TRADING=off —— **硬关**，任何命令都打不开。
+        给"我根本不做实盘"的场景用：/killswitch 的状态存在 data.json 里，
+        而 data.json 被恢复/重置过（见 v1.6.1），一旦丢了就默认恢复成允许下单——
+        对一个不打算碰实盘的人来说，这个默认值是反的。
+      • /killswitch on/off —— 软开关，出事时一键停手，存 data.json。
+    """
+    import os
+    if os.environ.get("LIVE_TRADING", "").strip().lower() in ("off", "0", "false", "no"):
+        return False
     return not (data.get("trading_disabled") or False)
+
+
+def hard_disabled():
+    """是不是被 .env 硬关了（命令改不动，得改配置重启）。"""
+    import os
+    return os.environ.get("LIVE_TRADING", "").strip().lower() in ("off", "0", "false", "no")
 
 
 def set_trading(on, who=None, why=""):
@@ -205,6 +222,13 @@ async def killswitch_cmd(update, context):
             "`/killswitch off` 恢复\n\n"
             "禁用后开仓类操作会被直接拒绝，不需要登服务器改配置重启",
             parse_mode="Markdown")
+        return
+    if hard_disabled():
+        await safe_reply(update.message,
+                         "🔒 实盘下单已被 .env 里的 LIVE_TRADING=off 硬关，"
+                         "命令改不动它，要恢复得改配置并重启容器。\n"
+                         "（这是给「我不做实盘」准备的：比 /killswitch 更硬，"
+                         "不会因为数据恢复而悄悄变回可下单）")
         return
     if a[0] in ("on", "禁用"):
         set_trading(False, uid, " ".join(a[1:]))

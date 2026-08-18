@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -173,6 +173,7 @@ BOT_COMMANDS = [
     BotCommand("sym", "🔎 合约身份(哪个所/面值/单位)"),
     BotCommand("net", "💰 净盈亏比(扣费/滑点/资金费)"),
     BotCommand("scan", "🔍 机会扫描(可交易性评分)"),
+    BotCommand("access", "🚪 准入控制(限制谁能用机器人)"),
     BotCommand("microcap", "💎 微市值扫描(<300万且能下单)"),
     BotCommand("steady", "🌱 缓步增长(稳中有升的币)"),
     BotCommand("events", "🔔 事件预警(OI/费率/盘口切换)"),
@@ -461,6 +462,10 @@ def main():
     # 机会扫描：按可交易性排序，不是按涨幅
     app.add_handler(CommandHandler("scan", scan.scan_cmd))
     # 缓步增长：找每天一点点往上磨的币（和 /scan、/upstreak 都不同）
+    app.add_handler(CommandHandler("access", access.access_cmd))
+    app.add_handler(CommandHandler("allow", access.allow_cmd))
+    app.add_handler(CommandHandler("deny", access.deny_cmd))
+    app.add_handler(CommandHandler("allowed", access.allowed_cmd))
     app.add_handler(CommandHandler("microcap", microcap.microcap_cmd))
     app.add_handler(CommandHandler("steady", steady.steady_cmd))
     # 事件驱动预警：盯状态切换，每条带上下文
@@ -627,6 +632,12 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^💰 查价$"), quickprice.price_hint))
     app.add_handler(MessageHandler(filters.Regex(r"^❓ 帮助$"), help_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, quickprice.quick_price))
+    # ── 准入总闸：必须比所有 handler 都早 ──────────────────────
+    # 默认关闭，/access on 才生效。开着的时候，白名单外的消息和按钮点击
+    # 在这里就被 ApplicationHandlerStop 掐断，后面所有功能一个都跑不到。
+    app.add_handler(MessageHandler(filters.ALL, access.gate), group=-10)
+    app.add_handler(CallbackQueryHandler(access.gate), group=-10)
+
     app.add_handler(CallbackQueryHandler(menu.button_handler))
     app.add_error_handler(on_error)   # 未捕获异常 → 日志 + 私信管理员
 

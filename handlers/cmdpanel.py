@@ -58,6 +58,8 @@ MODULE_CN = {
     "handlers.riskguard": "🛡 风险管理",
     "handlers.riskprofile": "🛡 风险管理",
     "handlers.keyguard": "🛡 风险管理",
+    "handlers.access": "🛡 风险管理",      # 谁能用这个机器人
+    "handlers.microcap": "🔍 机会发现",
     "handlers.privacy": "🛡 风险管理",
     "handlers.alert": "🔔 预警与监控",
     "handlers.condalert": "🔔 预警与监控",

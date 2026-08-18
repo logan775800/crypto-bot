@@ -25,6 +25,8 @@ services:
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
       BYBIT_TESTNET: ${BYBIT_TESTNET:-true}
+      # 实盘下单硬开关：off = 任何命令都开不了（给「我不做实盘」用）
+      LIVE_TRADING: ${LIVE_TRADING:-}
       TZ: Asia/Shanghai
     # 依赖已在镜像里，直接跑；源码仍由 ./:/app 挂载提供（改代码不必重建镜像）
     command: python bot.py

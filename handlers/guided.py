@@ -71,17 +71,39 @@ def clear(context, *keys):
         context.user_data.pop(k, None)
 
 
-def looks_like_input(text):
+# 中文名的币是真实存在的（链上代币「牛来」就是），所以"带中文=闲聊"这条
+# 不能一刀切。这几个引导态收的是**币名/地址**，必须放中文过去；
+# 其余收的是「DOGE 5」这类参数行，继续按纯 ASCII 卡死。
+CJK_OK_KEYS = {"await_onchain", "await_ropen_coin", "await_alert_coin"}
+CJK_MAX_LEN = 12        # 中文币名再长也就几个字；长句是聊天
+# 中文闲聊几乎一定带这些；币名不会
+CHAT_PUNCT = re.compile(r"[，。！？、；：…?!~（）()\"'《》]")
+# 光靠"短 + 没标点"挡不住闲聊：当初刷屏的原话「又不能做网格」正好 6 个字没标点。
+# 这些是中文口语里绕不开的虚词/动词，币名基本不会用到。
+# 宁可漏接一次（他还能发 /oc 牛来），也不要在群里把别人的话当成查询。
+CHAT_CHARS = set("的了吗呢吧啊呀嘛么怎哪谁为什不是这那还也就都"
+                 "我你他她能有没在要会想说看问买卖好行对错很太真假做")
+
+
+def looks_like_input(text, allow_cjk=False):
     """这条消息看起来像"在回答提示"吗？
 
     引导式要的都是「DOGE 5」「0x地址」「65000」这类短参数行。
-    带中文、带标点、长句 —— 那是在聊天，不是在回答我。
+    带标点、长句 —— 那是在聊天，不是在回答我。
+
+    allow_cjk：这个引导态收的是币名，中文名合法（「牛来」）。这时改判：
+    短、不带空格、不带中文标点才算输入。误判的代价也就是多查一次没有的币，
+    而且引导态只活 5 分钟、只在点按钮的那个会话里生效——不会像当初那样刷屏。
     """
     s = (text or "").strip()
     if not s or len(s) > MAX_INPUT_LEN:
         return False
     if CJK.search(s):
-        return False
+        if not allow_cjk:
+            return False
+        return (len(s) <= CJK_MAX_LEN and " " not in s
+                and not CHAT_PUNCT.search(s)
+                and not (CHAT_CHARS & set(s)))
     # 参数行基本都是「字母数字 + 空格 + 少量符号」
     return bool(re.fullmatch(r"[A-Za-z0-9 ._:=+\-/]+", s))
 
@@ -97,6 +119,6 @@ def should_handle(context, key, update, text):
         return None, False
     is_group = bool(update and update.effective_chat
                     and update.effective_chat.type in ("group", "supergroup"))
-    if is_group and not looks_like_input(text):
+    if is_group and not looks_like_input(text, allow_cjk=key in CJK_OK_KEYS):
         return None, True           # 群里的闲聊：静默放行，状态留着等真正的输入
     return val, False

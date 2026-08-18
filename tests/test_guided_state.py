@@ -107,6 +107,35 @@ def test_chat_does_not_look_like_input(text):
     assert not guided.looks_like_input(text)
 
 
+# ── 但中文币名必须能进来 ─────────────────────────────────────
+@pytest.mark.parametrize("text", ["牛来", "小狗币", "牛来BNB", "0xBEEA12"])
+def test_chinese_token_names_are_accepted_for_onchain(text):
+    """链上代币「牛来」就是中文名。一刀切"带中文=闲聊"会把它静默吞掉——
+    真机上就是这么丢的：点了【查链上代币】再发「牛来」，什么反应都没有。"""
+    assert guided.looks_like_input(text, allow_cjk=True)
+
+
+@pytest.mark.parametrize("text", [
+    "又不能做网格", "这个币怎么样？", "还是 牛牛强", "牛" * 30,
+])
+def test_chinese_chatter_still_rejected_even_when_cjk_allowed(text):
+    """放开中文不等于什么都收：长句、带标点、带空格的仍然是聊天。"""
+    assert not guided.looks_like_input(text, allow_cjk=True)
+
+
+def test_onchain_key_is_the_one_that_allows_chinese():
+    assert "await_onchain" in guided.CJK_OK_KEYS
+    assert "await_watchpct" not in guided.CJK_OK_KEYS
+
+
+def test_group_onchain_query_in_chinese_gets_through():
+    ctx = Ctx()
+    guided.arm_chat(ctx, "await_onchain", -1002)
+    val, skip = guided.should_handle(ctx, "await_onchain",
+                                     Update(-1002, "supergroup"), "牛来")
+    assert val is True and skip is False
+
+
 def test_group_chat_is_skipped_silently():
     """群里的闲聊：静默放行，不回"格式不对"——那才是刷屏的直接原因。"""
     ctx = Ctx()

@@ -879,7 +879,9 @@ async def on_button(query, context):
         await query.answer()
         await safe_edit(query,
                         "🔗 *查链上代币*\n\n直接发**合约地址**最准（`0x…` 或 Solana 地址）；\n"
-                        "发名字也行，但同名假币很多，我会按流动性排序给你。\n\n"
+                        "发名字也行，**中文名也认**（比如 `牛来`），"
+                        "但同名假币很多，我会按流动性排序给你。\n\n"
+                        "💡 更快：直接发 `/oc 牛来` 或 `/oc 0x地址`，不用先点进来\n"
                         "取消发 /menu",
                         parse_mode="Markdown")
         return

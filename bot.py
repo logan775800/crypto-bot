@@ -20,6 +20,7 @@ HELP_TEXT = (
     "*常用命令*\n"
     "/menu 打开功能菜单（推荐，点按钮即可）\n"
     "/commands ⌨️ **全部命令按钮面板** —— 150 个命令按分类点开，点了直接执行\n"
+    "/oc BANK 🔗 **查链上币价**（两个字母，交易所还没上的币直接查；发合约地址也行）\n"
     "/dashboard 市场看板\n"
     "/price BTC 查币价（/price BTC cny 看人民币）\n"
     "/top 涨跌榜　/analyze BTC 技术分析\n"
@@ -130,6 +131,7 @@ BOT_COMMANDS = [
     BotCommand("rsialert", "📈 技术指标告警(RSI/均线)"),
     BotCommand("source", "📡 默认数据源(用哪家交易所的价)"),
     BotCommand("changelog", "📋 这一版更新了什么"),
+    BotCommand("oc", "🔗 查链上币价(短命令 /oc BANK)"),
     BotCommand("onchain", "🔗 链上代币(交易所没上的币)"),
     BotCommand("breakout", "🚀 5分钟破位(箱体+均线顺势)"),
     BotCommand("btcregime", "🧭 BTC市场环境(变化时提醒)"),
@@ -520,6 +522,9 @@ def main():
     # 链上代币：交易所没上的币先在 DEX 跑，这里补的就是那一段
     app.add_handler(CommandHandler("onchain", onchain.onchain_cmd))
     app.add_handler(CommandHandler("dex", onchain.onchain_cmd))
+    # 两个字母的短命令：链上查币价是他用得最频繁的功能之一，
+    # 每次点四五下按钮进去太慢。/oc BANK 直接出结果。
+    app.add_handler(CommandHandler("oc", onchain.onchain_cmd))
     # 5分钟箱体破位（均线顺势才报），默认推到审批群
     app.add_handler(CommandHandler("breakout", breakout.breakout_cmd))
     app.add_handler(CommandHandler("bo", breakout.breakout_cmd))
@@ -652,6 +657,9 @@ def main():
     jq.run_repeating(plan.check_plans, interval=120, first=95)  # 交易计划生命周期(触发/止盈/失效/过期)，每2分钟
     jq.run_repeating(events.check_events, interval=300, first=110)  # 事件驱动预警(OI跳升/四象限切换/费率跨阈/盘口翻转)，每5分钟
     jq.run_repeating(fundextreme.scan_fex, interval=3600, first=240)  # 资金费极值订阅扫描，每小时
+    # 微市值扫描的市值表：翻 16 页 + 限频退避要一两分钟，放后台建好，
+    # /microcap 直接读现成的（否则会在命令里被限频截断，越小的市值越容易缺）
+    jq.run_repeating(microcap.prebuild, interval=6 * 3600, first=300)
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))

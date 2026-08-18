@@ -171,6 +171,113 @@ def test_render_reports_what_was_filtered_out():
     assert "900" in out and "40" in out and "12" in out
 
 
+# ── 缓存（首版这里有个让结果自相矛盾的 bug）─────────────────
+def test_cache_is_reused_even_when_some_symbols_are_unknown():
+    """首版的命中条件是"所有代号都在表里"——而交易所上千个基名里总有一批
+    CoinGecko 没收录，条件永远为假，缓存等于不存在：每次扫描重拉十几页 + 回查
+    上千个代号 → 必被限频 → 300万档扫出 0 个，500万档却列着 200 万市值的币。
+    """
+    calls = []
+
+    async def fake_top():
+        calls.append("top")
+        return {"AAA": _row(1_000_000)}, MC.PAGES
+
+    async def fake_lookup(syms):
+        calls.append(("lookup", tuple(syms)))
+        return {}
+
+    orig_top, orig_lookup = MC._top_table, MC._lookup
+    MC._top_table, MC._lookup = fake_top, fake_lookup
+    MC._mcap_cache.update(at=0.0, table=None, pages=0, tried=set())
+    try:
+        syms = ["AAA", "NOPE"]                 # NOPE 永远查不到
+        asyncio.run(MC.mcap_table(syms))
+        asyncio.run(MC.mcap_table(syms))
+        asyncio.run(MC.mcap_table(syms))
+    finally:
+        MC._top_table, MC._lookup = orig_top, orig_lookup
+        MC._mcap_cache.update(at=0.0, table=None, pages=0, tried=set())
+
+    assert calls.count("top") == 1, f"市值榜只该翻一次，实际 {calls.count('top')} 次"
+    lookups = [c for c in calls if c != "top"]
+    assert len(lookups) == 1, "查不到的代号不该每轮都重查一遍"
+
+
+def test_a_failed_page_does_not_abort_the_rest():
+    """某一页被限频就 break 的话，后面十几页一起丢——而微市值恰恰全在后面。
+    首版 300万档扫出 0 个就是这么来的：只拿到前 5 页（排名 1250 以内）。"""
+    got = []
+
+    async def fake_get(path, params):
+        page = params.get("page")
+        got.append(page)
+        if page in (3, 4):
+            raise RuntimeError("429")
+        return [{"symbol": f"C{page}", "market_cap": 9_000_000 - page}]
+
+    import api
+    orig_get, orig_wait, orig_gap = api._get, MC.PAGE_RETRY_WAIT, MC.PAGE_GAP
+    api._get, MC.PAGE_RETRY_WAIT, MC.PAGE_GAP = fake_get, 0, 0
+    try:
+        table, pages = asyncio.run(MC._top_table())
+    finally:
+        api._get, MC.PAGE_RETRY_WAIT, MC.PAGE_GAP = orig_get, orig_wait, orig_gap
+
+    assert "C5" in table and "C16" in table, "第 3、4 页失败不该让后面的页停下"
+    assert pages == MC.PAGES - 2
+
+
+def test_paging_stops_at_the_dust_band():
+    """翻到没人上交易所的尘埃段就停，别把配额烧在没用的页上。"""
+    async def fake_get(path, params):
+        page = params.get("page")
+        cap = 100 if page >= 3 else 9_000_000
+        return [{"symbol": f"C{page}", "market_cap": cap}]
+
+    import api
+    orig, gap = api._get, MC.PAGE_GAP
+    api._get, MC.PAGE_GAP = fake_get, 0
+    try:
+        _table, pages = asyncio.run(MC._top_table())
+    finally:
+        api._get, MC.PAGE_GAP = orig, gap
+    assert pages == 3
+
+
+def test_prebuild_is_scheduled():
+    """市值表必须后台建。在命令里现拉会被限频截断，缺的正好是最小市值那几页。"""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent / "bot.py").read_text(
+        encoding="utf-8")
+    assert "microcap.prebuild" in src
+
+
+# ── 分档 ────────────────────────────────────────────────────
+def test_band_line_shows_each_bucket():
+    """按成交额排序时大的那档会占满显示区，他会以为小档是空的。"""
+    hits = [{"mcap": 2_000_000}, {"mcap": 2_900_000}, {"mcap": 4_000_000},
+            {"mcap": 9_000_000}]
+    line = MC.band_line(hits, 10_000_000)
+    assert "300万以下 2 个" in line
+    assert "300~500万 1 个" in line
+    assert "500~1000万 1 个" in line
+
+
+def test_band_line_stops_at_the_current_cap():
+    line = MC.band_line([{"mcap": 2_000_000}], 3_000_000)
+    assert "300万以下 1 个" in line and "300~500万" not in line
+
+
+def test_keyboard_marks_current_and_refresh_keeps_it():
+    """点了 1000 万再点刷新，不该莫名其妙跳回 300 万。"""
+    rows = MC.kb(10_000_000).inline_keyboard
+    marked = [b.text for row in rows for b in row if b.text.startswith("✅")]
+    assert marked == ["✅ 1000万"]
+    refresh = [b for row in rows for b in row if "刷新" in b.text][0]
+    assert refresh.callback_data == "mc:1000"
+
+
 # ── 入口 ────────────────────────────────────────────────────
 def test_button_entry_exists():
     """功能必须有按钮入口，不能只有命令。"""
@@ -192,3 +299,12 @@ def test_command_is_registered():
         encoding="utf-8")
     assert 'CommandHandler("microcap"' in src
     assert 'BotCommand("microcap"' in src
+
+
+def test_onchain_has_a_two_letter_shortcut():
+    """链上查币价用得最频繁，点四五下按钮进去太慢——/oc BANK 一步到位。"""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent / "bot.py").read_text(
+        encoding="utf-8")
+    assert 'CommandHandler("oc", onchain.onchain_cmd)' in src
+    assert 'BotCommand("oc"' in src

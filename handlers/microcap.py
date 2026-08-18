@@ -52,10 +52,23 @@ STOCK_MARKERS = ("tokenized stock", "bstocks", "tokenized-stock",
 # 市值表缓存：CoinGecko 免费配额很小（实测 2.5 秒间隔翻到第 6 页就 429），
 # 这张表一天变不了几个百分点，缓存 6 小时足够，也让命令第二次是秒回。
 MCAP_TTL = 6 * 3600
-_mcap_cache = {"at": 0.0, "table": None, "pages": 0}
+_mcap_cache = {"at": 0.0, "table": None, "pages": 0, "tried": set()}
 _list_cache = {"at": 0.0, "map": None}
 _LIST_TTL = 24 * 3600
-PAGES = 8                   # 市值榜翻 8 页 ≈ 排名 2000，覆盖到 $275 万左右
+# 市值榜翻多少页。**16 页 ≈ 排名 4000**，覆盖到几十万市值。
+# 第一版只翻 8 页（排名 2000 ≈ $275 万），结果 300 万这一档的币几乎全落在榜外，
+# 只能靠按代号回查——而回查两千个代号必然被限频打死，于是「300万档 0 个、
+# 500万档却列着一堆 200 万市值的币」。翻页比按代号回查便宜得多：
+# 一页 250 个币一次请求，回查是一个代号最多 12 个候选。
+PAGES = 16
+MIN_USEFUL_MCAP = 300_000   # 翻到这个市值就停：再往下的币没有交易所会上
+# 翻页节奏。CoinGecko 免费档很小气，连着打必被 429；宁可慢，也不要缺页——
+# 缺页缺的正好是微市值那一段。反正这活是后台干的（见 prebuild），没人等着。
+PAGE_GAP = 3
+PAGE_RETRY_WAIT = 20
+# 榜外回查每轮最多补几个代号。回查是配额黑洞，必须封顶——
+# 翻够页数之后，落在榜外的基本是 CoinGecko 根本没收录的币，补不补都一样。
+LOOKUP_SYMS = 60
 
 VENUE_CN = {("bybit", "spot"): "Bybit现货", ("bybit", "swap"): "Bybit永续",
             ("okx", "spot"): "OKX现货", ("okx", "swap"): "OKX永续",
@@ -115,13 +128,21 @@ async def _top_table():
     from api import _get
     table, ok = {}, 0
     for page in range(1, PAGES + 1):
-        try:
-            rows = await _get("/coins/markets", {
-                "vs_currency": "usd", "order": "market_cap_desc",
-                "per_page": 250, "page": page})
-        except Exception as e:
-            log.warning(f"市值榜第 {page} 页取不到: {e}")
-            break
+        rows = None
+        for attempt in range(3):
+            try:
+                rows = await _get("/coins/markets", {
+                    "vs_currency": "usd", "order": "market_cap_desc",
+                    "per_page": 250, "page": page})
+                break
+            except Exception as e:
+                log.warning(f"市值榜第 {page} 页第 {attempt+1} 次失败: {e}")
+                await asyncio.sleep(PAGE_RETRY_WAIT * (attempt + 1))
+        if rows is None:
+            # 某一页拿不到就**跳过它继续下一页**，不要 break。
+            # 表是按代号存的，缺一页只是少那 250 个币；break 会把后面十页
+            # 一起丢掉，而微市值恰恰全在后面几页——首版就是这么扫出 0 个的。
+            continue
         if not rows:
             break
         ok += 1
@@ -129,6 +150,10 @@ async def _top_table():
             sym = (c.get("symbol") or "").upper()
             if sym and sym not in table:
                 table[sym] = c
+        caps = [c.get("market_cap") or 0 for c in rows]
+        if caps and min(caps) < MIN_USEFUL_MCAP:
+            break                    # 已经翻到没人上交易所的尘埃段，再翻是浪费配额
+        await asyncio.sleep(PAGE_GAP)
     return table, ok
 
 
@@ -185,17 +210,29 @@ async def _lookup(symbols):
 
 
 async def mcap_table(symbols):
-    """返回 ({代号: 市值行}, 市值榜拿到几页)。整张表缓存 MCAP_TTL。"""
+    """返回 ({代号: 市值行}, 市值榜拿到几页)。整张表缓存 MCAP_TTL。
+
+    **缓存命中条件不能是"所有代号都在表里"**：交易所上千个基名里总有一批
+    CoinGecko 压根没收录，那个条件永远为假 → 缓存等于没有 → 每次扫描都重拉
+    十几页再回查上千个代号 → 必被限频 → 同一批数据两次扫出来的结果对不上。
+    （首版就是这个 bug：300万档 0 个、500万档却有一堆 200 万市值的币。）
+    所以：表新鲜就直接用；只补**这轮才第一次见到**的代号，查过没有的记在 tried 里
+    不再反复查。
+    """
     now = time.monotonic()
-    cached = _mcap_cache["table"]
-    if cached is not None and now - _mcap_cache["at"] < MCAP_TTL:
-        if all(s in cached for s in symbols):
-            return cached, _mcap_cache["pages"]
+    table = _mcap_cache["table"]
+    if table is not None and now - _mcap_cache["at"] < MCAP_TTL:
+        fresh = [s for s in symbols
+                 if s not in table and s not in _mcap_cache["tried"]]
+        if fresh:
+            _mcap_cache["tried"].update(fresh[:LOOKUP_SYMS])
+            table.update(await _lookup(fresh[:LOOKUP_SYMS]))
+        return table, _mcap_cache["pages"]
+
     table, pages = await _top_table()
-    outside = [s for s in symbols if s not in table]
+    outside = [s for s in symbols if s not in table][:LOOKUP_SYMS]
+    _mcap_cache.update(at=now, table=table, pages=pages, tried=set(outside))
     table.update(await _lookup(outside))
-    if table:
-        _mcap_cache.update(at=now, table=table, pages=pages)
     return table, pages
 
 
@@ -265,6 +302,24 @@ def _m(x):
     return f"${x:.0f}"
 
 
+BANDS = ((3_000_000, "300万以下"), (5_000_000, "300~500万"),
+         (10_000_000, "500~1000万"), (float("inf"), "1000万以上"))
+
+
+def band_line(hits, max_mcap):
+    """分档统计。按成交额排序时，大的那档会把小的挤出显示区——
+    他点「1000万」看到的全是 600~900 万的币，就以为 300 万档是空的。
+    先把每档各有几个摆出来，再看名单。"""
+    counts, lo = [], 0
+    for hi, name in BANDS:
+        if lo >= max_mcap:
+            break
+        n = sum(1 for h in hits if lo <= h["mcap"] < min(hi, max_mcap))
+        counts.append(f"{name} {n} 个")
+        lo = hi
+    return "分档：" + "｜".join(counts)
+
+
 def render(hits, stats, max_mcap=MAX_MCAP, min_turnover=MIN_TURNOVER, limit=TOP_SHOW):
     cap = f"{max_mcap/10_000:.0f}万" if max_mcap < 100_000_000 else _m(max_mcap)
     head = [f"💎 *微市值扫描*　流通市值 < ${cap}",
@@ -278,13 +333,19 @@ def render(hits, stats, max_mcap=MAX_MCAP, min_turnover=MIN_TURNOVER, limit=TOP_
                     f"部分币是按代号回查的，同名币可能配错——过一会儿再刷一次")
     head.append("━━━━━━━━━━━━━━")
     if not hits:
-        return "\n".join(head + [
-            f"这一档现在**一个都没有**。",
-            f"交易所上架本身就是个门槛——市值低于 ${cap} 又还有 "
-            f"{_m(min_turnover)} 以上日成交额的币，本来就很少。",
-            "把上限放宽试试：`/microcap 1000`（1000万）"])
+        tail = [f"这一档现在**一个都没有**。"]
+        if stats.get("pages", PAGES) < PAGES:
+            # 空结果 + 数据没取全 = 大概率是限频漏了，不是真的没有。别让他白等
+            tail.append("但市值表这次没取全，**很可能是漏了而不是真没有**，"
+                        "过几分钟再点一次。")
+        else:
+            tail.append(f"交易所上架本身就是个门槛——市值低于 ${cap} 又还有 "
+                        f"{_m(min_turnover)} 以上日成交额的币，本来就很少。")
+        return "\n".join(head + tail + ["把上限放宽试试：`/microcap 1000`（1000万）"])
 
     lines = list(head)
+    lines.append(band_line(hits, max_mcap))
+    lines.append("━━━━━━━━━━━━━━")
     for i, h in enumerate(hits[:limit], 1):
         rank = f"#{h['rank']}" if h["rank"] else "无排名"
         lines.append(f"*{i}. {escape_md(h['symbol'])}*　市值 {_m(h['mcap'])}　{rank}")
@@ -311,12 +372,16 @@ def render(hits, stats, max_mcap=MAX_MCAP, min_turnover=MIN_TURNOVER, limit=TOP_
     return "\n".join(lines)
 
 
-def kb():
+def kb(max_mcap=MAX_MCAP):
+    """当前档位打勾，刷新按钮沿用当前档位——原来刷新写死回 300 万，
+    点了「1000万」再点刷新会莫名其妙跳回去。"""
+    def one(wan):
+        cur = abs(max_mcap - wan * 10_000) < 1
+        return InlineKeyboardButton(("✅ " if cur else "") + f"{wan}万",
+                                    callback_data=f"mc:{wan}")
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("💎 <300万", callback_data="mc:300"),
-         InlineKeyboardButton("500万", callback_data="mc:500"),
-         InlineKeyboardButton("1000万", callback_data="mc:1000")],
-        [InlineKeyboardButton("🔄 刷新", callback_data="mc:300"),
+        [one(300), one(500), one(1000)],
+        [InlineKeyboardButton("🔄 刷新", callback_data=f"mc:{max_mcap/10_000:.0f}"),
          InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")]])
 
 
@@ -328,6 +393,21 @@ async def _scan_to(send, max_mcap):
         await send(f"扫描失败：{str(e)[:80]}")
         return
     await send(render(hits, stats, max_mcap))
+
+
+async def prebuild(context):
+    """后台预建市值表。启动后跑一次，之后每 6 小时一次。
+
+    为什么必须放后台：翻 16 页 + 限频退避要一两分钟，让用户对着"正在扫描"干等
+    是一回事，**中途被限频截断**是更糟的一回事——截断少的正好是市值最小那几页，
+    于是 300 万档扫出 0 个而 1000 万档一堆。后台慢慢建，命令直接读现成的。
+    """
+    try:
+        tr = await tradable()
+        table, pages = await mcap_table(list(tr.keys()))
+        log.info(f"微市值：市值表预建完成 {len(table)} 个代号，{pages}/{PAGES} 页")
+    except Exception as e:
+        log.warning(f"微市值：市值表预建失败: {e}")
 
 
 async def microcap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -344,7 +424,7 @@ async def microcap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"${max_mcap/10_000:.0f}万 的币…\n首次要拉市值表，约 20~40 秒")
 
     async def send(text):
-        await safe_reply(update.message, text, reply_markup=kb(),
+        await safe_reply(update.message, text, reply_markup=kb(max_mcap),
                          parse_mode="Markdown")
         try:
             await msg.delete()
@@ -366,6 +446,6 @@ async def on_button(query, context):
                     parse_mode="Markdown")
 
     async def send(text):
-        await safe_edit(query, text, reply_markup=kb(), parse_mode="Markdown")
+        await safe_edit(query, text, reply_markup=kb(max_mcap), parse_mode="Markdown")
 
     await _scan_to(send, max_mcap)

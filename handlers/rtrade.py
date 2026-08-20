@@ -52,19 +52,23 @@ def _fmt(p):
 
 
 def _client():
-    """建客户端；缺 key 时抛 RuntimeError，上层转成友好提示。"""
-    return BybitClient()
+    """建**当前选中那家**交易所的客户端；缺 key 时抛 RuntimeError。
+
+    整个模块只在这一处取客户端，所以换所不用改下面 900 行交易逻辑——
+    两家的客户端方法签名是对齐的（见 binance_trade.py 顶部）。
+    """
+    from handlers import venue
+    return venue.client()
 
 
 def _env_tag():
-    """交易台/余额卡上的环境标。
+    """交易台/余额卡上的环境标：**哪一家 + 是不是真钱**。
 
-    三种分开写：两套模拟盘的钱是**不同的两个账户**，都标成「模拟盘」的话，
-    换了 key 却忘了改 BYBIT_TESTNET 时，屏幕上看不出任何异样。
+    两个都要写。以前只写"模拟盘/实盘"，两套模拟盘的钱是不同账户就已经看不出来；
+    现在又多了一家交易所，只写环境的话，"我这单下在哪儿"完全无从判断。
     """
-    from bybit_trade import _mode
-    return {"live": "🔴实盘", "demo": "🧪模拟交易",
-            "testnet": "🧪测试站"}.get(_mode(), "🧪模拟盘")
+    from handlers import venue
+    return venue.tag()
 
 
 async def _guard(update):

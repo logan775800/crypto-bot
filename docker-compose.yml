@@ -25,6 +25,10 @@ services:
       BYBIT_API_KEY: ${BYBIT_API_KEY:-}
       BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
       BYBIT_TESTNET: ${BYBIT_TESTNET:-true}
+      # 币安交易（合约+现货）。默认测试网，改 false 才是实盘
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      BINANCE_TESTNET: ${BINANCE_TESTNET:-true}
       # 实盘下单硬开关：off = 任何命令都开不了（给「我不做实盘」用）
       LIVE_TRADING: ${LIVE_TRADING:-}
       TZ: Asia/Shanghai

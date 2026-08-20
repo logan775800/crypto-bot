@@ -117,5 +117,6 @@ def test_prompts_carry_the_environment_tag():
     """这套引导和虚拟盘长得几乎一样，而这边一确认就是真钱。"""
     said, _ = _run_quickprice(
         {"symbol": "BTCUSDT", "side": "long", "lev": 10.0}, "只有一个数")
-    # 三种环境都算：实盘 / 模拟交易 / 测试站——重点是**说了是哪个账户**
-    assert said and any(t in said[0] for t in ("实盘", "模拟", "测试站"))
+    # 重点是**说了是哪个账户**：交易所名 + 环境，两个都要有
+    assert said and any(t in said[0] for t in ("实盘", "模拟", "测试网", "测试站"))
+    assert said and any(t in said[0] for t in ("Bybit", "币安"))

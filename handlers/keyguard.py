@@ -156,7 +156,7 @@ async def _explain_failure(err, env):
     这条以前只甩交易所原话 + 一张排查表，**连自己在打哪个端点都没写**，
     而「端点对不上」恰恰是排查表里的第一条。看的人没法自己对号入座。
     """
-    from bybit_trade import is_auth_error, AUTH_HINT
+    from handlers import venue
     ok, detail = await _alive()
     head = ["❌ 密钥体检失败", f"当前环境：{env}",
             f"交易所原话：{str(err)[:120]}", ""]
@@ -173,7 +173,8 @@ async def _explain_failure(err, env):
             "　· 必须绑 IP（不绑的话 90 天自动失效，泄露了谁都能拿去下单）"])
     return "\n".join(head + [
         f"同一把 key 查余额也不通（{detail}）——那就是密钥或端点的问题。",
-        "", AUTH_HINT if is_auth_error(err) else "检查 .env 里的 key/secret 是否配好。"])
+        "", venue.auth_hint() if venue.is_auth_error(err)
+        else "检查 .env 里的 key/secret 是否配好。"])
 
 
 async def keycheck_cmd(update, context):
@@ -184,8 +185,13 @@ async def keycheck_cmd(update, context):
         await safe_reply(update.message, "仅管理员")
         return
     try:
-        from bybit_trade import _mode, MODE_CN, _base_url
-        env = f"{MODE_CN[_mode()]}　{_base_url()}"
+        from handlers import venue
+        env = venue.tag()
+        try:
+            env += f"　{venue.client().base()}"      # 币安客户端有 base()
+        except Exception:
+            from bybit_trade import _base_url
+            env += f"　{_base_url()}"
     except Exception:
         env = "?"
     await safe_reply(update.message, "🔐 查询密钥权限…")

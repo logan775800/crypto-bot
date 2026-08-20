@@ -121,15 +121,22 @@ def test_keycheck_surfaces_the_hint():
     import inspect
     from handlers import keyguard
     src = inspect.getsource(keyguard._explain_failure)
-    assert "AUTH_HINT" in src and "is_auth_error" in src
+    # 排查表现在按**当前交易所**取（venue.auth_hint），不再写死 Bybit 的
+    assert "auth_hint" in src and "is_auth_error" in src
 
 
 @pytest.mark.parametrize("val,tag", [
-    ("false", "🔴实盘"), ("demo", "🧪模拟交易"), ("true", "🧪测试站"),
+    ("false", "🔴实盘"), ("demo", "🧪模拟交易"), ("true", "🧪测试网"),
 ])
 def test_trading_panel_tag_distinguishes_all_three(val, tag):
     """两套模拟盘是**不同的两个账户**。都标成「模拟盘」的话，
-    换了 key 却忘改 BYBIT_TESTNET 时，屏幕上看不出任何异样。"""
+    换了 key 却忘改 BYBIT_TESTNET 时，屏幕上看不出任何异样。
+
+    v1.31 起标签还要带**交易所名**：接了币安之后，只写环境的话
+    「我这单下在哪儿」完全无从判断。"""
     _mod(val)
+    import storage
+    storage.data.pop("trade_venue", None)      # 默认 Bybit
     from handlers import rtrade
-    assert rtrade._env_tag() == tag
+    got = rtrade._env_tag()
+    assert got == "Bybit" + tag, got

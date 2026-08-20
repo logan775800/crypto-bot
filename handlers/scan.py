@@ -22,9 +22,21 @@ from handlers import marketdata as md
 
 log = logging.getLogger(__name__)
 
-MIN_TURNOVER = 20_000_000      # 24h 成交额下限(USDT)。低于这个的深度撑不住实盘
-POOL = 40                      # 粗筛保留多少个进入细算
-DEEP = 16                      # 细算多少个（每个要打 4 个接口，这是耗时大头）
+# 24h 成交额下限。这只是个**粗代理**——真正把关的是逐个查真实订单簿的
+# 流动性/执行否决（_book_quality）。20M 时实测全 Bybit 永续 728 个对里只剩 38 个，
+# 门槛本身成了瓶颈：扫描算滑点用的参考名义才 5000U，10M 日成交额对这个量级绰绰有余。
+# 降门槛不等于降标准——粗筛放宽，精筛照旧，下不进去的照样被否。
+MIN_TURNOVER = 10_000_000
+# 流动性**评分**的对数基准。刻意和 MIN_TURNOVER 分开：
+# 原来评分直接拿 MIN_TURNOVER 当基准，于是我一调粗筛门槛（20M→10M），
+# 整条评分刻度跟着漂——同一个币的流动性分凭空变高，否决线也跟着松了。
+# 门槛是"看不看它"，基准是"它算好还是差"，两件事不该绑在一起。
+LIQ_BASE = 20_000_000
+POOL = 60                      # 粗筛保留多少个进入「打标签」这一段
+# 细算多少个。两段式之后这一步只花在**真有信号**的币上，
+# 所以可以放宽——贵的那两个接口（盘口/OI）不再浪费在没信号的币上。
+DEEP = 24
+SHOW = 20                      # 每组最多显示多少行
 CONCURRENCY = 6                # 并发上限，别把交易所打出限流
 REF_NOTIONAL = 5000            # 算执行质量用的参考名义(USDT)
 # ATR 可接受区间（占价格%）。太低=没波动，赚不回成本；太高=止损必须放很远，
@@ -93,13 +105,16 @@ def score_liquidity(turnover, depth):
     以下，于是 8 个候选里 6 个被「流动性不足」否决——而它们全都通过了 2000 万
     的粗筛门槛。两套标准自相矛盾，扫描器实际输出的是"什么都别做"。
 
+    ⚠️ 基准用 LIQ_BASE 而不是 MIN_TURNOVER：拿粗筛门槛当评分基准的话，
+    调门槛会**静默改变所有币的流动性分**，连带把否决线一起挪了。
+
     流动性天然跨数量级（2000 万到 25 亿差两个量级），只能用对数。
     刻度按真实数据标定：门槛 2000 万给基础分，每涨一个量级加一档。
     """
     t = 0.0
     if turnover and turnover > 0:
-        # 2000万→19分，2亿→37，20亿→55
-        rel = math.log10(max(turnover, MIN_TURNOVER) / MIN_TURNOVER) / 2
+        # 2000万→19分，2亿→37，20亿→55（基准固定在 LIQ_BASE，不随粗筛门槛动）
+        rel = math.log10(max(turnover, LIQ_BASE) / LIQ_BASE) / 2
         t = _clamp(55 * min(1.0, 0.35 + 0.65 * rel), 0, 55)
     d = 0.0
     if depth and depth > 0:
@@ -639,7 +654,7 @@ def signal_of(r):
     return side, (2 if hits >= STRONG_MIN else 1), tags
 
 
-def render_signals(rows, source="Bybit永续", limit=12):
+def render_signals(rows, source="Bybit永续", limit=SHOW):
     """紧凑输出：一行一个币，买卖分开。
 
     保留**否决**这件事——那是这个扫描和"指标共振榜"的根本区别：
@@ -666,7 +681,11 @@ def render_signals(rows, source="Bybit永续", limit=12):
             short = r["symbol"].replace("USDT", "")
             out.append(f"{short:<9}{md.f(r['price']):>12}   "
                        f"{'强' if strength == 2 else '中'}·{'+'.join(tags)}")
-        return "```\n" + "\n".join(out) + "\n```"
+        txt = "```\n" + "\n".join(out) + "\n```"
+        # 截断了必须说出来——一张看起来"就这些"的名单是最容易误导的那种沉默
+        if len(items) > limit:
+            txt += f"　…还有 {len(items) - limit} 个没显示"
+        return txt
 
     scanned = rows[0].get("scanned") if rows else None
     is_perp = "永续" in (source or "") or "swap" in (source or "").lower()
@@ -688,10 +707,14 @@ def render_signals(rows, source="Bybit永续", limit=12):
     if vetoed:
         # verdict 形如「❌ 不建议（盘口太薄）」——要的是括号里那半句，
         # 只显示"❌ 不建议"等于没说理由
+        # 去重前要把数字抹掉：「波动过大(13.9%)」和「波动过大(8.7%)」是同一类原因，
+        # 不抹的话两条都列出来，读起来像两个不同的问题
+        import re as _re
         reasons = set()
         for v in vetoed:
             txt = v.get("verdict") or ""
-            reasons.add(txt.split("（")[1].rstrip("）") if "（" in txt else txt)
+            r = txt.split("（")[1].rstrip("）") if "（" in txt else txt
+            reasons.add(_re.sub(r"\([\d.]+%\)", "", r).strip("，, "))
         why = "、".join(sorted(reasons)[:3])
         lines.append(f"⚠️ 另有 {len(vetoed)} 个指标漂亮但**下不进去**（{why}），已剔除")
     lines.append("共振=多周期均线同向｜强=命中3条以上")

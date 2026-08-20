@@ -277,3 +277,16 @@ def test_tf_snapshot_returns_data_for_a_normal_series():
     assert got is not None, "涨了 120 根还说没数据，说明函数里抛了异常被吞掉"
     assert got["align"] == 1
     assert got["close"] > 0 and got["atr_pct"] is not None
+
+
+def test_liquidity_scale_does_not_move_with_the_prefilter():
+    """评分基准必须独立于粗筛门槛。
+
+    真机上把 MIN_TURNOVER 从 20M 调到 10M 时炸出来的：评分直接拿门槛当对数基准，
+    于是调门槛 = 静默给所有币的流动性分加分，连带把「流动性不足」的否决线挪了。
+    门槛是"看不看它"，基准是"它算好还是差"。
+    """
+    import inspect
+    src = inspect.getsource(scan.score_liquidity)
+    assert "LIQ_BASE" in src and "MIN_TURNOVER" not in src.split('"""')[2]
+    assert scan.LIQ_BASE == 20_000_000

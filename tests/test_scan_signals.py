@@ -253,3 +253,30 @@ def test_two_stage_pipeline_exists():
     src = inspect.getsource(S.run)
     assert "_lite" in src and "signal_of" in src
     assert "pre_tf" in src, "便宜段取过的周期要复用，别再打一遍"
+
+
+def test_display_cap_is_twenty_and_truncation_is_disclosed():
+    """他数了一下："显示出来的都没16个"。两个上限叠在一起：细算 16 + 显示 12。
+    现在细算 24 / 显示 20，而且截断了要说——看起来"就这些"是最误导的沉默。"""
+    assert S.SHOW == 20 and S.DEEP >= S.SHOW
+    rows = [_row(f"C{i}USDT", aligns=(1, 1, 1), price=1.0 + i) for i in range(25)]
+    out = S.render_signals(rows, source="Bybit永续")
+    body = out.split("```")[1]
+    assert len([x for x in body.strip().split("\n") if x]) == 20
+    assert "还有 5 个没显示" in out
+
+
+def test_turnover_floor_is_only_a_prefilter():
+    """20M 时全 Bybit 728 个永续只剩 38 个，门槛本身成了瓶颈。
+    真正把关的是逐个查订单簿的否决，成交额只是个粗代理。"""
+    assert S.MIN_TURNOVER <= 10_000_000
+    assert S.POOL >= 60
+
+
+def test_veto_reasons_dedupe_across_different_numbers():
+    """「波动过大(13.9%)」和「波动过大(8.7%)」是同一类原因。
+    不抹掉数字就各算一条，读起来像两个不同的问题。"""
+    a = _row("AUSDT", aligns=(1, 1, 1), verdict="❌ 不建议（波动过大(13.9%)，止损放不合理）")
+    b = _row("BUSDT", aligns=(1, 1, 1), verdict="❌ 不建议（波动过大(8.7%)，止损放不合理）")
+    out = S.render_signals([_row("OKUSDT", aligns=(1, 1, 1)), a, b])
+    assert out.count("波动过大") == 1

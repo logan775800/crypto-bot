@@ -426,11 +426,18 @@ def test_cache_can_be_forced(monkeypatch):
 
 
 # ── 入口 ─────────────────────────────────────────────────────────
-def test_gate_zone_is_on_the_home_page():
-    """新功能必须有按钮入口，光有代码不算做完。"""
+def test_gate_zone_is_reachable_by_button():
+    """新功能必须有按钮入口，光有代码不算做完。
+
+    2026-08-20 起四个交易所专区合并到「🏦 交易所专区」一个入口下
+    （它们本来就是同一批功能的四份拷贝），所以判据从"在首页"改成"点得到"。
+    """
+    import inspect
     from handlers import menu
     cbs = [b.callback_data for row in menu.main_menu_kb().inline_keyboard for b in row]
-    assert "cat_gate" in cbs
+    assert "cat_venues" in cbs
+    seg = inspect.getsource(menu._dispatch).split('elif d == "cat_venues":')[1]
+    assert '"cat_gate"' in seg.split("elif d ==")[0]
 
 
 def test_gate_panel_mirrors_binance():

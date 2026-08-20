@@ -12,17 +12,32 @@ def _cbs(kb):
     return [b.callback_data for row in kb.inline_keyboard for b in row]
 
 
-# ── 首页：全平铺，不藏入口 ───────────────────────────────────────
-# v1.8.0 曾精简到 12 个 + 「更多」，用户实际用下来更习惯全平铺：
-# 多一层点击比多几个按钮更烦。这几条锁死「一个入口都不藏」。
-def test_every_entry_is_on_the_home_page():
-    cbs = _cbs(menu.main_menu_kb())
+# ── 入口一个都不藏 ─────────────────────────────────────────────
+# 判据在 2026-08-20 变过一次，这里记下来免得下次误以为是放松了要求：
+#   原来：**每个入口都必须在首页**（v1.8.0 精简到 12 个 + 「更多」被否，
+#         v1.10.1 恢复全平铺）。
+#   现在：他说「功能按钮越来越多，又杂又乱」，选了「重组分类 23→10」。
+#         所以要求变成 **必须仍然点得到**，而不是必须在首页第一层。
+# 「更多」那种收纳仍然是禁止的——见 test_no_more_layer 和
+# tests/test_menu_ia.py::test_no_more_bucket_button。
+def _reachable(cb):
+    """从首页出发点得到吗：在首页上，或在某个分类面板里列着。"""
+    import inspect
+    if cb in _cbs(menu.main_menu_kb()):
+        return True
+    for _text, rows in menu.CATS.values():
+        if cb in [b.callback_data for r in rows for b in r]:
+            return True
+    return f'"{cb}"' in inspect.getsource(menu._dispatch)
+
+
+def test_every_entry_is_still_reachable():
     for must in ("dash_refresh", "cat_price", "cat_analysis", "cat_strategy",
                  "cat_okx", "cat_binance", "cat_bybit", "cat_news", "cat_subs",
                  "cat_alert", "cat_tools", "ask_start", "cat_scan", "cat_calc",
                  "cat_risk", "cat_review", "cat_holding", "cat_vtrade",
                  "cat_help"):
-        assert must in cbs, f"{must} 不在首页"
+        assert _reachable(must), f"{must} 点不到了"
 
 
 def test_no_more_layer():

@@ -40,37 +40,35 @@ def persistent_kb():
 
 # ============ 主菜单 ============
 def main_menu_kb():
-    """首页全平铺，不做「更多」收纳。
+    """首页：按「我要干什么」分组，一屏看完。
 
-    v1.8.0 曾按使用频率精简到 12 个 + 「更多」，用户实际用下来更习惯全平铺——
-    多一层点击比多几个按钮更烦。功能入口一个不藏。
+    仍然**不做「更多」收纳**——v1.8.0 试过按频率精简 + 「更多」，实际用下来
+    多一层点击比多几个按钮更烦，v1.10.1 已经恢复过一次全平铺。
+
+    v1.32.0 从 23 个入口降到 10 个，靠的是**去重和合并同类，不是把功能藏起来**：
+      • 四个交易所专区（OKX/币安/Bybit/Gate）本来就是同一批功能的四份拷贝，
+        合成一个入口、进去选所。大多数时候人关心的是"某个币"，不是"某家所"。
+      • 三套分类逻辑（按数据类型 / 按交易所 / 按场景）混在一层，是"又杂又乱"
+        的真正来源。现在统一按**场景**分，每个入口回答一个"我要干什么"。
+      • 名字打架的合并：市场看板+行情查询、实用工具+交易工具、
+        订阅推送+价格预警、技术分析+策略回测。
+    合并后的面板里，原来的入口一个不少，回调也全部沿用——只是不再占首页的位置。
     """
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📊 市场看板", callback_data="dash_refresh")],
-        [InlineKeyboardButton("💰 行情查询", callback_data="cat_price"),
-         InlineKeyboardButton("📈 技术分析", callback_data="cat_analysis")],
-        [InlineKeyboardButton("📊 策略回测", callback_data="cat_strategy")],
-        [InlineKeyboardButton("🔥 OKX专区", callback_data="cat_okx"),
-         InlineKeyboardButton("🅱️ 币安专区", callback_data="cat_binance"),
-         InlineKeyboardButton("🟡 Bybit专区", callback_data="cat_bybit"),
-         InlineKeyboardButton("🟢 Gate专区", callback_data="cat_gate")],
-        [InlineKeyboardButton("🔗 链上代币（交易所还没上的）",
-                               callback_data="cat_onchain")],
-        [InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news"),
-         InlineKeyboardButton("🔔 订阅推送", callback_data="cat_subs")],
-        [InlineKeyboardButton("🔔 价格预警", callback_data="cat_alert"),
-         InlineKeyboardButton("🛠 实用工具", callback_data="cat_tools")],
-        [InlineKeyboardButton("💬 AI 助手（问我任何问题）", callback_data="ask_start")],
-        # 交易闭环的四块：找机会 → 算成本 → 控风险 → 回头看
-        [InlineKeyboardButton("🔍 机会扫描", callback_data="cat_scan"),
+        [InlineKeyboardButton("📊 行情", callback_data="cat_market"),
+         InlineKeyboardButton("🔍 机会扫描", callback_data="cat_scan")],
+        [InlineKeyboardButton("📈 分析与图表", callback_data="cat_analysis"),
+         InlineKeyboardButton("🔗 链上代币", callback_data="cat_onchain")],
+        [InlineKeyboardButton("🎮 虚拟交易台", callback_data="vg:home"),
          InlineKeyboardButton("🧮 交易工具", callback_data="cat_calc")],
         [InlineKeyboardButton("🛡 风险中心", callback_data="cat_risk"),
          InlineKeyboardButton("📅 复盘中心", callback_data="cat_review")],
-        [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding"),
-         InlineKeyboardButton("🎮 虚拟合约", callback_data="cat_vtrade")],
+        [InlineKeyboardButton("🏦 交易所专区", callback_data="cat_venues"),
+         InlineKeyboardButton("🔔 提醒与订阅", callback_data="cat_notify")],
+        [InlineKeyboardButton("💬 AI 助手（问我任何问题）", callback_data="ask_start")],
         [InlineKeyboardButton("⌨️ 全部命令", callback_data="cmd:home"),
-         InlineKeyboardButton("🩺 系统体检", callback_data="do:datacheck")],
-        [InlineKeyboardButton("❓ 使用帮助", callback_data="cat_help")],
+         InlineKeyboardButton("🩺 体检", callback_data="do:datacheck"),
+         InlineKeyboardButton("❓ 帮助", callback_data="cat_help")],
     ])
 
 
@@ -143,7 +141,11 @@ CATS = {
          [InlineKeyboardButton("🧪 规则回测", callback_data="ask:backtest"),
           InlineKeyboardButton("🩺 数据体检", callback_data="ask:datacheck")],
          [InlineKeyboardButton("📋 生成交易计划", callback_data="ask:plan"),
-          InlineKeyboardButton("📐 标注图表", callback_data="ask:achart")]]),
+          InlineKeyboardButton("📐 标注图表", callback_data="ask:achart")],
+         # 合并进来的：原首页「实用工具」（Gas/巨鲸/套利/解锁那些）
+         [InlineKeyboardButton("🛠 实用工具（Gas/巨鲸/套利/解锁）",
+                               callback_data="cat_tools")],
+         [InlineKeyboardButton("🎮 虚拟盘怎么用", callback_data="cat_vtrade")]]),
     "cat_risk": (
         "🛡 *风险中心*\n\n"
         "参数会**真的挡住**仓位计算，不是印在文档里让你自己遵守。",
@@ -152,7 +154,9 @@ CATS = {
           InlineKeyboardButton("🛡 风险守护", callback_data="rgpanel")],
          [InlineKeyboardButton("🔔 事件预警", callback_data="ask:events"),
           InlineKeyboardButton("📊 合约异动", callback_data="ctr:panel")],
-         [InlineKeyboardButton("✅ 开仓检查清单", callback_data="do:checklist")]]),
+         [InlineKeyboardButton("✅ 开仓检查清单", callback_data="do:checklist")],
+         # 合并进来的：原首页「我的持仓」——持仓本来就是风险的主体
+         [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding")]]),
     "cat_review": (
         "📅 *复盘中心*\n\n"
         "周报看的是**行为漂移**而不是单周盈亏——行为你能控制，盈亏你不能。",
@@ -673,6 +677,45 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(query, f"刷新失败：{str(e)[:80]}", reply_markup=back_kb())
 
     # ============ 行情查询 ============
+    # ── 合并入口（v1.32.0）──────────────────────────────────
+    # 这三个面板本身不实现任何功能，只是把原来散在首页的入口收进来。
+    # 原入口的 callback_data 一个没改：进得来、回得去，深链和历史消息里的按钮照常能用。
+    elif d == "cat_market":
+        await safe_edit(query,
+            "📊 *行情*\n\n看盘子、查币价、看榜单——先知道现在是什么局面。",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📊 市场看板（一屏总览）",
+                                      callback_data="dash_refresh")],
+                [InlineKeyboardButton("💰 查币价/涨跌榜", callback_data="cat_price"),
+                 InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news")],
+                [InlineKeyboardButton("📡 换数据源（用哪家的价）",
+                                      callback_data="src:home")],
+                _back()]), parse_mode="Markdown")
+
+    elif d == "cat_venues":
+        await safe_edit(query,
+            "🏦 *交易所专区*\n\n四家的功能是一套的（资金费/爆仓/多空比/新币榜…），"
+            "先选一家。\n\n"
+            "平时查某个币不用进这里——直接发币名，或用「📊 行情」，"
+            "那边跟着你 `/source` 设的默认源走。",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔥 OKX", callback_data="cat_okx"),
+                 InlineKeyboardButton("🅱️ 币安", callback_data="cat_binance")],
+                [InlineKeyboardButton("🟡 Bybit", callback_data="cat_bybit"),
+                 InlineKeyboardButton("🟢 Gate", callback_data="cat_gate")],
+                [InlineKeyboardButton("📡 设默认数据源", callback_data="src:home")],
+                _back()]), parse_mode="Markdown")
+
+    elif d == "cat_notify":
+        await safe_edit(query,
+            "🔔 *提醒与订阅*\n\n"
+            "**提醒**是你盯某个条件（到价、波动、指标）；\n"
+            "**订阅**是我定期推给你（早报、新闻、异动）。",
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔔 价格/条件提醒", callback_data="cat_alert")],
+                [InlineKeyboardButton("📬 定期订阅推送", callback_data="cat_subs")],
+                _back()]), parse_mode="Markdown")
+
     elif d == "cat_price":
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("💰 查币价", callback_data="sub_price"),
@@ -810,6 +853,9 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = coin_grid("doanalyze", "menu_main")
         # 在币种网格上方插一行「标注图表」入口（网格本身按 action 前缀走 doanalyze）
         rows = list(kb.inline_keyboard)
+        # 合并进来的：策略回测原来是首页独立入口，和技术分析本就是一件事的两端
+        rows.insert(0, [InlineKeyboardButton("📊 策略回测/动量轮动",
+                                             callback_data="cat_strategy")])
         rows.insert(0, [InlineKeyboardButton("📐 标注图表(结构位+止损带画在图上)",
                                             callback_data="ac_help")])
         await safe_edit(query, 

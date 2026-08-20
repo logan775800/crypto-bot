@@ -335,9 +335,10 @@ async def _probe():
                 c = BinanceClient(market=market)
                 try:
                     bal = await c.wallet_balance("USDT")
+                    usdt = float(bal.get("totalEquity") or 0)
                     print(f"  ✅ {mode:<8} {market:<8} {c.base():<40}"
                           f" 认（USDT {bal.get('totalEquity')}）")
-                    hit.append((mode, market))
+                    hit.append((mode, market, usdt))
                 except Exception as e:
                     why = "key 不属于这里" if is_auth_error(e) else str(e)[:60]
                     print(f"  ❌ {mode:<8} {market:<8} {c.base():<40} {why}")
@@ -351,6 +352,23 @@ async def _probe():
         m = hit[0][0]
         print(f"→ 这把 key 属于 **{m}**。在 .env 里设 "
               f"BINANCE_TESTNET={'true' if m == 'testnet' else 'false'}")
+        if m == "live":
+            # 和 Bybit 的 probe 保持一致：验出实盘就必须把这句说出来。
+            # 上一版这里漏了，屏幕上只写"设成 false"，看不出那是真钱开关。
+            print("  ⚠️ 这是**实盘** key —— 设成 false 之后所有下单都是真钱。")
+            print("     确认：没勾提现权限、勾了「启用期货」、绑了服务器 IP。")
+            print("     只想练手就别切，用 /vtrade 虚拟盘，或去 "
+                  "testnet.binancefuture.com 单独申请一把测试网 key。")
+        # 钱包余额为 0 = 认得这把 key 但下不了单。这个必须点名，
+        # 否则他切过去、下单被拒，才发现是钱不在这个钱包里。
+        for _mode, _mkt, _usdt in hit:
+            if _mode == m and _usdt < 1:
+                where = "合约" if _mkt == "futures" else "现货"
+                print(f"  💸 {where}钱包只有 {_usdt:g} USDT —— **下不了单**。"
+                      + ("币安的合约和现货是两个钱包，要先在币安 App 里"
+                         "把 USDT 从现货/资金钱包**划转到合约钱包**。"
+                         if _mkt == "futures" else
+                         "币安现货最小成交额通常是 5 USDT。"))
         markets = {x[1] for x in hit}
         if "futures" not in markets:
             print("  ⚠️ 合约那边不认：建 key 时要勾「启用期货」，只勾读取下不了单")

@@ -167,3 +167,25 @@ def test_compose_passes_binance_keys():
            / "docker-compose.yml").read_text(encoding="utf-8")
     for k in ("BINANCE_API_KEY", "BINANCE_API_SECRET", "BINANCE_TESTNET"):
         assert k in src
+
+
+# ── 实盘警示与空钱包 ────────────────────────────────────────
+def test_probe_warns_when_the_key_is_live():
+    """真机上 probe 只写了"设成 false"，没说那是真钱开关——Bybit 那边是有这句的。"""
+    src = inspect.getsource(BN._probe)
+    assert "实盘" in src and "真钱" in src
+    assert "vtrade" in src or "testnet.binancefuture.com" in src
+
+
+def test_probe_calls_out_an_empty_wallet():
+    """认得这把 key ≠ 下得了单。他实测合约钱包 0 USDT、现货 0.36。
+    不点名的话，他会切过去、下单被拒，才发现钱不在这个钱包里。"""
+    src = inspect.getsource(BN._probe)
+    assert "下不了单" in src
+    assert "划转" in src, "币安现货和合约是两个钱包，要说清怎么办"
+
+
+def test_switching_shows_the_balance():
+    """切过去才发现钱不在这个钱包，是很浪费时间的一种失败。"""
+    src = inspect.getsource(venue.venue_cmd)
+    assert "wallet_balance" in src and "下不了单" in src

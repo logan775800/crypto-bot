@@ -130,7 +130,22 @@ async def venue_cmd(update, context):
             f"{VENUES[name]['mod']}.py probe`", parse_mode="Markdown")
         return
     set_venue(name)
+    # 顺手把余额查出来。**切过去才发现钱不在这个钱包**是很浪费时间的一种失败：
+    # 币安的现货和合约是两个钱包，实测他现货有钱、合约 0，直接下单只会被拒。
+    money = ""
+    try:
+        bal = await client(name).wallet_balance("USDT")
+        usdt = float(bal.get("totalEquity") or 0)
+        money = f"\n合约钱包 {usdt:,.2f} USDT"
+        if usdt < 1:
+            money += ("　💸 **这个钱包是空的，下不了单**"
+                      + ("\n币安的现货和合约是两个钱包，"
+                         "要先在币安 App 里把 USDT 划转到**合约钱包**"
+                         if name == "binance" else ""))
+    except Exception as e:
+        log.warning(f"切换交易所后取余额失败: {e}")
+        money = "\n（余额没查到，发 /keycheck 看是不是密钥问题）"
     await safe_reply(update.message,
-        f"✅ 已切到 *{VENUES[name]['cn']}*　{tag(name)}\n\n"
+        f"✅ 已切到 *{VENUES[name]['cn']}*　{tag(name)}{money}\n\n"
         f"/trade 交易台、/rpos /rbal /rorders 现在都走这一家。\n"
         f"先发 `/keycheck` 核一遍权限再下单。", parse_mode="Markdown")

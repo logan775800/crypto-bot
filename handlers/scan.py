@@ -379,17 +379,21 @@ async def _book_quality(sym, ex="bybit", market="swap"):
 
 
 async def _deep(sym, ticker, turnover, sem, btc_move=0.0, ex="bybit",
-                market="swap"):
-    """对单个候选做细算。任何一项缺失都如实标 None，不用默认值糊过去。"""
+                market="swap", pre_tf=None):
+    """对单个候选做细算。任何一项缺失都如实标 None，不用默认值糊过去。
+
+    pre_tf：便宜段已经取过的周期，直接复用，别再打一遍同样的接口。
+    """
+    need = [iv for iv in ("4h", "1h", "15m") if iv not in (pre_tf or {})]
     async with sem:
         tf_res, oi, book = await asyncio.gather(
             asyncio.gather(*[_tf_snapshot(sym, iv, ex=ex, market=market)
-                             for iv in ("4h", "1h", "15m")]),
+                             for iv in need]),
             _oi_change(sym, ex), _book_quality(sym, ex, market),
             return_exceptions=True)
-    tf = {}
+    tf = dict(pre_tf or {})
     if not isinstance(tf_res, Exception):
-        for iv, v in zip(("4h", "1h", "15m"), tf_res):
+        for iv, v in zip(need, tf_res):
             if v:
                 tf[iv] = v
     oi = None if isinstance(oi, Exception) else oi
@@ -460,12 +464,52 @@ async def run(limit=DEEP, source=None):
         return []
     btc = 0.0 if isinstance(btc, Exception) else btc
     sem = asyncio.Semaphore(CONCURRENCY)
+
+    # 两段式：先用**只取 K 线**的便宜通道给全池打信号，再只对有信号的那些
+    # 跑盘口/OI 的否决。
+    # 原来是按成交额取前 16 个做全套细算——成交额高不等于有信号，
+    # 排在第 20 位但三周期共振的币根本轮不到被看一眼。
+    # 换成这样之后覆盖从 16 涨到 40，请求数反而更少：
+    # 便宜段每个币 2 个接口，贵的那两个（盘口/OI）只花在真有信号的十几个上。
+    lite = await asyncio.gather(
+        *[_lite(s, t, tv, sem, ex, market) for s, t, tv in pool[:POOL]],
+        return_exceptions=True)
+    cands = [r for r in lite if r and not isinstance(r, Exception)]
+    hits = [r for r in cands if signal_of(r)[0] != 0]
+    # 没有任何信号时也别空手而归：退回按成交额取前几个做细算，
+    # 至少让「四维明细」有东西看
+    todo = hits[:limit] or cands[:min(6, limit)]
+
     res = await asyncio.gather(
-        *[_deep(s, t, tv, sem, btc, ex, market) for s, t, tv in pool[:limit]],
+        *[_deep(r["symbol"], r["_ticker"], r["turnover"], sem, btc, ex, market,
+                pre_tf=r["tf"]) for r in todo],
         return_exceptions=True)
     out = [r for r in res if r and not isinstance(r, Exception)]
     out.sort(key=lambda r: -r["total"])
+    for r in out:
+        r["scanned"] = len(cands)          # 实际打过标签的币数，要如实报出来
     return out
+
+
+async def _lite(sym, ticker, turnover, sem, ex="bybit", market="swap"):
+    """便宜段：只取 K 线算信号，不碰盘口和 OI。
+
+    只用 4h + 1h 两个周期——15m 留给贵的那段。共振本来就该由大周期定调，
+    15m 的作用是择时，而择时对"这个币值不值得细看"没有发言权。
+    """
+    async with sem:
+        tf_res = await asyncio.gather(
+            *[_tf_snapshot(sym, iv, ex=ex, market=market) for iv in ("4h", "1h")],
+            return_exceptions=True)
+    tf = {}
+    for iv, v in zip(("4h", "1h"), tf_res):
+        if v and not isinstance(v, Exception):
+            tf[iv] = v
+    if not tf:
+        return None
+    return {"symbol": sym, "turnover": turnover, "tf": tf, "_ticker": ticker,
+            "price": float(ticker.get("lastPrice") or 0) if ticker else 0,
+            "verdict": ""}
 
 
 def render(rows, limit=8, source="Bybit永续"):
@@ -517,7 +561,7 @@ async def scan_cmd(update, context):
     src = pref_label(update.effective_chat.id)
     await safe_reply(update.message,
                      f"🔍 在 {src or 'Bybit永续'} 上扫描…"
-                     f"（粗筛全市场 → 细算前 {DEEP} 个，约 15~30 秒）")
+                     f"（全池打标签 → 只对有信号的细算，约 10~20 秒）")
     try:
         rows = await run(source=src)
     except Exception as e:
@@ -527,11 +571,7 @@ async def scan_cmd(update, context):
     # 默认给**紧凑信号版**：一屏能扫完 20 个名字。
     # 四维明细没删，收进按钮——它回答的是"能不能下单"，
     # 而人打开扫描时第一个问题是"有哪些"。
-    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("📊 四维明细（趋势/流动性/拥挤/执行）",
-                             callback_data="scan:detail")],
-        [InlineKeyboardButton("🔄 重扫", callback_data="do:scan")]])
+    kb = result_kb()
     context.chat_data["scan_rows"] = rows
     context.chat_data["scan_src"] = src or "Bybit永续"
     await safe_reply(update.message,
@@ -628,15 +668,23 @@ def render_signals(rows, source="Bybit永续", limit=12):
                        f"{'强' if strength == 2 else '中'}·{'+'.join(tags)}")
         return "```\n" + "\n".join(out) + "\n```"
 
+    scanned = rows[0].get("scanned") if rows else None
+    is_perp = "永续" in (source or "") or "swap" in (source or "").lower()
+    # 永续能双向开仓，"买入/卖出"是现货的说法——用错词会让人以为只能做多
+    long_cn, short_cn = ("做多", "做空") if is_perp else ("买入", "卖出")
     lines = [f"🔍 *信号扫描*　{escape_md(source)}",
-             f"粗筛成交额≥{MIN_TURNOVER/1e6:.0f}M，细算按成交额排的前 {len(rows)} 个"]
-    if buys:
-        lines += [f"🟢 *买入 ({len(buys)})*", block(buys)]
-    if sells:
-        lines += [f"🔴 *卖出 ({len(sells)})*", block(sells)]
+             f"打过标签 {scanned or len(rows)} 个"
+             f"（成交额≥{MIN_TURNOVER/1e6:.0f}M 的前 {POOL} 个），"
+             f"其中 {len(rows)} 个做了盘口/拥挤度细算"]
+    lines += [f"🟢 *{long_cn} ({len(buys)})*",
+              block(buys) if buys else "　（这一轮没有）"]
+    # 空组为 0 时也要**把这一行印出来**：整段消失读起来像"没扫做空"，
+    # 而"当前没有空头共振"本身就是有用的信息（市场一边倒）
+    lines += [f"🔴 *{short_cn} ({len(sells)})*",
+              block(sells) if sells else "　（这一轮没有）"]
     if not buys and not sells:
-        lines.append("这一轮**没有共振信号**——多周期打架的时候，"
-                     "哪个方向进去都是在猜。没有信号本身就是信号。")
+        lines.append("多周期打架的时候，哪个方向进去都是在猜。"
+                     "**没有信号本身就是信号。**")
     if vetoed:
         # verdict 形如「❌ 不建议（盘口太薄）」——要的是括号里那半句，
         # 只显示"❌ 不建议"等于没说理由
@@ -647,6 +695,44 @@ def render_signals(rows, source="Bybit永续", limit=12):
         why = "、".join(sorted(reasons)[:3])
         lines.append(f"⚠️ 另有 {len(vetoed)} 个指标漂亮但**下不进去**（{why}），已剔除")
     lines.append("共振=多周期均线同向｜强=命中3条以上")
-    lines.append(f"只看了成交额前 {len(rows)} 个——排在后面的币即使有信号也扫不到")
+    lines.append(f"⚠️ 口径：只扫 **{escape_md(source)}**——不含现货、"
+                 f"不含其它交易所。换所发 `/source`")
     lines.append("⚠️ 仅供参考，不构成投资建议")
     return "\n".join(lines)
+
+
+# ── 换所/换现货：就在结果下面，不用去改全局设置 ────────────────
+# 他的原话：「这个只是扫描 bybit 合约的一个片面 不是现货也不是其它交易所」。
+# 能力其实一直有（run() 认 source 标签），但入口埋在 /source 全局设置里，
+# 等于没有——他要的是"在这张结果上换一下再看"。
+SCAN_SOURCES = [("bybit", "swap"), ("bybit", "spot"),
+                ("okx", "swap"), ("okx", "spot"),
+                ("binance", "swap"), ("binance", "spot"),
+                ("gate", "swap"), ("gate", "spot")]
+
+
+def result_kb():
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 四维明细（趋势/流动性/拥挤/执行）",
+                              callback_data="scan:detail")],
+        [InlineKeyboardButton("🏦 换所 / 换现货", callback_data="scan:src"),
+         InlineKeyboardButton("🔄 重扫", callback_data="do:scan")]])
+
+
+def source_kb():
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    from handlers import source as src
+    rows, cur = [], []
+    for ex, mkt in SCAN_SOURCES:
+        lab = src.label_of(ex, mkt)
+        if not lab:
+            continue
+        cur.append(InlineKeyboardButton(lab, callback_data=f"scan:on:{lab}"))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    rows.append([InlineKeyboardButton("⬅️ 返回", callback_data="scan:brief")])
+    return InlineKeyboardMarkup(rows)

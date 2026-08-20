@@ -72,8 +72,9 @@ def test_one_line_per_coin():
 
 def test_buys_and_sells_are_separated():
     out = S.render_signals([_row("AUSDT", aligns=(1, 1, 1)),
-                            _row("BUSDT", aligns=(-1, -1, -1))])
-    assert "买入 (1)" in out and "卖出 (1)" in out
+                            _row("BUSDT", aligns=(-1, -1, -1))],
+                           source="Bybit永续")
+    assert "做多 (1)" in out and "做空 (1)" in out
 
 
 def test_strong_ones_come_first():
@@ -97,7 +98,7 @@ def test_vetoed_coins_are_excluded_but_counted():
 def test_no_signal_says_so_plainly():
     """没有信号本身就是信号，别输出一张空表让人以为坏了。"""
     out = S.render_signals([_row(aligns=(1, -1, 0))])
-    assert "没有共振信号" in out
+    assert "没有信号本身就是信号" in out and "这一轮没有" in out
 
 
 def test_missing_klines_never_becomes_a_signal():
@@ -111,7 +112,8 @@ def test_compact_is_the_default_and_detail_is_a_button():
     import inspect
     src = inspect.getsource(S.scan_cmd)
     assert "render_signals" in src, "默认要给紧凑版"
-    assert "scan:detail" in src, "四维明细收进按钮，不能删"
+    cbs = [b.callback_data for row in S.result_kb().inline_keyboard for b in row]
+    assert "scan:detail" in cbs, "四维明细收进按钮，不能删"
 
 
 def test_detail_reuses_the_cached_rows():
@@ -124,10 +126,13 @@ def test_detail_reuses_the_cached_rows():
 
 
 def test_coverage_limit_is_disclosed():
-    """只细算了成交额前 N 个——排在后面的币有信号也扫不到。
-    不说出来的话，这张名单看起来像"全市场就这几个"。"""
-    out = S.render_signals([_row()])
-    assert "只看了" in out and "扫不到" in out
+    """打了多少标签、细算了几个、只扫哪个盘子——三个都要写在脸上。
+    不说的话，这张名单看起来像"全市场就这几个"。"""
+    r = _row()
+    r["scanned"] = 39
+    out = S.render_signals([r], source="Bybit永续")
+    assert "39" in out and "细算" in out
+    assert "不含现货" in out
 
 
 # ── 三个真机 bug（2026-08-20 他一眼看出"不太对劲"）────────────
@@ -199,3 +204,52 @@ def test_veto_reason_is_the_actual_reason():
     bad = _row("THINUSDT", aligns=(1, 1, 1), verdict="❌ 不建议（盘口太薄）")
     out = S.render_signals([_row("OKUSDT", aligns=(1, 1, 1)), bad])
     assert "盘口太薄" in out
+
+
+# ── 他 2026-08-20 的两条批评 ─────────────────────────────────
+def test_perp_says_long_short_not_buy_sell():
+    """永续能双向开仓——用"买入/卖出"会让人以为只能做多。"""
+    out = S.render_signals([_row(aligns=(1, 1, 1))], source="Bybit永续")
+    assert "做多" in out and "买入" not in out
+
+
+def test_spot_still_says_buy_sell():
+    out = S.render_signals([_row(aligns=(1, 1, 1))], source="Bybit")
+    assert "买入" in out
+
+
+def test_empty_side_is_printed_not_hidden():
+    """空组整段消失，读起来像"没扫做空"。而"当前没有空头共振"本身就是信息。"""
+    out = S.render_signals([_row(aligns=(1, 1, 1))], source="Bybit永续")
+    assert "做空 (0)" in out and "这一轮没有" in out
+
+
+def test_scope_is_spelled_out():
+    """他的原话：「这个只是扫描 bybit 合约的一个片面 不是现货也不是其它交易所」。"""
+    out = S.render_signals([_row()], source="Bybit永续")
+    assert "不含现货" in out and "其它交易所" in out
+
+
+def test_switching_venue_is_a_button_on_the_result():
+    """能力一直有（run() 认 source 标签），但埋在 /source 全局设置里等于没有。"""
+    cbs = [b.callback_data for row in S.result_kb().inline_keyboard for b in row]
+    assert "scan:src" in cbs
+    labels = [b.callback_data for row in S.source_kb().inline_keyboard for b in row]
+    assert any("永续" in c for c in labels), "要能选永续"
+    assert len([c for c in labels if c.startswith("scan:on:")]) >= 6
+
+
+def test_coverage_numbers_are_reported():
+    """打了多少标签 / 细算了几个，两个数都要报——只报一个会让人以为全扫了。"""
+    r = _row()
+    r["scanned"] = 39
+    out = S.render_signals([r])
+    assert "39" in out
+
+
+def test_two_stage_pipeline_exists():
+    """按成交额取前 16 个做全套细算 = 排第 20 位但三周期共振的币根本轮不到被看一眼。"""
+    import inspect
+    src = inspect.getsource(S.run)
+    assert "_lite" in src and "signal_of" in src
+    assert "pre_tf" in src, "便宜段取过的周期要复用，别再打一遍"

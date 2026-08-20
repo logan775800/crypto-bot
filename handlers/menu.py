@@ -680,6 +680,39 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── 合并入口（v1.32.0）──────────────────────────────────
     # 这三个面板本身不实现任何功能，只是把原来散在首页的入口收进来。
     # 原入口的 callback_data 一个没改：进得来、回得去，深链和历史消息里的按钮照常能用。
+    elif d == "scan:src":
+        from handlers import scan as _sc
+        await safe_edit(query,
+            "🏦 *换个盘子再扫*\n\n"
+            "扫描的**盘口和深度是那一家的**，所以结果不跨所比较——"
+            "同一个币在 Bybit 能进出，在小所可能吃两千 U 就滑 1%。\n"
+            "现货和永续也不是一回事：永续能做空、有资金费，现货只能买。",
+            reply_markup=_sc.source_kb(), parse_mode="Markdown")
+
+    elif d.startswith("scan:on:"):
+        from handlers import scan as _sc
+        from handlers import busy
+        label = d.split(":", 2)[2]
+        uid = query.from_user.id
+        async with busy.guard(uid, "scan") as ok:
+            if not ok:
+                await query.answer(busy.busy_text(uid, "scan", "扫描"),
+                                   show_alert=True)
+            else:
+                await safe_edit(query, f"🔍 在 {label} 上扫描…（约 10~20 秒）")
+                try:
+                    rows = await _sc.run(source=label)
+                except Exception as e:
+                    logging.error(f"换源扫描失败 {label}: {e}")
+                    await safe_edit(query, f"扫描失败：{str(e)[:80]}",
+                                    reply_markup=_sc.result_kb())
+                else:
+                    context.chat_data["scan_rows"] = rows
+                    context.chat_data["scan_src"] = label
+                    await safe_edit(query, _sc.render_signals(rows, source=label),
+                                    reply_markup=_sc.result_kb(),
+                                    parse_mode="Markdown")
+
     elif d == "scan:detail":
         # 明细是上一次扫描的结果，不重新打接口——重扫要 15~30 秒，
         # 而他点这个是想看刚才那批的细节
@@ -692,6 +725,7 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _sc.render(rows, source=context.chat_data.get("scan_src", "Bybit永续")),
                 reply_markup=InlineKeyboardMarkup([[
                     InlineKeyboardButton("⬅️ 回信号版", callback_data="scan:brief"),
+                    InlineKeyboardButton("🏦 换所", callback_data="scan:src"),
                     InlineKeyboardButton("🔄 重扫", callback_data="do:scan")]]),
                 parse_mode="Markdown")
 
@@ -704,9 +738,7 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await safe_edit(query,
                 _sc.render_signals(rows,
                                    source=context.chat_data.get("scan_src", "Bybit永续")),
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("📊 四维明细", callback_data="scan:detail"),
-                    InlineKeyboardButton("🔄 重扫", callback_data="do:scan")]]),
+                reply_markup=_sc.result_kb(),
                 parse_mode="Markdown")
 
     elif d == "cat_market":

@@ -680,6 +680,35 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── 合并入口（v1.32.0）──────────────────────────────────
     # 这三个面板本身不实现任何功能，只是把原来散在首页的入口收进来。
     # 原入口的 callback_data 一个没改：进得来、回得去，深链和历史消息里的按钮照常能用。
+    elif d == "scan:detail":
+        # 明细是上一次扫描的结果，不重新打接口——重扫要 15~30 秒，
+        # 而他点这个是想看刚才那批的细节
+        rows = context.chat_data.get("scan_rows")
+        if not rows:
+            await query.answer("这批结果已经过期了，重扫一次", show_alert=True)
+        else:
+            from handlers import scan as _sc
+            await safe_edit(query,
+                _sc.render(rows, source=context.chat_data.get("scan_src", "Bybit永续")),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("⬅️ 回信号版", callback_data="scan:brief"),
+                    InlineKeyboardButton("🔄 重扫", callback_data="do:scan")]]),
+                parse_mode="Markdown")
+
+    elif d == "scan:brief":
+        rows = context.chat_data.get("scan_rows")
+        if not rows:
+            await query.answer("这批结果已经过期了，重扫一次", show_alert=True)
+        else:
+            from handlers import scan as _sc
+            await safe_edit(query,
+                _sc.render_signals(rows,
+                                   source=context.chat_data.get("scan_src", "Bybit永续")),
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("📊 四维明细", callback_data="scan:detail"),
+                    InlineKeyboardButton("🔄 重扫", callback_data="do:scan")]]),
+                parse_mode="Markdown")
+
     elif d == "cat_market":
         await safe_edit(query,
             "📊 *行情*\n\n看盘子、查币价、看榜单——先知道现在是什么局面。",

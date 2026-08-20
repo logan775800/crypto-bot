@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 
 MIN_TURNOVER = 20_000_000      # 24h 成交额下限(USDT)。低于这个的深度撑不住实盘
 POOL = 40                      # 粗筛保留多少个进入细算
-DEEP = 12                      # 细算多少个（每个要打 4 个接口，这是耗时大头）
+DEEP = 16                      # 细算多少个（每个要打 4 个接口，这是耗时大头）
 CONCURRENCY = 6                # 并发上限，别把交易所打出限流
 REF_NOTIONAL = 5000            # 算执行质量用的参考名义(USDT)
 # ATR 可接受区间（占价格%）。太低=没波动，赚不回成本；太高=止损必须放很远，
@@ -36,6 +36,10 @@ ATR_MIN, ATR_MAX = 0.6, 8.0
 # 3R 目标是"一个像样的结构位"的合理代理；能不能剩下 2R 才是要考的。
 PROBE_RR = 3.0
 MIN_NET_RR = 2.0
+CROSS_BARS = 5            # 均线排列在最近几根内翻过来才算金叉/死叉
+SUPPORT_LOOKBACK = 40     # 找近端支撑/压力看多少根
+SUPPORT_ATR = 0.8         # 距支撑不到 0.8×ATR 才算"贴着"（按波动而不是固定%）
+VOL_HOT = 1.8             # 放量倍数门槛
 BTC_ALIGN_PCT = 1.5            # BTC 15m 动这么多以上时，反向的山寨机会要打折
 
 # 拥挤阈值：单期资金费到这个量级就说明一边已经很挤了
@@ -252,8 +256,32 @@ async def _tf_snapshot(sym, iv, limit=120, ex="bybit", market="swap"):
         h = [float(x[2]) for x in rows]
         lo = [float(x[3]) for x in rows]
         a14 = md.atr(h, lo, c, 14)
+        # 下面三个是给「信号标签」用的。它们和四维打分回答的不是同一个问题：
+        # 打分说"这个币能不能下单"，标签说"现在有没有信号"。两个都要。
+        # 金叉/死叉：排列**刚刚**翻过来才算，一直多头排列不叫金叉
+        prev_align = ma_align(c[:-CROSS_BARS]) if len(c) > p3 + CROSS_BARS else align
+        cross = 0
+        if align != 0 and prev_align != align:
+            cross = align
+        # 放量：最近一根 vs 前 20 根均量
+        vol = [float(x[5]) for x in rows]
+        vol_ratio = None
+        if len(vol) >= 21:
+            base = sum(vol[-21:-1]) / 20
+            vol_ratio = (vol[-1] / base) if base else None
+        # 贴支撑/压力：离近端摆动低/高多近（按 ATR 衡量，不用固定百分比——
+        # 不同币的波动差一个量级，固定 % 在小币上永远"贴着"）
+        near = None
+        if a14:
+            lo_n = min(lo[-SUPPORT_LOOKBACK:])
+            hi_n = max(h[-SUPPORT_LOOKBACK:])
+            if (last - lo_n) <= a14 * SUPPORT_ATR:
+                near = "support"
+            elif (hi_n - last) <= a14 * SUPPORT_ATR:
+                near = "resist"
         return {"align": align, "slope": slope, "close": last,
-                "atr_pct": (a14 / last * 100) if (a14 and last) else None}
+                "atr_pct": (a14 / last * 100) if (a14 and last) else None,
+                "cross": cross, "vol_ratio": vol_ratio, "near": near}
     except Exception as e:
         log.debug(f"扫描取 {sym} {iv} 失败: {e}")
         return None
@@ -399,7 +427,7 @@ async def _deep(sym, ticker, turnover, sem, btc_move=0.0, ex="bybit",
         "funding": funding, "oi_change": oi,
         "slip": (book or {}).get("slip"), "partial": (book or {}).get("partial"),
         "atr_pct": atr_pct, "net_rr": net_rr, "btc_conflict": btc_conflict,
-        "missing": missing,
+        "missing": missing, "tf": tf,
     }
 
 
@@ -483,5 +511,110 @@ async def scan_cmd(update, context):
         log.error(f"/scan 失败: {e}")
         await safe_reply(update.message, f"扫描失败：{str(e)[:80]}")
         return
-    await safe_reply(update.message, render(rows, source=src or "Bybit永续"),
-                     parse_mode="Markdown")
+    # 默认给**紧凑信号版**：一屏能扫完 20 个名字。
+    # 四维明细没删，收进按钮——它回答的是"能不能下单"，
+    # 而人打开扫描时第一个问题是"有哪些"。
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    kb = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📊 四维明细（趋势/流动性/拥挤/执行）",
+                             callback_data="scan:detail")],
+        [InlineKeyboardButton("🔄 重扫", callback_data="do:scan")]])
+    context.chat_data["scan_rows"] = rows
+    context.chat_data["scan_src"] = src or "Bybit永续"
+    await safe_reply(update.message,
+                     render_signals(rows, source=src or "Bybit永续"),
+                     reply_markup=kb, parse_mode="Markdown")
+
+
+# ── 信号标签：一行说清「为什么是它」──────────────────────────
+# 四维打分回答的是"能不能下单"，标签回答的是"现在有没有信号"。
+# 原来的输出把每个币铺成 6 行（四个分数 + 一段 verdict + 缺失项），
+# 一屏只看得到一个半币；而人要的是**一眼扫过 20 个名字**，
+# 想细看再点进去。所以结论层压成一行，细节收进按钮。
+STRONG_MIN = 3        # 命中几条算「强」
+
+
+def signal_of(r):
+    """→ (方向, 强度, [标签])。方向 1=买 -1=卖 0=没信号。
+
+    共振的定义是**多周期同向**：单周期看多没意义，1h 多 4h 空的币，
+    哪个方向进去都是在猜。这条和 /scan 的「分歧」判定同源。
+    """
+    tf = r.get("tf") or {}
+    if not tf:
+        return 0, 0, []
+    aligns = [v.get("align", 0) for v in tf.values()]
+    agree = sum(aligns)
+    side = 1 if agree > 0 else (-1 if agree < 0 else 0)
+    if side == 0:
+        return 0, 0, []
+
+    tags, hits = [], 0
+    if abs(agree) == len(aligns) and len(aligns) >= 2:
+        tags.append("多头共振" if side > 0 else "空头共振")
+        hits += 2                      # 多周期全同向，这条最重
+    # 金叉/死叉只看最短周期：那是"刚发生"的信号源
+    short_tf = sorted(tf.items())[0][1] if tf else {}
+    if short_tf.get("cross") == side:
+        tags.append("金叉" if side > 0 else "死叉")
+        hits += 1
+    if (short_tf.get("vol_ratio") or 0) >= VOL_HOT:
+        tags.append("放量")
+        hits += 1
+    near = short_tf.get("near")
+    if side > 0 and near == "support":
+        tags.append("贴支撑")
+        hits += 1
+    elif side < 0 and near == "resist":
+        tags.append("贴压力")
+        hits += 1
+    if not tags:
+        return 0, 0, []
+    return side, (2 if hits >= STRONG_MIN else 1), tags
+
+
+def render_signals(rows, source="Bybit永续", limit=12):
+    """紧凑输出：一行一个币，买卖分开。
+
+    保留**否决**这件事——那是这个扫描和"指标共振榜"的根本区别：
+    盘口薄、费率极端、顺势方向恰是拥挤方的币，指标再漂亮也下不进去。
+    被否的不混进名单，但要报出数量和理由，否则就成了"悄悄少给你几个"。
+    """
+    from handlers.util import escape_md
+    buys, sells, vetoed = [], [], []
+    for r in rows:
+        side, strength, tags = signal_of(r)
+        if side == 0 or not tags:
+            continue
+        if "不建议" in (r.get("verdict") or ""):
+            vetoed.append(r)
+            continue
+        item = (r, strength, tags)
+        (buys if side > 0 else sells).append(item)
+    for lst in (buys, sells):
+        lst.sort(key=lambda x: (-x[1], -x[0]["total"]))
+
+    def block(items):
+        out = []
+        for r, strength, tags in items[:limit]:
+            short = r["symbol"].replace("USDT", "")
+            out.append(f"{short:<9}{md.f(r['price']):>12}   "
+                       f"{'强' if strength == 2 else '中'}·{'+'.join(tags)}")
+        return "```\n" + "\n".join(out) + "\n```"
+
+    lines = [f"🔍 *信号扫描*　{escape_md(source)}",
+             f"粗筛成交额≥{MIN_TURNOVER/1e6:.0f}M，细算按成交额排的前 {len(rows)} 个"]
+    if buys:
+        lines += [f"🟢 *买入 ({len(buys)})*", block(buys)]
+    if sells:
+        lines += [f"🔴 *卖出 ({len(sells)})*", block(sells)]
+    if not buys and not sells:
+        lines.append("这一轮**没有共振信号**——多周期打架的时候，"
+                     "哪个方向进去都是在猜。没有信号本身就是信号。")
+    if vetoed:
+        why = "、".join(sorted({v["verdict"].split("（")[0] for v in vetoed})[:3])
+        lines.append(f"⚠️ 另有 {len(vetoed)} 个指标漂亮但**下不进去**（{why}），已剔除")
+    lines.append("共振=多周期均线同向｜强=命中3条以上")
+    lines.append(f"只看了成交额前 {len(rows)} 个——排在后面的币即使有信号也扫不到")
+    lines.append("⚠️ 仅供参考，不构成投资建议")
+    return "\n".join(lines)

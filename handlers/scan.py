@@ -39,6 +39,10 @@ MIN_NET_RR = 2.0
 CROSS_BARS = 5            # 均线排列在最近几根内翻过来才算金叉/死叉
 SUPPORT_LOOKBACK = 40     # 找近端支撑/压力看多少根
 SUPPORT_ATR = 0.8         # 距支撑不到 0.8×ATR 才算"贴着"（按波动而不是固定%）
+# 逆方向那个（多头的上方压力/空头的下方支撑）要**严得多**：
+# 上涨趋势里价格本来就贴着近期高点，用同一个阈值的话 10 个信号里 6 个都挂这条，
+# 不区分就是噪音，而噪音会让人连真正该看的警示一起忽略。
+RISK_ATR = 0.25
 VOL_HOT = 1.8             # 放量倍数门槛
 BTC_ALIGN_PCT = 1.5            # BTC 15m 动这么多以上时，反向的山寨机会要打折
 
@@ -263,15 +267,18 @@ async def _tf_snapshot(sym, iv, limit=120, ex="bybit", market="swap"):
         cross = 0
         if align != 0 and prev_align != align:
             cross = align
-        # 放量：最近一根 vs 前 20 根均量
+        # 放量：**已收盘的那根** vs 它之前 20 根的均量。
+        # 最后一根还在走，量只累积了一部分——拿它去比必然偏低。
+        # 实测：4h 的比值 1.1~2.4，1h 0.28~1.37，15m 只有 0.13~0.67，
+        # 越短的周期被压得越狠，等于「放量」在短周期上永远不会触发。
         vol = [float(x[5]) for x in rows]
         vol_ratio = None
-        if len(vol) >= 21:
-            base = sum(vol[-21:-1]) / 20
-            vol_ratio = (vol[-1] / base) if base else None
+        if len(vol) >= 22:
+            base = sum(vol[-22:-2]) / 20
+            vol_ratio = (vol[-2] / base) if base else None
         # 贴支撑/压力：离近端摆动低/高多近（按 ATR 衡量，不用固定百分比——
         # 不同币的波动差一个量级，固定 % 在小币上永远"贴着"）
-        near = None
+        near = near_tight = None
         if a14:
             lo_n = min(lo[-SUPPORT_LOOKBACK:])
             hi_n = max(h[-SUPPORT_LOOKBACK:])
@@ -279,9 +286,15 @@ async def _tf_snapshot(sym, iv, limit=120, ex="bybit", market="swap"):
                 near = "support"
             elif (hi_n - last) <= a14 * SUPPORT_ATR:
                 near = "resist"
+            # 逆方向的风险提示用更严的尺子（RISK_ATR），否则趋势币个个都挂
+            if (last - lo_n) <= a14 * RISK_ATR:
+                near_tight = "support"
+            elif (hi_n - last) <= a14 * RISK_ATR:
+                near_tight = "resist"
         return {"align": align, "slope": slope, "close": last,
                 "atr_pct": (a14 / last * 100) if (a14 and last) else None,
-                "cross": cross, "vol_ratio": vol_ratio, "near": near}
+                "cross": cross, "vol_ratio": vol_ratio, "near": near,
+                "near_tight": near_tight}
     except Exception as e:
         log.debug(f"扫描取 {sym} {iv} 失败: {e}")
         return None
@@ -553,23 +566,36 @@ def signal_of(r):
     if abs(agree) == len(aligns) and len(aligns) >= 2:
         tags.append("多头共振" if side > 0 else "空头共振")
         hits += 2                      # 多周期全同向，这条最重
-    # 金叉/死叉只看最短周期：那是"刚发生"的信号源
-    short_tf = sorted(tf.items())[0][1] if tf else {}
-    if short_tf.get("cross") == side:
+    # 金叉/死叉、放量都**看所有周期**，不是只看最短的那个。
+    # 只看最短周期时踩过：XLM 的 4h 和 1h 双双金叉，因为 15m 没交叉就整个丢了——
+    # 而大周期的金叉本来比小周期更有分量。
+    vals = list(tf.values())
+    if any(v.get("cross") == side for v in vals):
         tags.append("金叉" if side > 0 else "死叉")
         hits += 1
-    if (short_tf.get("vol_ratio") or 0) >= VOL_HOT:
+    if any((v.get("vol_ratio") or 0) >= VOL_HOT for v in vals):
         tags.append("放量")
         hits += 1
-    near = short_tf.get("near")
-    if side > 0 and near == "support":
-        tags.append("贴支撑")
-        hits += 1
-    elif side < 0 and near == "resist":
-        tags.append("贴压力")
-        hits += 1
-    if not tags:
-        return 0, 0, []
+
+    # 位置：顺着方向的算加分，逆着方向的是**风险，要说出来**。
+    # 原来只挑加分的那一半，逆的直接丢掉——多头正贴着压力位却什么都不提，
+    # 恰恰是最容易让人追在高点的那种沉默。
+    nears = {v.get("near") for v in vals}
+    risks = {v.get("near_tight") for v in vals}
+    if side > 0:
+        if "support" in nears:
+            tags.append("贴支撑")
+            hits += 1
+        elif "resist" in risks:          # 真顶在那儿才提，见 RISK_ATR
+            tags.append("⚠️上方有压力")
+    else:
+        if "resist" in nears:
+            tags.append("贴压力")
+            hits += 1
+        elif "support" in risks:
+            tags.append("⚠️下方有支撑")
+    if not [t for t in tags if not t.startswith("⚠️")]:
+        return 0, 0, []                # 只剩风险标签，不算信号
     return side, (2 if hits >= STRONG_MIN else 1), tags
 
 
@@ -612,7 +638,13 @@ def render_signals(rows, source="Bybit永续", limit=12):
         lines.append("这一轮**没有共振信号**——多周期打架的时候，"
                      "哪个方向进去都是在猜。没有信号本身就是信号。")
     if vetoed:
-        why = "、".join(sorted({v["verdict"].split("（")[0] for v in vetoed})[:3])
+        # verdict 形如「❌ 不建议（盘口太薄）」——要的是括号里那半句，
+        # 只显示"❌ 不建议"等于没说理由
+        reasons = set()
+        for v in vetoed:
+            txt = v.get("verdict") or ""
+            reasons.add(txt.split("（")[1].rstrip("）") if "（" in txt else txt)
+        why = "、".join(sorted(reasons)[:3])
         lines.append(f"⚠️ 另有 {len(vetoed)} 个指标漂亮但**下不进去**（{why}），已剔除")
     lines.append("共振=多周期均线同向｜强=命中3条以上")
     lines.append(f"只看了成交额前 {len(rows)} 个——排在后面的币即使有信号也扫不到")

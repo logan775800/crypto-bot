@@ -14,12 +14,13 @@ from handlers import scan as S
 
 
 def _row(symbol="BTCUSDT", aligns=(1, 1, 1), cross=0, vol=1.0, near=None,
-         verdict="可以做", total=70, price=100.0):
+         verdict="可以做", total=70, price=100.0, near_tight=None):
     tf = {}
     for i, a in enumerate(aligns):
         tf[f"{i+1}h"] = {"align": a, "cross": cross if i == 0 else 0,
                          "vol_ratio": vol if i == 0 else 1.0,
-                         "near": near if i == 0 else None}
+                         "near": near if i == 0 else None,
+                         "near_tight": near_tight if i == 0 else None}
     return {"symbol": symbol, "price": price, "chg": 1.0, "total": total,
             "verdict": verdict, "tf": tf, "missing": []}
 
@@ -127,3 +128,74 @@ def test_coverage_limit_is_disclosed():
     不说出来的话，这张名单看起来像"全市场就这几个"。"""
     out = S.render_signals([_row()])
     assert "只看了" in out and "扫不到" in out
+
+
+# ── 三个真机 bug（2026-08-20 他一眼看出"不太对劲"）────────────
+def test_volume_uses_the_closed_bar_not_the_running_one():
+    """最后一根还在走，量只累积了一部分。拿它比均量必然偏低——
+    实测 15m 的比值全在 0.13~0.67，「放量」这标签在短周期上永远不触发。"""
+    import inspect
+    src = inspect.getsource(S._tf_snapshot)
+    assert "vol[-2]" in src, "要用已收盘的那根"
+    assert "vol[-1] /" not in src
+
+
+def test_cross_is_checked_on_every_timeframe():
+    """真机：XLM 的 4h 和 1h 双双金叉，因为 15m 没交叉就整个丢了。
+    大周期的金叉本来比小周期更有分量。"""
+    r = _row(aligns=(1, 1, 1))
+    # 只让最长的那个周期金叉（构造里 index 0 才是 cross，所以手工改）
+    keys = list(r["tf"])
+    for k in keys:
+        r["tf"][k]["cross"] = 0
+    r["tf"][keys[-1]]["cross"] = 1
+    _s, _st, tags = S.signal_of(r)
+    assert "金叉" in tags
+
+
+def test_volume_is_checked_on_every_timeframe():
+    r = _row(aligns=(1, 1, 1))
+    keys = list(r["tf"])
+    for k in keys:
+        r["tf"][k]["vol_ratio"] = 1.0
+    r["tf"][keys[-1]]["vol_ratio"] = S.VOL_HOT + 0.5
+    assert "放量" in S.signal_of(r)[2]
+
+
+def test_a_long_sitting_under_resistance_is_flagged_not_dropped():
+    """真机：XRP/XLM/ENA 都贴着压力位却在做多名单里，而这条被默默丢掉了。
+    多头正贴压力却什么都不提，正是最容易让人追在高点的那种沉默。"""
+    _s, _st, tags = S.signal_of(
+        _row(aligns=(1, 1, 1), near="resist", near_tight="resist"))
+    assert any("上方有压力" in t for t in tags)
+
+
+def test_a_short_sitting_above_support_is_flagged():
+    _s, _st, tags = S.signal_of(
+        _row(aligns=(-1, -1, -1), near="support", near_tight="support"))
+    assert any("下方有支撑" in t for t in tags)
+
+
+def test_risk_tag_alone_is_not_a_signal():
+    """只剩一个风险标签，不该被当成"有信号"塞进名单。"""
+    r = _row(aligns=(1, 1, 0), near="resist", near_tight="resist")
+    assert S.signal_of(r)[0] == 0
+
+
+def test_risk_tag_needs_a_much_tighter_distance():
+    """上涨趋势里价格本来就贴着近期高点——用同一个阈值的话 10 个信号 6 个都挂，
+    不区分就是噪音，而噪音会让人连真正该看的警示一起忽略。"""
+    loose = S.signal_of(_row(aligns=(1, 1, 1), near="resist"))[2]
+    assert not any("上方有压力" in t for t in loose), "只是靠近不该报警"
+    tight = S.signal_of(_row(aligns=(1, 1, 1), near="resist",
+                             near_tight="resist"))[2]
+    assert any("上方有压力" in t for t in tight)
+    assert S.RISK_ATR < S.SUPPORT_ATR
+
+
+def test_veto_reason_is_the_actual_reason():
+    """verdict 是「❌ 不建议（盘口太薄）」——要括号里那半句。
+    只显示"❌ 不建议"等于没说理由。"""
+    bad = _row("THINUSDT", aligns=(1, 1, 1), verdict="❌ 不建议（盘口太薄）")
+    out = S.render_signals([_row("OKUSDT", aligns=(1, 1, 1)), bad])
+    assert "盘口太薄" in out

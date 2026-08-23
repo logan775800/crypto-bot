@@ -747,6 +747,11 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("📊 市场看板（一屏总览）",
                                       callback_data="dash_refresh")],
+                # 多日涨跌榜提到这一层：原来埋在「查币价/涨跌榜」里要点三下才够得着，
+                # 他连按钮做没做都没看见。榜单是进「行情」最常想看的东西，
+                # 不该比查单个币还深
+                [InlineKeyboardButton("📅 3日涨跌榜", callback_data="dr:w:3:all:all:hot"),
+                 InlineKeyboardButton("📅 7日涨跌榜", callback_data="dr:w:7:all:all:hot")],
                 [InlineKeyboardButton("💰 查币价/涨跌榜", callback_data="cat_price"),
                  InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news")],
                 [InlineKeyboardButton("📡 换数据源（用哪家的价）",

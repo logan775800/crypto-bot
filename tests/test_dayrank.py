@@ -371,6 +371,18 @@ def test_menu_entry_uses_the_same_shape():
     assert "dr:w:3:all:all:hot" in src and "dr:w:7:all:all:hot" in src
 
 
+def test_entry_is_two_taps_from_the_home_page():
+    """埋三层等于没有入口：他连按钮做没做都没看见。
+    /menu → 📊 行情 → 📅 3日涨跌榜，两下够得着。"""
+    import inspect
+    from handlers import menu
+    src = inspect.getsource(menu._dispatch)
+    seg = src.split('elif d == "cat_market":')[1].split("elif d ==")[0]
+    assert "dr:w:3:all:all:hot" in seg, "行情面板里应该直接有 3 日榜"
+    assert "cat_market" in [b.callback_data
+                            for r in menu.main_menu_kb().inline_keyboard for b in r]
+
+
 def test_keyboard_offers_every_venue_and_market():
     """他要的就是"币安 bybit okx 都要、永续和现货都要"，
     这几个入口一个都不能少。"""

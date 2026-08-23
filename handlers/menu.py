@@ -752,6 +752,7 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 # 不该比查单个币还深
                 [InlineKeyboardButton("📅 3日涨跌榜", callback_data="dr:w:3:all:all:hot"),
                  InlineKeyboardButton("📅 7日涨跌榜", callback_data="dr:w:7:all:all:hot")],
+                [InlineKeyboardButton("⚖️ 多空比极值榜", callback_data="ls:v:binance")],
                 [InlineKeyboardButton("💰 查币价/涨跌榜", callback_data="cat_price"),
                  InlineKeyboardButton("📰 资讯快讯", callback_data="cat_news")],
                 [InlineKeyboardButton("📡 换数据源（用哪家的价）",
@@ -1809,6 +1810,13 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb, parse_mode="Markdown")
 
     # ---- 虚拟交易台（全按钮，不用记命令）----
+    elif d.startswith("ls:"):
+        # 多空比极值榜：ls:<v|r|i>:<交易所>　v=换所(读缓存) r=重扫 i=看口径
+        from handlers import lsratio as _ls
+        bits = d.split(":")
+        await _ls.from_btn(query, context, bits[2],
+                           force=(bits[1] == "r"), detail=(bits[1] == "i"))
+
     elif d.startswith("dr:"):
         # 多日涨跌榜：dr:<w|r|i>:<天数>:<交易所>:<市场>:<hot|full>
         # w=换窗口/换所/换市场/换范围（读缓存）　r=强制重扫　i=看口径

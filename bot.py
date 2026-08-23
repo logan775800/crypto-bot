@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -107,6 +107,7 @@ BOT_COMMANDS = [
     BotCommand("price", "💰 查币价"),
     BotCommand("top", "🚀 涨跌榜(24h)"),
     BotCommand("rank", "📅 多日涨跌榜(3日/7日累计)"),
+    BotCommand("lsr", "⚖️ 多空比极值榜(最看多/最看空各3个)"),
     BotCommand("movers", "📸 异动快照"),
     BotCommand("weak", "😴 弱势/横盘扫描"),
     BotCommand("momentum", "📈 动量轮动回测"),
@@ -449,6 +450,8 @@ def main():
     app.add_handler(CommandHandler("top", price.top))
     # 多日涨跌榜：/rank 3、/rank 7。`/top 3` 也会转过来（他就是这么打的）
     app.add_handler(CommandHandler("rank", dayrank.rank_cmd))
+    # 多空比极值榜：全市场最一边倒的各 3 个（散户情绪，常作反向参考）
+    app.add_handler(CommandHandler("lsr", lsratio.lsr_cmd))
     app.add_handler(CommandHandler("compare", price.compare))
     app.add_handler(CommandHandler("info", price.info))
     app.add_handler(CommandHandler("analyze", analysis.analyze))

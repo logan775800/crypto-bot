@@ -1848,6 +1848,8 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await _vp.do_close(query, bits[2], float(bits[3]))
             elif act == "sl":
                 await _vp.ask_sl(query, context, bits[2])
+            elif act == "ssl":
+                await _vp.ask_spot_sl(query, context, bits[2])
             elif act == "ord":
                 await _vp.orders_panel(query)
             elif act == "cx":

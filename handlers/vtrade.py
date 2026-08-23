@@ -683,7 +683,12 @@ async def _auto_close(a, sym, pos, price, kind):
 
 
 async def vtpsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/vtpsl BTC tp=70000 sl=60000 —— 给虚拟仓挂止盈止损（0 = 清除）。"""
+    """/vtpsl BTC tp=70000 sl=60000 —— 给虚拟仓挂止盈止损（0 = 清除）。
+
+    合约和现货共用这一个命令：同一件事不该有两个名字，他记不住第二个。
+    默认给**合约仓**（那边有爆仓风险，紧迫性更高）；没有合约仓就落到现货持币上。
+    两边都有时加一个 `现货` 指名道姓。
+    """
     if is_group(update):
         await safe_reply(update.message, "🔒 请私聊使用")
         return
@@ -693,17 +698,55 @@ async def vtpsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not args:
         await safe_reply(update.message,
             "🎯 *虚拟止盈止损*\n\n`/vtpsl BTC tp=70000 sl=60000`\n"
-            "　只设一个也行；填 `0` 清除\n\n"
+            "　只设一个也行；填 `0` 清除\n"
+            "　合约仓和现货持币都能设；两边都有时加「现货」指定：\n"
+            "　`/vtpsl BTC 现货 sl=60000`\n\n"
             "后台每 60 秒检查一次，触及就自动平仓并通知——"
-            "和实盘的条件单同构，练出来的体感能迁移。", parse_mode="Markdown")
+            "和实盘的条件单同构，练出来的体感能迁移。\n"
+            "现货触发时会**全卖**，并撤掉这个币挂着的限价卖单"
+            "（否则被锁住的币出不来，止损就成了半个止损）。",
+            parse_mode="Markdown")
         return
+    from handlers import vspot as S
     sym = args[0].upper()
+    rest, force_spot = [], False
+    for x in args[1:]:
+        if str(x).lower() in ("spot", "现货"):
+            force_spot = True
+        else:
+            rest.append(x)
     pos = a.get("positions", {}).get(sym)
+    hold = S.holding(a, sym)
+
+    if force_spot or (not pos and hold):
+        if not hold:
+            await safe_reply(update.message, f"没有 {sym} 的现货持币")
+            return
+        pairs = S.parse_tpsl(rest)
+        if not pairs:
+            await safe_reply(update.message,
+                "没看懂参数，用法 `/vtpsl BTC 现货 tp=70000 sl=60000`",
+                parse_mode="Markdown")
+            return
+        r = await get_price(sym)
+        if not r:
+            await safe_reply(update.message, "取现价失败，稍后再试（现价是校验方向用的）")
+            return
+        changed, err = S.apply_tpsl(hold, r["price"], pairs)
+        if err:
+            await safe_reply(update.message, err, parse_mode="Markdown")
+            return
+        save_data()
+        await safe_reply(update.message,
+            f"✅ {sym} 现货已设：{'、'.join(changed)}（现价 ${fmt(r['price'])}）\n"
+            f"后台每 60 秒检查，触及自动全卖")
+        return
+
     if not pos:
         await safe_reply(update.message, f"没有 {sym} 的虚拟持仓")
         return
     changed = []
-    for kv in args[1:]:
+    for kv in rest:
         if "=" not in kv:
             continue
         k, v = kv.split("=", 1)
@@ -739,8 +782,13 @@ async def vtpsl(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          parse_mode="Markdown")
         return
     save_data()
+    # 两边都有仓时说清这次动的是哪个，否则他会以为现货也一起设了
+    also = (f"\n（这是**合约仓**；你的 {sym} 现货持币要单独设："
+            f"`/vtpsl {sym} 现货 sl=…`）" if hold else "")
     await safe_reply(update.message,
-                     f"✅ {sym} 已设：{'、'.join(changed)}\n后台每 60 秒检查，触及自动平仓")
+                     f"✅ {sym} 已设：{'、'.join(changed)}\n"
+                     f"后台每 60 秒检查，触及自动平仓{also}",
+                     parse_mode="Markdown")
 
 
 async def check_liquidations(context: ContextTypes.DEFAULT_TYPE):
@@ -753,10 +801,15 @@ async def check_liquidations(context: ContextTypes.DEFAULT_TYPE):
     accts = data.get("vtrade", {})
     if not accts:
         return
-    # 汇总所有用户持仓的币，一次批量查价
+    # 汇总所有用户持仓的币，一次批量查价。
+    # ⚠️ 现货持币也要算进来：只按合约持仓收集的话，**只玩现货的人这个任务
+    # 一次都不会跑**（下面 `if not syms: return` 直接退出），
+    # 现货止盈止损就永远不触发——而且它不报错，是纯静默失效。
     syms = set()
     for a in accts.values():
         syms.update(a.get("positions", {}).keys())
+        syms.update(s for s, h in (a.get("spot") or {}).items()
+                    if h.get("tp") or h.get("sl"))
     if not syms:
         return
     try:
@@ -764,6 +817,13 @@ async def check_liquidations(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logging.error(f"爆仓监控查价出错: {e}")
         return
+
+    # 现货止盈损：和爆仓/挂单共用上面这批价格
+    try:
+        from handlers import vspot as S
+        await S.check_tpsl(context, prices)
+    except Exception as e:
+        logging.error(f"现货止盈损检查出错: {e}")
 
     changed = False
     for uid, a in accts.items():

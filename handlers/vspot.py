@@ -2,6 +2,7 @@
 
 和永续那半边最本质的区别，也是练手时最该建立的直觉：
   • **现货不会爆仓**。买了就是买了，跌 90% 还在手上；永续跌到爆仓价就没了。
+    ——但"不会被强制带走"不等于"不用设止损"，所以这里一样有止盈止损。
   • **现货没有资金费**，可以一直拿；永续拿着要扣钱。
   • 现货按「花多少 U 买」，永续按「多少保证金 × 多少倍」——
     同样一句"我看多 BTC"，两边要填的东西完全不同。
@@ -17,7 +18,8 @@ from telegram.ext import ContextTypes
 
 from storage import data, save_data
 from handlers.util import safe_reply
-from handlers.vtrade import _acct, fmt, get_price, get_prices, is_group, _tradable
+from handlers.vtrade import (_acct, fmt, get_price, get_prices, is_group,
+                             _tradable, _check_tpsl)
 from handlers import vorders as VO
 
 log = logging.getLogger(__name__)
@@ -51,11 +53,15 @@ def sellable(a, sym):
     return max(0.0, (h["qty"] if h else 0.0) - locked(a, sym))
 
 
-def settle(a, sym, side, price, rate, quote=None, qty=None):
+def settle(a, sym, side, price, rate, quote=None, qty=None, kind="现货卖出"):
     """现货成交结算。买：花 quote 得币；卖：出 qty 得 USDT。返回给用户看的文本。
 
     成本均价按**加权**算：分批买入后要知道自己的真实成本，
     否则"我这单是赚是亏"根本判断不了——而这是现货唯一要盯的数。
+
+    kind 只影响写进历史的 exit_kind。复盘要分得清"我自己决定卖的"和
+    "被止损带走的"——这两者混成一个标签，`/rstats` 就再也看不出
+    止损到底救了他还是害了他。
     """
     sym = sym.upper()
     book = _spot(a)
@@ -94,7 +100,7 @@ def settle(a, sym, side, price, rate, quote=None, qty=None):
         "exit": price, "margin": cost_out, "pnl": pnl,
         "roe": (pnl / cost_out * 100) if cost_out else 0.0,
         "ts": time.time(), "dur": time.time() - (h.get("ts") or time.time()),
-        "value": gross, "fee": fee, "funding": 0.0, "exit_kind": "现货卖出",
+        "value": gross, "fee": fee, "funding": 0.0, "exit_kind": kind,
     })
     save_data()
     emoji = "🟢" if pnl >= 0 else "🔴"
@@ -102,6 +108,136 @@ def settle(a, sym, side, price, rate, quote=None, qty=None):
             f"卖出 {qty:.8g} 个，到手 ${net:,.2f}（手续费 ${fee:,.2f}）\n"
             f"这笔盈亏 {pnl:+,.2f}（成本 ${cost_out:,.2f}）\n"
             f"账户可用 ${a['balance']:,.2f}")
+
+
+# ── 止盈止损 ────────────────────────────────────────────────
+# 永续早就有（/vtpsl，后台 60 秒轮询触及自动平），现货一直没有。当时的取舍是
+# "现货不会爆仓，止损的紧迫性低一档"——但那只说明**不会被强制带走**，
+# 不代表不该有计划。现货拿着不动、跌 60% 还在安慰自己"又不会爆仓"，
+# 恰恰是练手阶段最该被纠正的习惯。
+#
+# 触发后按**挂单价**成交，和 vtrade._check_tpsl / vorders 一个口径：
+# 用当前价会让模拟盘的成交价系统性地优于实盘。
+
+def apply_tpsl(h, mark, pairs):
+    """把 {"tp"/"sl": 价格} 应用到持币上。返回 (改动说明, 错误文本或 None)。
+
+    现货只有一个方向（拿着就是做多），所以约束很简单：
+    止损在现价**之下**，止盈在**之上**。
+
+    ⚠️ 这里刻意拿**现价**做判据，而不是成本均价——和永续那边
+    （`vtrade.vtpsl` 用入场价校验方向）不一样，别当成不一致给"修"回去：
+    现货拿了三个月涨了 50% 之后，把止损抬到成本价之上正是该做的动作，
+    用成本价卡会把最该设的那个止损拒掉。真正会出事的只有"挂上去立刻就触发"，
+    而那是个现价问题。
+    """
+    # 先全部校验、再全部落盘。一边改一边校验的话，
+    # 「sl=45000 tp=40000」会变成止损设上了、止盈被拒、而回执只报错——
+    # 他以为什么都没生效，其实账户已经变了。
+    if mark:
+        for k, px in pairs:
+            if px is None or px <= 0:
+                continue
+            if k == "sl" and px >= mark:
+                return [], (
+                    f"❌ 止损 ${fmt(px)} 在现价 ${fmt(mark)} 之上——"
+                    f"挂上去 60 秒内就会卖掉。现在就想卖用 `/vsell`，"
+                    f"想护住利润请填**低于**现价的数。")
+            if k == "tp" and px <= mark:
+                return [], (
+                    f"❌ 止盈 ${fmt(px)} 在现价 ${fmt(mark)} 之下——"
+                    f"挂上去 60 秒内就会卖掉。止盈要填**高于**现价的数。")
+    changed = []
+    for k, px in pairs:
+        if px is None or px <= 0:
+            if h.pop(k, None) is not None:
+                changed.append(f"清除{'止损' if k == 'sl' else '止盈'}")
+            continue
+        h[k] = px
+        changed.append(f"{'止损' if k == 'sl' else '止盈'} ${fmt(px)}")
+    return changed, None
+
+
+def parse_tpsl(args):
+    """把 ["tp=70000", "sl=60000"] 解析成 [("tp", 70000.0), ...]。看不懂的忽略。"""
+    out = []
+    for kv in args:
+        k, _, v = str(kv).partition("=")
+        k = k.strip().lower()
+        if k not in ("tp", "sl"):
+            continue
+        try:
+            out.append((k, float(v.replace(",", "").replace("$", "").strip())))
+        except ValueError:
+            continue
+    return out
+
+
+def _release_sell_orders(a, sym):
+    """撤掉该币挂着的限价**卖**单，把被锁的币放出来。返回撤掉几张。
+
+    为什么要撤：止损的意思就是"让我出来"，而挂在限价卖单里的币卖不掉。
+    不撤的话止损只能卖掉可卖的那部分，剩下的继续躺在一张远得多的卖单里——
+    这正是止损最不该有的行为。交易所的 OCO 也是这么干：一边触发，另一边撤掉。
+
+    只撤**卖单**。同币的限价买单是另一笔决定（想在更低的价接回来），
+    和"我要出来"不冲突，不替他做主。
+    """
+    doomed = [o for o in a.get("orders", [])
+              if o.get("market") == VO.SPOT and o.get("side") == "sell"
+              and o.get("sym") == sym.upper()]
+    for o in doomed:
+        VO.cancel(a, o["id"])
+    return len(doomed)
+
+
+async def check_tpsl(context, prices):
+    """后台：现货持币触及止盈止损就全卖。
+
+    由 vtrade.check_liquidations 那个 60 秒任务调用，**共用它取的那批价格**——
+    挂单、爆仓、永续止盈损、现货止盈损四件事一次取价全办了，别多打一轮接口。
+    """
+    accts = data.get("vtrade", {})
+    hit_any = False
+    for uid, a in accts.items():
+        chat_id = a.get("chat_id")
+        for sym, h in list(_spot(a).items()):
+            if not (h.get("tp") or h.get("sl")):
+                continue
+            info = (prices or {}).get(sym)
+            if not info:
+                continue
+            # 现货持币在方向上就是一张多单，判定逻辑和永续多单一模一样，
+            # 复用同一个函数——两份实现迟早会在某一版里对不上
+            fired = _check_tpsl({"side": "long", "tp": h.get("tp"), "sl": h.get("sl")},
+                                info["price"])
+            if not fired:
+                continue
+            kind, px = fired
+            freed = _release_sell_orders(a, sym)
+            qty = h["qty"]
+            if qty <= 0:
+                continue
+            try:
+                text = settle(a, sym, "sell", px, TAKER, qty=qty,
+                              kind=f"现货{kind}")
+            except Exception as e:
+                log.error(f"现货{kind}平仓失败 {uid} {sym}: {e}")
+                continue
+            hit_any = True
+            if not chat_id:
+                continue
+            note = (f"\n（同时撤掉 {freed} 张 {sym} 的限价卖单，"
+                    f"否则被锁的币出不来）" if freed else "")
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=f"🎯 *现货{kind}自动卖出*　@${fmt(px)}\n\n{text}{note}",
+                    parse_mode="Markdown")
+            except Exception as e:
+                log.error(f"现货{kind}通知失败 {chat_id}: {e}")
+    if hit_any:
+        save_data()
 
 
 # ── 命令 ────────────────────────────────────────────────────
@@ -271,7 +407,12 @@ async def render(a):
                          if h["cost"] else "")
         else:
             lines.append(f"*{sym}*　{h['qty']:.8g} 个　成本均价 ${fmt(avg)}（取价失败）")
+        # 设了却看不见等于没设——这类"状态藏起来"是最容易让人以为功能没生效的
+        if h.get("tp") or h.get("sl"):
+            lines.append(f"　🎯 止盈 {fmt(h['tp']) if h.get('tp') else '—'}"
+                         f"　止损 {fmt(h['sl']) if h.get('sl') else '—'}")
     lines += ["━━━━━━",
               f"持币现值 ${total:,.2f}　可用 ${a['balance']:,.2f}",
-              "", "买入 `/vbuy BTC 1000`｜卖出 `/vsell BTC all`"]
+              "", "买入 `/vbuy BTC 1000`｜卖出 `/vsell BTC all`",
+              "止盈损 `/vtpsl BTC tp=70000 sl=60000`（触及自动全卖）"]
     return "\n".join(x for x in lines if x)

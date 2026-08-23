@@ -89,6 +89,9 @@ async def home(query):
                 lines.append(f"　　均价 ${fmt(avg)}　现价 ${fmt(mark)}")
             else:
                 lines.append(f"　{sym}　{h['qty']:.6g} 个　均价 ${fmt(avg)}")
+            if h.get("tp") or h.get("sl"):
+                lines.append(f"　　🎯 止盈 {fmt(h['tp']) if h.get('tp') else '—'}"
+                             f"　止损 {fmt(h['sl']) if h.get('sl') else '—'}")
     if orders:
         lines.append("")
         lines.append(f"*委托单* {len(orders)} 张（点下面「委托单」管理）")
@@ -109,9 +112,12 @@ async def home(query):
             InlineKeyboardButton("改止损", callback_data=f"vg:sl:{sym}"),
         ])
     for sym in spot:
+        # 三个按钮，和上面合约那行**同一个形状**（平/全平/改止损）。
+        # 现货少一个止盈损入口的话，"练手感"就在这里断了一截
         rows.append([
             InlineKeyboardButton(f"卖50% {sym}", callback_data=f"vg:sl50:{sym}"),
             InlineKeyboardButton("全卖", callback_data=f"vg:sall:{sym}"),
+            InlineKeyboardButton("🎯止盈损", callback_data=f"vg:ssl:{sym}"),
         ])
     rows.append([InlineKeyboardButton("➕ 开合约", callback_data="vg:open"),
                  InlineKeyboardButton("🛒 买现货", callback_data="vg:buy")])
@@ -381,6 +387,56 @@ async def ask_sl(query, context, sym):
         f"🎯 *{sym} 设止盈止损*\n{cur}{liq}\n"
         f"发「`sl=58000`」设止损、「`tp=70000`」设止盈，两个可以一起发\n"
         f"填 `0` 清除\n\n取消发 /menu", parse_mode="Markdown")
+
+
+async def ask_spot_sl(query, context, sym):
+    """现货的止盈止损。和永续那屏分开是因为**判据不一样**：
+    现货没有爆仓价可参考，方向要对着现价校验（见 vspot.apply_tpsl 的注释）。"""
+    guided.arm_chat(context, "await_vssl",
+                    query.message.chat_id if query.message else 0, value=sym)
+    a = _acct(str(query.from_user.id))
+    h = S.holding(a, sym)
+    cur = ""
+    if h and (h.get("tp") or h.get("sl")):
+        cur = (f"当前 止盈 {fmt(h['tp']) if h.get('tp') else '—'}"
+               f"　止损 {fmt(h['sl']) if h.get('sl') else '—'}\n")
+    avg = f"成本均价 ${fmt(h['cost'] / h['qty'])}\n" if h and h.get("qty") else ""
+    r = await get_price(sym)
+    px = f"现价 ${fmt(r['price'])}\n" if r else ""
+    await safe_edit(query,
+        f"🎯 *{sym} 现货止盈止损*\n{avg}{px}{cur}\n"
+        f"发「`sl=58000`」设止损、「`tp=70000`」设止盈，两个可以一起发\n"
+        f"填 `0` 清除\n\n"
+        f"触及会**全卖**，并撤掉这个币挂着的限价卖单\n\n取消发 /menu",
+        parse_mode="Markdown")
+
+
+async def on_spot_sl(message, context, sym, text):
+    """收到现货的 sl=/tp= 设置。"""
+    from storage import save_data
+    guided.clear(context, "await_vssl")
+    a = _acct(str(message.from_user.id))
+    h = S.holding(a, sym)
+    if not h:
+        await message.reply_text(f"没有 {sym} 的现货持币了")
+        return
+    pairs = S.parse_tpsl(text.replace("，", " ").split())
+    if not pairs:
+        await message.reply_text("格式：`sl=58000` 或 `tp=70000`（填 0 清除）",
+                                 parse_mode="Markdown")
+        return
+    r = await get_price(sym)
+    if not r:
+        await message.reply_text("取现价失败，稍后再试（现价是校验方向用的）")
+        return
+    changed, err = S.apply_tpsl(h, r["price"], pairs)
+    if err:
+        await message.reply_text(err, parse_mode="Markdown")
+        return
+    save_data()
+    await message.reply_text(
+        f"✅ {sym} 现货已设：" + "、".join(changed) +
+        f"（现价 ${fmt(r['price'])}）\n后台每 60 秒检查，触及自动全卖")
 
 
 async def on_price(message, context, pending, text):

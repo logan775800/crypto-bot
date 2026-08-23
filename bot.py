@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -23,7 +23,9 @@ HELP_TEXT = (
     "/oc BANK 🔗 **查链上币价**（两个字母，交易所还没上的币直接查；发合约地址也行）\n"
     "/dashboard 市场看板\n"
     "/price BTC 查币价（/price BTC cny 看人民币）\n"
-    "/top 涨跌榜　/analyze BTC 技术分析\n"
+    "/top 涨跌榜(24h)　/analyze BTC 技术分析\n"
+    "/rank 3 📅 多日涨跌榜：3日/7日**累计**涨跌幅（`/top 3` 一样）\n"
+    "　└ 和 /upstreak 不同：那个要连续几天同向，这个只看累计，中间回调也算\n"
     "/ai BTC AI 解读　/news 最新新闻\n"
     "💬 *群里 @我 或回复我* 就能直接对话问问题；私聊用 `/ask 你的问题`（/resetchat 清空记忆）\n"
     "/alert 价格预警（也可在菜单里点着设）\n"
@@ -103,7 +105,8 @@ BOT_COMMANDS = [
     BotCommand("dashboard", "📊 市场看板"),
     BotCommand("summary", "📰 每日市场总结"),
     BotCommand("price", "💰 查币价"),
-    BotCommand("top", "🚀 涨跌榜"),
+    BotCommand("top", "🚀 涨跌榜(24h)"),
+    BotCommand("rank", "📅 多日涨跌榜(3日/7日累计)"),
     BotCommand("movers", "📸 异动快照"),
     BotCommand("weak", "😴 弱势/横盘扫描"),
     BotCommand("momentum", "📈 动量轮动回测"),
@@ -444,6 +447,8 @@ def main():
     # 行情
     app.add_handler(CommandHandler("price", price.price))
     app.add_handler(CommandHandler("top", price.top))
+    # 多日涨跌榜：/rank 3、/rank 7。`/top 3` 也会转过来（他就是这么打的）
+    app.add_handler(CommandHandler("rank", dayrank.rank_cmd))
     app.add_handler(CommandHandler("compare", price.compare))
     app.add_handler(CommandHandler("info", price.info))
     app.add_handler(CommandHandler("analyze", analysis.analyze))

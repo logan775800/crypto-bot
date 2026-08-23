@@ -28,6 +28,7 @@ MODULE_CN = {
     "handlers.detail": "💰 行情查询",
     "handlers.compare": "💰 行情查询",
     "handlers.stock": "💰 行情查询",
+    "handlers.dayrank": "💰 行情查询",     # /rank 多日涨跌榜
     "handlers.analysis": "📈 分析与回测",
     "handlers.indicator_alert": "📈 分析与回测",
     "handlers.regime": "📈 分析与回测",

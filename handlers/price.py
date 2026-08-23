@@ -50,6 +50,15 @@ async def price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 功能2：/top 涨跌榜
 async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    # `/top 3` = 3 日涨跌榜。他要的时候就是这么打的，与其让他记第二个命令，
+    # 不如让 /top 带上天数就转过去。
+    # ⚠️ 两者**不是同一个盘子**：不带参数走 CoinGecko 全市场现货 24h，
+    # 带天数走交易所直连的永续。所以两张卡片都写明了自己的覆盖范围——
+    # 不写的话就是又一处"两个都对但来自不同源"（见价格源漂移那笔账）。
+    if context.args:
+        from handlers import dayrank
+        await dayrank.rank_cmd(update, context)
+        return
     await update.effective_chat.send_action("typing")
     try:
         gainers, losers = await get_top_movers(15)
@@ -63,6 +72,9 @@ async def top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("\n📉 24h 跌幅榜 TOP15\n")
     for i, c in enumerate(losers, 1):
         lines.append(f"{i}. {c['symbol']}: ${c['price']:,.4g} ({c['change']:.2f}%)")
+    # 覆盖范围写在脸上：这张榜是 CoinGecko 全市场现货，和交易所永续那张不是一个盘子
+    lines.append("\n口径：CoinGecko 全市场现货 24h")
+    lines.append("多日榜发 /top 3 或 /top 7（那张是交易所永续）")
     await update.message.reply_text("\n".join(lines))
 
 # 功能3：/compare BTC ETH SOL 多币对比

@@ -48,6 +48,13 @@ DEFAULT_WIN = 3
 WIN_BUTTONS = (3, 7, 14)
 MIN_TURNOVER_M = 5        # 百万美元：滤掉僵尸盘，否则榜首全是没人交易的币
 MAX_SCAN = 300            # 去重之后按成交额取前 N 个拉日线
+# 🔥 热榜：只在成交额前 N 名的币里排。
+# 群里的原话是「最好只看热榜的」——全量榜一屏全是没听过的代号（AGI、USELESS…），
+# 涨得再多也不知道该不该碰。**这是个纯显示过滤**，用的还是那批缓存数据，
+# 点一下就切，不重扫。
+# 50 是实测出来的下限：前 30 名（门槛 1 亿）时**跌幅榜整个是空的**，
+# 一张没有跌幅榜的涨跌榜没有意义；前 50（门槛 4800 万）才有 5 个。
+HOT_N = 50
 CONCURRENCY = 12
 TOP_SHOW = 8             # 每组显示几个。卡片一长，底下的按钮就被挤出屏幕
 CACHE_TTL = 300           # 缓存 5 分钟：换窗口/换所/换市场的按钮走这里，不重扫
@@ -325,14 +332,18 @@ def pct(row, win):
     return (cl[0] - base) / base * 100
 
 
-def ranked(rows, win):
+def ranked(rows, win, hot=False):
     """→ (涨幅榜, 跌幅榜, 统计)。**按正负切开**，不是各取头尾。
 
     一开始写成"前 N + 后 N"，币少的时候同一个币会同时出现在涨幅榜和跌幅榜里
     （-30% 的币堂而皇之列在涨幅榜第三名）。按正负切才是这张榜真正的定义。
+
+    hot=True 只在成交额前 HOT_N 名里排。**在这里过滤而不是在扫描里**，
+    是因为热榜和全量用的是同一批数据——切换只该是一次重排，不该是一次重扫。
     """
+    pool = sorted(rows, key=lambda r: -r.get("turnover", 0))[:HOT_N] if hot else rows
     scored = []
-    for r in rows:
+    for r in pool:
         p = pct(r, win)
         if p is not None:
             scored.append((p, r))
@@ -362,16 +373,17 @@ def _one(item):
     return f"{r['sym']} {p:+.1f}%"
 
 
-def build_text(rows, win, venue, market, stats, age=0):
+def build_text(rows, win, venue, market, stats, age=0, hot=True):
     """短卡片。**长度本身是个功能**：v1.36.0 那版一屏 27 行，
     底下的按钮被挤出屏幕，他直接问「有做功能按钮吗」——
     Telegram 的按钮永远在消息末尾，消息太长就等于没有按钮。
     详细口径收进【ℹ️ 口径】按钮。"""
     stats = stats or {}
-    up, down, st = ranked(rows, win)
+    up, down, st = ranked(rows, win, hot)
     show_src = venue == "all" or market == "all"
     # 每一行都要挣它的位置：分隔线好看，但它换来的是按钮往下沉一行
-    lines = [f"📅 *{win} 日涨跌榜* · {V_LABEL[venue]}{M_LABEL[market]}"]
+    scope = f"🔥热榜前{HOT_N}" if hot else "全部"
+    lines = [f"📅 *{win} 日涨跌榜* · {scope} · {V_LABEL[venue]}{M_LABEL[market]}"]
 
     if not st["n"]:
         lines.append(f"没有一个币凑得齐 {win} 根日线（扫了 {stats.get('ok', 0)} 个）。"
@@ -396,8 +408,10 @@ def build_text(rows, win, venue, market, stats, age=0):
             lines.append(f"　涨得最少：{_one(st['least_good'])}")
 
     # 一行说清覆盖范围（不写的话这张榜看起来像"全市场就这些"），细账收按钮
-    lines.append(f"{V_LABEL[venue]}{M_LABEL[market]}·{st['n']} 个币｜每组前 "
-                 f"{TOP_SHOW}｜口径与剔除点 ℹ️　👇 下面可换窗口/交易所/现货")
+    pool_txt = (f"成交额前 {HOT_N} 名里排的（共 {len(rows)} 个币，点【全部】看全量）"
+                if hot else f"{len(rows)} 个币全排")
+    lines.append(f"{V_LABEL[venue]}{M_LABEL[market]}·{pool_txt}｜每组前 "
+                 f"{TOP_SHOW}｜口径点 ℹ️　👇 可换窗口/交易所/现货")
     if stats.get("dead"):
         lines.append(f"⚠️ 取不到：{'、'.join(stats['dead'])}（这部分没进榜）")
     # 丢了数据必须说。不说的话这张榜看起来一样完整，而它少了一截
@@ -449,29 +463,47 @@ def build_detail(rows, win, venue, market, stats):
     return "\n".join(lines)
 
 
-def kb(win, venue, market):
-    def cb(w=None, v=None, m=None):
-        return f"dr:w:{w or win}:{v or venue}:{m or market}"
+def _h(hot):
+    return "hot" if hot else "full"
+
+
+def kb(win, venue, market, hot=True):
+    def cb(w=None, v=None, m=None, h=None):
+        return (f"dr:w:{w or win}:{v or venue}:{m or market}:"
+                f"{_h(hot if h is None else h)}")
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{'✅' if w == win else ''}{w}日", callback_data=cb(w=w))
          for w in WIN_BUTTONS],
+        [InlineKeyboardButton(f"{'✅' if hot else ''}🔥 热榜前{HOT_N}",
+                              callback_data=cb(h=True)),
+         InlineKeyboardButton(f"{'✅' if not hot else ''}全部币",
+                              callback_data=cb(h=False))],
         [InlineKeyboardButton(f"{'✅' if v == venue else ''}{V_LABEL[v]}",
                               callback_data=cb(v=v))
          for v in ("all", "bybit", "binance", "okx")],
         [InlineKeyboardButton(f"{'✅' if m == market else ''}{M_LABEL[m]}",
                               callback_data=cb(m=m))
          for m in ("all", "perp", "spot")],
-        [InlineKeyboardButton("ℹ️ 口径", callback_data=f"dr:i:{win}:{venue}:{market}"),
-         InlineKeyboardButton("🔄 重扫", callback_data=f"dr:r:{win}:{venue}:{market}"),
+        [InlineKeyboardButton(
+            "ℹ️ 口径", callback_data=f"dr:i:{win}:{venue}:{market}:{_h(hot)}"),
+         InlineKeyboardButton(
+            "🔄 重扫", callback_data=f"dr:r:{win}:{venue}:{market}:{_h(hot)}"),
          InlineKeyboardButton("🏠 主菜单", callback_data="menu_main")],
     ])
 
 
 # ── 入口 ────────────────────────────────────────────────────
 def parse_args(args):
-    win, venue, market = DEFAULT_WIN, "all", "all"
+    # 默认只看热榜——群里的原话是「最好只看热榜的」。要全量点【全部币】或加「全部」
+    win, venue, market, hot = DEFAULT_WIN, "all", "all", True
     for a in args or []:
         al = str(a).lower()
+        if al in ("全部", "全量", "all币", "full"):
+            hot = False
+            continue
+        if al in ("热榜", "热门", "hot"):
+            hot = True
+            continue
         if al in VENUES or al == "all":
             venue = al
             continue
@@ -489,18 +521,18 @@ def parse_args(args):
             win = int(al.rstrip("日天dD"))
         except ValueError:
             pass
-    return max(1, min(win, MAX_WIN)), venue, market
+    return max(1, min(win, MAX_WIN)), venue, market, hot
 
 
 async def rank_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/rank [天数] [bybit|binance|okx] [现货|永续] —— N 日累计涨跌幅排行。"""
-    win, venue, market = parse_args(context.args)
+    win, venue, market, hot = parse_args(context.args)
     uid = update.effective_user.id
     c = _cache.get((venue, market))
     if c and time.time() - c["ts"] < CACHE_TTL:
         rows, stats, age = await cached_scan(venue, market)
-        await safe_reply(update.message, build_text(rows, win, venue, market, stats, age),
-                         reply_markup=kb(win, venue, market), parse_mode="Markdown")
+        await safe_reply(update.message, build_text(rows, win, venue, market, stats, age, hot),
+                         reply_markup=kb(win, venue, market, hot), parse_mode="Markdown")
         return
     async with busy.guard(uid, "dayrank") as ok:
         if not ok:
@@ -515,11 +547,11 @@ async def rank_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.error(f"多日涨跌榜扫描出错: {e}")
             await safe_reply(update.message, f"扫描失败，稍后再试：{str(e)[:80]}")
             return
-    await safe_reply(update.message, build_text(rows, win, venue, market, stats, age),
-                     reply_markup=kb(win, venue, market), parse_mode="Markdown")
+    await safe_reply(update.message, build_text(rows, win, venue, market, stats, age, hot),
+                     reply_markup=kb(win, venue, market, hot), parse_mode="Markdown")
 
 
-async def from_btn(query, context, win, venue, market, force=False, detail=False):
+async def from_btn(query, context, win, venue, market, hot=True, force=False, detail=False):
     """按钮：换窗口/换所/换市场读缓存，重扫和看口径各走各的。"""
     uid = query.from_user.id
     c = _cache.get((venue, market))
@@ -528,7 +560,7 @@ async def from_btn(query, context, win, venue, market, force=False, detail=False
         rows, stats, _age = await cached_scan(venue, market)
         await safe_edit(query, build_detail(rows, win, venue, market, stats),
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                            "⬅️ 回榜单", callback_data=f"dr:w:{win}:{venue}:{market}")]]),
+                            "⬅️ 回榜单", callback_data=f"dr:w:{win}:{venue}:{market}:{_h(hot)}")]]),
                         parse_mode="Markdown")
         return
     if force or not fresh:
@@ -544,13 +576,13 @@ async def from_btn(query, context, win, venue, market, force=False, detail=False
             except Exception as e:
                 log.error(f"多日涨跌榜按钮扫描出错: {e}")
                 await safe_edit(query, f"扫描失败：{str(e)[:80]}",
-                                reply_markup=kb(win, venue, market))
+                                reply_markup=kb(win, venue, market, hot))
                 return
     else:
         rows, stats, age = await cached_scan(venue, market)
     body = (build_detail(rows, win, venue, market, stats) if detail
-            else build_text(rows, win, venue, market, stats, age))
+            else build_text(rows, win, venue, market, stats, age, hot))
     mk = (InlineKeyboardMarkup([[InlineKeyboardButton(
-        "⬅️ 回榜单", callback_data=f"dr:w:{win}:{venue}:{market}")]]) if detail
-        else kb(win, venue, market))
+        "⬅️ 回榜单", callback_data=f"dr:w:{win}:{venue}:{market}:{_h(hot)}")]]) if detail
+        else kb(win, venue, market, hot))
     await safe_edit(query, body, reply_markup=mk, parse_mode="Markdown")

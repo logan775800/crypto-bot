@@ -78,6 +78,48 @@ def test_all_green_market_still_prints_the_losers_group():
     assert "跌幅榜*（0）" in txt and "没有一个币是跌的" in txt
 
 
+# ── 🔥 热榜：只在成交额前 N 名里排 ───────────────────────────
+def _pool(n):
+    """n 个币，成交额递减，涨幅也递减——成交额最小的那个涨得最少。"""
+    return [row(f"C{i}", turnover=(n - i) * 1e6,
+                closes=[100.0 + (n - i)] + [100.0] * 14) for i in range(n)]
+
+
+def test_hot_only_ranks_the_top_by_turnover():
+    """群里的原话是「最好只看热榜的」——全量榜一屏全是没听过的代号。"""
+    rows = _pool(D.HOT_N + 20)
+    up_all, _d, st_all = D.ranked(rows, 3, hot=False)
+    up_hot, _d2, st_hot = D.ranked(rows, 3, hot=True)
+    assert st_all["n"] == D.HOT_N + 20
+    assert st_hot["n"] == D.HOT_N, "热榜只在成交额前 N 名里排"
+    # 冷门币（成交额最小的那批）不该出现在热榜里
+    cold = {f"C{i}" for i in range(D.HOT_N, D.HOT_N + 20)}
+    assert not ({r["sym"] for _p, r in up_hot} & cold)
+
+
+def test_hot_is_a_display_filter_not_a_rescan():
+    """热榜和全量用的是同一批数据，切换只该是一次重排。"""
+    import inspect
+    assert "hot" in inspect.signature(D.ranked).parameters
+    # scan() 不认识 hot——它不该为了换个范围再跑一遍网络
+    assert "hot" not in inspect.signature(D.scan).parameters
+
+
+def test_hot_pool_smaller_than_the_cutoff_keeps_everything():
+    rows = _pool(5)
+    assert D.ranked(rows, 3, hot=True)[2]["n"] == 5
+
+
+def test_card_says_which_pool_it_ranked():
+    """口径写在脸上：不写的话热榜看起来就像"全市场就这几个"。"""
+    rows = _pool(D.HOT_N + 20)
+    hot_txt = D.build_text(rows, 3, "all", "all", {}, hot=True)
+    assert f"前 {D.HOT_N} 名" in hot_txt and "热榜" in hot_txt
+    assert f"共 {len(rows)} 个币" in hot_txt, "要告诉他全量有多少、去哪看"
+    full_txt = D.build_text(rows, 3, "all", "all", {}, hot=False)
+    assert "全部" in full_txt and "热榜" not in full_txt
+
+
 # ── 去重 ────────────────────────────────────────────────────
 @pytest.mark.parametrize("raw,norm", [
     ("1000PEPE", "PEPE"), ("10000SATS", "SATS"), ("1MBABYDOGE", "BABYDOGE"),
@@ -272,14 +314,16 @@ def test_card_marks_cached_results():
 
 # ── 参数 ────────────────────────────────────────────────────
 @pytest.mark.parametrize("args,want", [
-    ([], (3, "all", "all")),
-    (["7"], (7, "all", "all")),
-    (["3日"], (3, "all", "all")),               # 他就是这么说话的
-    (["7天", "bybit"], (7, "bybit", "all")),
-    (["币安"], (3, "binance", "all")),
-    (["现货"], (3, "all", "spot")),
-    (["3", "okx", "永续"], (3, "okx", "perp")),
-    (["999"], (14, "all", "all")),              # 夹到上限，标题里看得见
+    ([], (3, "all", "all", True)),              # 默认只看热榜——群里的原话
+    (["7"], (7, "all", "all", True)),
+    (["3日"], (3, "all", "all", True)),          # 他就是这么说话的
+    (["7天", "bybit"], (7, "bybit", "all", True)),
+    (["币安"], (3, "binance", "all", True)),
+    (["现货"], (3, "all", "spot", True)),
+    (["3", "okx", "永续"], (3, "okx", "perp", True)),
+    (["全部"], (3, "all", "all", False)),
+    (["7", "全部"], (7, "all", "all", False)),
+    (["999"], (14, "all", "all", True)),         # 夹到上限，标题里看得见
 ])
 def test_parse_args(args, want):
     assert D.parse_args(args) == want
@@ -313,9 +357,10 @@ def test_every_button_round_trips_through_the_dispatcher():
             if not d.startswith("dr:"):
                 continue
             bits = d.split(":")
-            assert len(bits) == 5, f"{d} 位数不对"
+            assert len(bits) == 6, f"{d} 位数不对"
             assert bits[1] in ("w", "r", "i")
             assert bits[3] in D.V_LABEL and bits[4] in D.M_LABEL
+            assert bits[5] in ("hot", "full")
             int(bits[2])
 
 
@@ -323,7 +368,7 @@ def test_menu_entry_uses_the_same_shape():
     import inspect
     from handlers import menu
     src = inspect.getsource(menu._dispatch)
-    assert "dr:w:3:all:all" in src and "dr:w:7:all:all" in src
+    assert "dr:w:3:all:all:hot" in src and "dr:w:7:all:all:hot" in src
 
 
 def test_keyboard_offers_every_venue_and_market():
@@ -331,7 +376,8 @@ def test_keyboard_offers_every_venue_and_market():
     这几个入口一个都不能少。"""
     labels = [b.text for r in D.kb(3, "all", "all").inline_keyboard for b in r]
     blob = " ".join(labels)
-    for must in ("Bybit", "币安", "OKX", "永续", "现货", "3日", "7日", "14日"):
+    for must in ("Bybit", "币安", "OKX", "永续", "现货", "3日", "7日", "14日",
+                 "热榜", "全部币"):
         assert must in blob, f"按钮里缺了：{must}"
 
 

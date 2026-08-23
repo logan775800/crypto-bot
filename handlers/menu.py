@@ -782,8 +782,8 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💰 查币价", callback_data="sub_price"),
              InlineKeyboardButton("📋 币详情", callback_data="sub_info")],
             [InlineKeyboardButton("🚀 涨跌榜(24h)", callback_data="do_top")],
-            [InlineKeyboardButton("📅 3日涨跌榜", callback_data="dr:w:3:all:all"),
-             InlineKeyboardButton("📅 7日涨跌榜", callback_data="dr:w:7:all:all")],
+            [InlineKeyboardButton("📅 3日涨跌榜", callback_data="dr:w:3:all:all:hot"),
+             InlineKeyboardButton("📅 7日涨跌榜", callback_data="dr:w:7:all:all:hot")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
         await safe_edit(query, "📊 *行情查询*\n选择功能：", reply_markup=kb, parse_mode="Markdown")
@@ -1805,11 +1805,12 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ---- 虚拟交易台（全按钮，不用记命令）----
     elif d.startswith("dr:"):
-        # 多日涨跌榜：dr:<w|r|i>:<天数>:<交易所>:<市场>
-        # w=换窗口/换所/换市场（读缓存）　r=强制重扫　i=看口径
+        # 多日涨跌榜：dr:<w|r|i>:<天数>:<交易所>:<市场>:<hot|full>
+        # w=换窗口/换所/换市场/换范围（读缓存）　r=强制重扫　i=看口径
         from handlers import dayrank as _dr
         bits = d.split(":")
         await _dr.from_btn(query, context, int(bits[2]), bits[3], bits[4],
+                           hot=(len(bits) < 6 or bits[5] == "hot"),
                            force=(bits[1] == "r"), detail=(bits[1] == "i"))
 
     elif d.startswith("vg:"):

@@ -927,6 +927,9 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                              callback_data="cat_strategy")])
         rows.insert(0, [InlineKeyboardButton("📐 标注图表(结构位+止损带画在图上)",
                                             callback_data="ac_help")])
+        # 清算地图放最上面：它是"这单该在哪儿设止损"最直接的那张图
+        rows.insert(0, [InlineKeyboardButton("💣 清算地图(各价位待强平·估算)",
+                                            callback_data="lq:pick:-:-")])
         await safe_edit(query, 
             "📈 *技术分析* - 点币种做综合分析：\n(RSI+均线+MACD+布林带)",
             reply_markup=InlineKeyboardMarkup(rows), parse_mode="Markdown")
@@ -1810,6 +1813,17 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb, parse_mode="Markdown")
 
     # ---- 虚拟交易台（全按钮，不用记命令）----
+    elif d.startswith("lq:"):
+        # 清算地图：lq:<w|r|i|pick>:<币>:<窗口>
+        from handlers import liqmap as _lq
+        bits = d.split(":")
+        await _lq.from_btn(query, context, bits[1], bits[2], bits[3])
+
+    elif d.startswith("lqcoin:"):
+        from handlers import liqmap as _lq
+        await query.answer()
+        await _lq.on_coin(query.message, context, d.split(":", 1)[1])
+
     elif d.startswith("ls:"):
         # 多空比极值榜：ls:<v|r|i>:<交易所>　v=换所(读缓存) r=重扫 i=看口径
         from handlers import lsratio as _ls

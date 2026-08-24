@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -108,6 +108,7 @@ BOT_COMMANDS = [
     BotCommand("top", "🚀 涨跌榜(24h)"),
     BotCommand("rank", "📅 多日涨跌榜(3日/7日累计)"),
     BotCommand("lsr", "⚖️ 多空比极值榜(最看多/最看空各3个)"),
+    BotCommand("liqmap", "💣 清算地图(各价位待强平仓位·估算)"),
     BotCommand("movers", "📸 异动快照"),
     BotCommand("weak", "😴 弱势/横盘扫描"),
     BotCommand("momentum", "📈 动量轮动回测"),
@@ -452,6 +453,9 @@ def main():
     app.add_handler(CommandHandler("rank", dayrank.rank_cmd))
     # 多空比极值榜：全市场最一边倒的各 3 个（散户情绪，常作反向参考）
     app.add_handler(CommandHandler("lsr", lsratio.lsr_cmd))
+    # 清算地图：估算各价位待强平仓位（模型估算，不是交易所数据）
+    app.add_handler(CommandHandler("liqmap", liqmap.liqmap_cmd))
+    app.add_handler(CommandHandler("lmap", liqmap.liqmap_cmd))
     app.add_handler(CommandHandler("compare", price.compare))
     app.add_handler(CommandHandler("info", price.info))
     app.add_handler(CommandHandler("analyze", analysis.analyze))

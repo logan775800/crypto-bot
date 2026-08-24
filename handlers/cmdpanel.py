@@ -35,6 +35,7 @@ MODULE_CN = {
     "handlers.regime": "📈 分析与回测",
     "handlers.chart": "📈 分析与回测",
     "handlers.annotchart": "📈 分析与回测",
+    "handlers.liqmap": "📈 分析与回测",   # /liqmap 清算地图
     "handlers.strategy": "📈 分析与回测",
     "handlers.backtest": "📈 分析与回测",
     "handlers.weak_scan": "📈 分析与回测",

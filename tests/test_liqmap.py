@@ -146,6 +146,18 @@ def test_button_is_two_taps_from_home():
     assert "lq:pick" in seg
 
 
+def test_reachable_from_a_coin_card():
+    """查完币价那张卡上要能直接进——分析完最该问的下一件事就是"止损放哪儿"，
+    而清算图直接回答它。少这个按钮就还得自己去打命令。"""
+    import inspect
+    from handlers import menu
+    src = inspect.getsource(menu.followup_kb)
+    assert "lq:w:" in src
+    kb = menu.followup_kb("BTC")
+    cbs = [b.callback_data for r in kb.inline_keyboard for b in r]
+    assert "lq:w:BTC:7日" in cbs, "币名要带进去，不能进去还得再选一次"
+
+
 def test_buttons_round_trip_through_the_dispatcher():
     import inspect
     from handlers import menu

@@ -92,6 +92,9 @@ def followup_kb(symbol=None, back=None):
          InlineKeyboardButton("🔔 设预警", callback_data=f"fu:alert:{s}")],
         [InlineKeyboardButton("🎮 模拟开仓", callback_data=f"fu:vopen:{s}"),
          InlineKeyboardButton("🩺 数据体检", callback_data=f"fu:check:{s}")],
+        # 清算地图接进闭环：分析完最该回答的下一个问题就是"止损放哪儿"，
+        # 而那张图直接告诉你哪些价位是插针磁吸区。少这个按钮就还得自己去打 /liqmap
+        [InlineKeyboardButton("💣 清算地图", callback_data=f"lq:w:{s}:7日")],
         # 闭环的最后一环：前面几步都在"算"，真要下单还得自己去翻 /trade。
         # 少这一个按钮，分析和实盘之间就还隔着一次手工搬运。
         [InlineKeyboardButton("🎛 进交易台", callback_data="tpanel")],

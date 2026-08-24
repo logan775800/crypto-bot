@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -416,6 +416,12 @@ async def post_init(application):
         logging.info("命令菜单已设置")
     except Exception as e:
         logging.error(f"设置命令菜单失败: {e}")
+    # 频道搬运：没配 TG_SESSION 就安静跳过，机器人和平时一模一样
+    try:
+        from handlers import relay as _relay
+        await _relay.start(application)
+    except Exception as e:
+        logging.error(f"频道搬运启动失败: {e}")
     # 启动合约实时告警 WebSocket（OKX + Bybit 秒级）
     try:
         contract_ws.start(application)
@@ -444,6 +450,8 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     # 使用指南：群里发一下大家都看得到（/help 是全部命令清单，这条是怎么上手）
     app.add_handler(CommandHandler("howto", howto.howto))
+    # 频道搬运（管理员）：把订阅的频道新帖转到群里
+    app.add_handler(CommandHandler("relay", relay.relay_cmd))
     app.add_handler(CommandHandler("id", chat_id_cmd))
     app.add_handler(CommandHandler("version", version_cmd))
     app.add_handler(CommandHandler("whois", whois_cmd))

@@ -1818,6 +1818,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb, parse_mode="Markdown")
 
     # ---- 虚拟交易台（全按钮，不用记命令）----
+    elif d.startswith("rl:"):
+        from handlers import relay as _rl
+        await _rl.on_button(query, context)
+
     elif d.startswith("p3:"):
         from handlers import pump3 as _p3
         await _p3.on_button(query, context)

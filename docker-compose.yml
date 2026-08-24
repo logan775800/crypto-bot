@@ -31,6 +31,11 @@ services:
       BINANCE_TESTNET: ${BINANCE_TESTNET:-true}
       # 实盘下单硬开关：off = 任何命令都开不了（给「我不做实盘」用）
       LIVE_TRADING: ${LIVE_TRADING:-}
+      # 频道搬运（用个人账号读订阅的频道）。没配就整个功能不启用。
+      # ⚠️ TG_SESSION 等于账号凭证，别提交别外发
+      TG_API_ID: ${TG_API_ID:-}
+      TG_API_HASH: ${TG_API_HASH:-}
+      TG_SESSION: ${TG_SESSION:-}
       TZ: Asia/Shanghai
     # 依赖已在镜像里，直接跑；源码仍由 ./:/app 挂载提供（改代码不必重建镜像）
     command: python bot.py

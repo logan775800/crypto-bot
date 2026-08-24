@@ -4,3 +4,4 @@ websockets
 matplotlib
 mplfinance
 pytest          # 部署前在镜像里跑单元测试(build→test→deploy)，测试不过不上线
+telethon        # 频道搬运：Bot API 读不到别人的频道，只能走 MTProto

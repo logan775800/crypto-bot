@@ -79,6 +79,7 @@ MODULE_CN = {
     "handlers.unlock": "🔔 预警与监控",
     "handlers.news": "📰 资讯与推送",
     "handlers.broadcast": "📰 资讯与推送",
+    "handlers.relay": "📰 资讯与推送",   # /relay 频道搬运
     "handlers.summary": "📰 资讯与推送",
     "handlers.brief": "📰 资讯与推送",
     "handlers.vtrade": "🎮 虚拟合约",

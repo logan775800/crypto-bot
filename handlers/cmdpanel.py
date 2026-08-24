@@ -94,6 +94,7 @@ MODULE_CN = {
     "handlers.deploy": "🩺 诊断与维护",
     "handlers.menu": "🧭 菜单与帮助",
     "handlers.welcome": "🧭 菜单与帮助",
+    "handlers.howto": "🧭 菜单与帮助",   # /howto 使用指南
     "handlers.checklist": "🧭 菜单与帮助",
     "handlers.chat": "💬 AI 助手",
     "handlers.ai": "💬 AI 助手",

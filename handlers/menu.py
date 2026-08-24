@@ -2136,6 +2136,14 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"📦 当前版本 `{_V}`\n"
             "⚠️ 数据仅供参考，不构成投资建议",
             reply_markup=InlineKeyboardMarkup([
+                # 完整指南（命令 + 按钮在哪 + 怎么用）——群里发 /howto 也能调出来
+                [InlineKeyboardButton("📖 怎么用（完整指南）", callback_data="howto")],
                 [InlineKeyboardButton(f"📋 {_V} 更新了什么", callback_data="cl:cur")],
                 [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
             ]), parse_mode="Markdown")
+
+    elif d == "howto":
+        from handlers import howto as _ht
+        priv = query.message.chat.type == "private" if query.message else True
+        await safe_edit(query, _ht.TEXT, reply_markup=_ht.kb(priv),
+                        parse_mode="Markdown", disable_web_page_preview=True)

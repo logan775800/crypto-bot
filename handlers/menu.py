@@ -983,6 +983,8 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         rows.append([InlineKeyboardButton("🔍 查其他币", callback_data="askcoin:alertcoin")])
         rows.append([InlineKeyboardButton("👁 持续波动监控(±% 反复提醒)", callback_data="watchpct_start")])
         rows.append([InlineKeyboardButton("🎯 条件提醒(价格+指标组合)", callback_data="cond_help")])
+        rows.append([InlineKeyboardButton("🚨 极端拉升(15m暴拉+多日已涨)",
+                                          callback_data="p3:panel")])
         rows.append([InlineKeyboardButton("📋 我的价格预警", callback_data="my_alerts"),
                      InlineKeyboardButton("👁 我的波动监控", callback_data="my_watchpct")])
         rows.append([InlineKeyboardButton("📡 默认数据源（用哪家交易所的价）",
@@ -1813,6 +1815,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=kb, parse_mode="Markdown")
 
     # ---- 虚拟交易台（全按钮，不用记命令）----
+    elif d.startswith("p3:"):
+        from handlers import pump3 as _p3
+        await _p3.on_button(query, context)
+
     elif d.startswith("lq:"):
         # 清算地图：lq:<w|r|i|pick>:<币>:<窗口>
         from handlers import liqmap as _lq

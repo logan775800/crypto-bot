@@ -185,7 +185,11 @@ def _is_quiet(chat_id):
 async def scan_pump(context: ContextTypes.DEFAULT_TYPE):
     """后台任务：拉行情 → 更新历史 → 算滚动涨跌 → 按订阅推送。每 60 秒一次。"""
     watch = data.get("pump_watch") or {}
-    if not watch:
+    # 极端拉升告警（pump3）复用这一轮的行情和滚动历史——它只多一个"3日+量比"的闸。
+    # ⚠️ 早退条件必须把它算进来：只看 pump_watch 的话，**只订了 pump3 的人
+    # 这个任务一次都不会跑**，告警永远不触发而且日志干净（同 v1.35.0 那个坑）。
+    p3 = data.get("pump3") or {}
+    if not watch and not p3:
         return
     try:
         perps = await _fetch_bybit_perps()
@@ -201,6 +205,13 @@ async def scan_pump(context: ContextTypes.DEFAULT_TYPE):
         _started_at = now
     seen = _ingest(perps, now)
     changes = _compute_changes(seen, now)
+
+    # 极端拉升：15m 涨幅在这里是白拿的，它只对过闸的那几个再去拉日线和量
+    try:
+        from handlers import pump3
+        await pump3.check(context, changes)
+    except Exception as e:
+        log.error(f"极端拉升检查出错: {e}")
 
     alerted = data.setdefault("pump_alerted", {})   # {chat_id: {sym: {up,down,ts}}}
     dirty = False

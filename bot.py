@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -151,6 +151,7 @@ BOT_COMMANDS = [
     BotCommand("watchmarket", "🚨 订阅市场异动告警"),
     BotCommand("contract", "📊 合约异动告警面板(按钮:订阅/档位/榜)"),
     BotCommand("pump", "⚡ 急涨急跌监控面板(按钮:订阅/阈值/榜)"),
+    BotCommand("pump3", "🚨 极端拉升告警(15m暴拉+多日已涨)"),
     BotCommand("subnews", "📰 订阅新闻推送"),
     BotCommand("subunlock", "🔓 订阅解锁提醒"),
     BotCommand("subsummary", "📊 订阅每日总结"),
@@ -627,7 +628,9 @@ def main():
     app.add_handler(CommandHandler("alertdiag", contract_alert.alert_diag))      # 告警自检
     app.add_handler(CommandHandler("watchcontract", contract_alert.watch_contract))
     app.add_handler(CommandHandler("unwatchcontract", contract_alert.unwatch_contract))
-    app.add_handler(CommandHandler("pump", pumpalert.pump_panel))            # 15m急涨急跌按钮面板
+    app.add_handler(CommandHandler("pump", pumpalert.pump_panel))
+    # 极端拉升：15m 暴拉 + 多日已涨一大截，两个同时满足才推（很稀有，只做订阅）
+    app.add_handler(CommandHandler("pump3", pump3.pump3_cmd))            # 15m急涨急跌按钮面板
     app.add_handler(CommandHandler("watchpump", pumpalert.watch_pump))       # 15m急涨急跌
     app.add_handler(CommandHandler("unwatchpump", pumpalert.unwatch_pump))
     app.add_handler(CommandHandler("pumptop", pumpalert.pump_top))           # 15m滚动涨跌榜/自检

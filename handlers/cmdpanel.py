@@ -73,6 +73,7 @@ MODULE_CN = {
     "handlers.watchpct": "🔔 预警与监控",
     "handlers.contract_alert": "🔔 预警与监控",
     "handlers.pumpalert": "🔔 预警与监控",
+    "handlers.pump3": "🔔 预警与监控",   # /pump3 极端拉升
     "handlers.events": "🔔 预警与监控",
     "handlers.market_alert": "🔔 预警与监控",
     "handlers.unlock": "🔔 预警与监控",

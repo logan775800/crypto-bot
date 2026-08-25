@@ -568,22 +568,44 @@ def _build_signal_text(o, h, l, c, v, closes_4h=None, flow=None):
             lvl = max(0, lvl - 1)
             warns.append("近一日资金流与该方向相反，尚未获资金面配合")
 
-    strength = levels[lvl]
+    # 「观望·弱」是句废话——观望不分强弱。只有买/卖才带强度档。
     suffix = f"（{('，'.join(parts))}）" if parts else ""
-    signal_line = f"综合信号：{head}·{strength}{suffix}"
+    if base == 0:
+        signal_line = f"综合信号：观望{suffix}"
+        # 观望最需要解释：ADX 很强、DI 又明确偏向一边时，光写"观望"看起来像判据坏了。
+        if ax is not None and ax >= 25 and dm:
+            side = "多头" if dm["pdi"] > dm["mdi"] else "空头"
+            warns.append(f"趋势强度够（ADX {ax:.0f}、{side}占优），"
+                         f"但均线/动能没同向共振，等它们跟上再谈方向")
+    else:
+        signal_line = f"综合信号：{head}·{levels[lvl]}{suffix}"
 
     # —— 关键位（近30根支撑/阻力 + 量能中枢）——
     sr = support_resistance(closes)
     sr_line = None
     if sr:
         sr_line = (f"关键位：阻力 ${_fmt_price(sr['resistance'])} "
-                   f"| 支撑 ${_fmt_price(sr['support'])}")
-        if poc:
-            sr_line += f" | POC ${_fmt_price(poc)}"
+                   f"| 支撑 ${_fmt_price(sr['support'])}（近30根）")
+        if poc and last:
+            # 带上距现价百分比：光给一个价格看不出远近，而 POC 的窗口（全量120根）
+            # 和支撑阻力（近30根）不一样，并排放着容易被当成同一口径读。
+            sr_line += f"\n量重心 POC：${_fmt_price(poc)}（{(poc / last - 1) * 100:+.0f}%，全量120根）"
 
     out = [signal_line, trend_line, momo_line, vol_line, strg_line]
     if sr_line:
         out.append(sr_line)
+
+    # —— 反转扫描：**查过没命中也要印**（这一行是他要的）——
+    # 只在命中时才显示的话，「这次没有背离」和「这机器人根本不看背离」
+    # 在屏幕上完全一样，用的人无从判断。所以逐项打勾/打叉。
+    if rev.get("checks") is not None:
+        marks = {"顶背离": div["bearish"], "底背离": div["bullish"]}
+        marks.update(rev["checks"])
+        out.append("反转扫描：" + " ".join(
+            f"{k}{'✅' if v else '✗'}" for k, v in marks.items()))
+    else:
+        out.append("反转扫描：日线不足 40 根，这轮没查")
+
     if div["text"]:
         out.append("⚠️ " + div["text"])
     # 贴近 POC：多空换手最密集，容易在这里反复纠缠

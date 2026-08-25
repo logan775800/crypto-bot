@@ -175,6 +175,70 @@ def test_flat_market_does_not_crash():
     assert "综合信号：" in out
 
 
+# ── 「查过但没命中」必须看得见 ──────────────────────────────────
+# 2026-08-25 真机反馈：他看着卡片问「底背离顶背离在哪？」——那张卡确实没有背离，
+# 所以那一行没印。但**「这次没有背离」和「这机器人根本不看背离」在屏幕上一模一样**，
+# 用的人无从判断。这是我自己记过的教训（低频的东西必须能自证还活着），
+# 却在这张卡上又犯了一遍。
+
+def test_reversal_scan_line_is_always_present():
+    """不管有没有命中，都要印出查了哪几项。"""
+    out = _build_signal_text(*_ohlcv(_uptrend()))
+    assert "反转扫描：" in out
+    for item in ("顶背离", "底背离", "动能衰竭", "长影拒绝"):
+        assert item in out, f"扫描项「{item}」没印出来，看的人不知道查没查"
+
+
+def test_reversal_scan_marks_misses_explicitly():
+    """没命中要打叉，不能留空——留空还是看不出查没查。"""
+    out = _build_signal_text(*_ohlcv(_uptrend()))
+    scan = [ln for ln in out.splitlines() if ln.startswith("反转扫描：")][0]
+    assert "✗" in scan or "✅" in scan
+
+
+def test_reversal_scan_says_so_when_it_could_not_run():
+    """数据不够 40 根时是**没查**，不是查了没有。这两件事不能混。"""
+    out = _build_signal_text(*_ohlcv([100.0 + i for i in range(35)]))
+    assert "没查" in out
+
+
+# ── 观望不分强弱 ──────────────────────────────────────────────
+def test_neutral_signal_has_no_strength_suffix():
+    """「观望信号·弱」是句废话——观望还分强弱？只有买/卖才带档位。"""
+    c = [1.0] * 60
+    for _ in range(6):
+        c.append(c[-1] * 1.55)
+    for _ in range(8):
+        c.append(c[-1] * 0.93)
+    out = _build_signal_text(*_ohlcv(c))
+    head = out.splitlines()[0]
+    if "观望" in head:
+        assert "·" not in head, f"观望不该带强度档：{head}"
+
+
+def test_neutral_explains_itself_when_the_trend_looks_strong():
+    """ADX 很强、DI 又明确偏一边，结论却是观望——不解释的话看起来像判据坏了。"""
+    c = [1.0] * 60
+    for _ in range(6):
+        c.append(c[-1] * 1.55)
+    for _ in range(8):
+        c.append(c[-1] * 0.93)
+    out = _build_signal_text(*_ohlcv(c))
+    if out.splitlines()[0].startswith("综合信号：观望"):
+        assert "等它们跟上" in out or "没同向共振" in out
+
+
+# ── POC 的口径要写清 ──────────────────────────────────────────
+def test_poc_states_its_window_and_distance():
+    """POC 用全量 120 根算，支撑阻力用近 30 根。并排放着不标口径，
+    会出现「POC 比支撑还低」这种看起来像算错的画面（其实是两个窗口）。"""
+    out = _build_signal_text(*_ohlcv(_uptrend()))
+    assert "近30根" in out
+    assert "全量120根" in out
+    poc_line = [ln for ln in out.splitlines() if "POC" in ln][0]
+    assert "%" in poc_line, "POC 要带距现价的百分比，光一个价格看不出远近"
+
+
 # ── 多周期相册 ────────────────────────────────────────────────
 # 周线/日线/4h 三张一条相册（参考 Go 那个机器人：宏观定大势 → 微观找入场）。
 # 单看日线的「多头排列」分不清它是周线趋势里的顺势，还是周线跌势里的一次反抽。

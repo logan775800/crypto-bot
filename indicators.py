@@ -455,7 +455,8 @@ def early_reversal(opens, highs, lows, closes, closes_4h=None):
 
     返回 {top_risk, bottom_risk, score, reasons}。
     """
-    empty = {"top_risk": False, "bottom_risk": False, "score": 0, "reasons": []}
+    empty = {"top_risk": False, "bottom_risk": False, "score": 0,
+             "reasons": [], "checks": None}   # checks=None 表示"根本没查"，和"查了没有"要分开
     n = len(closes)
     if n < _REV_MIN_CANDLES or len(highs) != n or len(lows) != n or len(opens) != n:
         return empty
@@ -520,10 +521,17 @@ def early_reversal(opens, highs, lows, closes, closes_4h=None):
     top_score = top_struct + int(l1_top or l4_top)
     bot_score = bot_struct + int(l1_bot or l4_bot)
 
+    # checks 是**逐项**命中情况。调用方要拿它在卡片上把"查过但没有"也印出来——
+    # 只在命中时才显示的话，「没触发」和「没这个功能」在屏幕上长得一模一样，
+    # 用的人根本不知道有没有查过。
+    checks = {"动能衰竭": l1_top or l1_bot, "动能背离": l2_top or l2_bot,
+              "长影拒绝": l3_top or l3_bot, "4h回头": l4_top or l4_bot}
+
     if top_struct >= 1 and top_score >= _REV_CONFLUENCE and top_score >= bot_score:
         return {"top_risk": True, "bottom_risk": False,
-                "score": top_score, "reasons": top_reasons}
+                "score": top_score, "reasons": top_reasons, "checks": checks}
     if bot_struct >= 1 and bot_score >= _REV_CONFLUENCE:
         return {"top_risk": False, "bottom_risk": True,
-                "score": bot_score, "reasons": bot_reasons}
-    return empty
+                "score": bot_score, "reasons": bot_reasons, "checks": checks}
+    return {"top_risk": False, "bottom_risk": False, "score": 0,
+            "reasons": [], "checks": checks}

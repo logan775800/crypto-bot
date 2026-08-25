@@ -158,6 +158,71 @@ def test_reachable_from_a_coin_card():
     assert "lq:w:BTC:7日" in cbs, "币名要带进去，不能进去还得再选一次"
 
 
+# ── 挂进合约异动告警 ────────────────────────────────────────
+def test_alert_gets_liqmap_buttons():
+    """异动之后最该问的就是"下面还堆着多少爆仓单"，按钮把币名直接带进去。"""
+    from handlers import contract_alert as CA
+    alerts = [{"sym": "TUT", "change": -41.96, "ex": "币安", "tier": 40,
+               "direction": "down", "price": 0.04331}]
+    kb = CA._liq_kb(alerts)
+    cbs = [b.callback_data for r in kb.inline_keyboard for b in r]
+    assert "lq:w:TUT:7日" in cbs
+
+
+def test_alert_buttons_are_capped_and_sorted_by_size():
+    """一轮可能同时报十个币，按钮一排挤不下——只给幅度最大的几个。"""
+    from handlers import contract_alert as CA
+    alerts = [{"sym": f"C{i}", "change": -(20 + i), "ex": "x", "tier": 20,
+               "direction": "down", "price": 1} for i in range(10)]
+    kb = CA._liq_kb(alerts)
+    cbs = [b.callback_data for r in kb.inline_keyboard for b in r]
+    assert len(cbs) == CA.LIQMAP_BUTTONS
+    assert "lq:w:C9:7日" in cbs, "幅度最大的那个必须在"
+
+
+def test_only_one_map_is_auto_attached_per_alert():
+    """一条告警只配一张图：每个币都画就是又慢又刷屏。"""
+    import inspect
+    from handlers import contract_alert as CA
+    src = inspect.getsource(CA._attach_liqmap)
+    assert "max(alerts" in src, "只挑幅度最大的那个"
+    assert "LIQMAP_MIN_MOVE" in src, "幅度不够的不值得画图"
+
+
+def test_attach_failure_is_silent():
+    """清算地图只走币安永续，而告警是全交易所的——取不到是常态。
+    不能因为配图失败就在群里刷一条"失败"。"""
+    import asyncio
+    import inspect
+    from handlers import contract_alert as CA
+    assert "except Exception" in inspect.getsource(CA._attach_liqmap)
+
+    class _B:
+        async def send_photo(self, **k):
+            raise RuntimeError("no data")
+    # 不该抛出去
+    asyncio.run(CA._attach_liqmap(_B(), 1, [
+        {"sym": "NOPE", "change": -50.0, "ex": "x", "tier": 50,
+         "direction": "down", "price": 1}]))
+
+
+def test_small_moves_do_not_get_a_map():
+    import asyncio
+    from handlers import contract_alert as CA
+
+    class _B:
+        def __init__(self):
+            self.sent = 0
+
+        async def send_photo(self, **k):
+            self.sent += 1
+    b = _B()
+    asyncio.run(CA._attach_liqmap(b, 1, [
+        {"sym": "X", "change": -21.0, "ex": "x", "tier": 20,
+         "direction": "down", "price": 1}]))
+    assert b.sent == 0, "20% 出头的不值得为它画图"
+
+
 def test_buttons_round_trip_through_the_dispatcher():
     import inspect
     from handlers import menu

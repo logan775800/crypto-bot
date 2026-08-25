@@ -186,8 +186,65 @@ async def push_to_subscribers(bot, alerts):
             text = head + "\n".join(chunk)
             if idx == len(chunks) - 1:
                 text += "\n\n⚠️ 合约杠杆风险高，异动剧烈，不构成投资建议"
-            if not await _send_or_drop(bot, chat_id, text):
+            if not await _send_or_drop(bot, chat_id, text, kb=_liq_kb(chat_alerts)):
                 break          # 这个 chat 发不出去了，剩下的分条也别试了
+        # 幅度最大的那个直接把清算地图附上——异动之后最该问的就是
+        # "下面/上面还堆着多少爆仓单"。**一条告警只配一张图**：
+        # 一轮可能同时报十个币，每个都画就是又慢又刷屏，其余的走按钮
+        await _attach_liqmap(bot, chat_id, chat_alerts)
+
+
+# ── 清算地图挂进告警 ────────────────────────────────────────
+# 异动之后最该问的一句是「下面还堆着多少爆仓单」——那正是清算地图回答的。
+# 但它要拉三次接口 + 画一张图，而一轮告警可能同时报十个币，
+# 所以规矩是：**一条告警只自动配一张图**（幅度最大那个），其余的给按钮。
+LIQMAP_MIN_MOVE = 25       # 幅度不到这个数就只给按钮，不值得为它画图
+LIQMAP_BUTTONS = 4         # 按钮最多给几个，多了一排挤不下
+
+
+def _liq_kb(alerts):
+    """给告警消息挂「看清算地图」按钮，币名直接带进去。"""
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+    top = sorted(alerts, key=lambda a: -abs(a["change"]))[:LIQMAP_BUTTONS]
+    if not top:
+        return None
+    rows, cur = [], []
+    for a in top:
+        cur.append(InlineKeyboardButton(f"💣 {a['sym']}",
+                                        callback_data=f"lq:w:{a['sym']}:7日"))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    return InlineKeyboardMarkup(rows)
+
+
+async def _attach_liqmap(bot, chat_id, alerts):
+    """幅度最大的那个币，直接把清算地图发过去。
+
+    失败**一律安静跳过**——告警本身已经送到了，不能因为配图画不出来
+    就在群里刷一条"清算地图失败"。清算地图只走币安永续，
+    而告警是全交易所的，所以取不到是常态不是异常。
+    """
+    if not alerts:
+        return
+    top = max(alerts, key=lambda a: abs(a["change"]))
+    if abs(top["change"]) < LIQMAP_MIN_MOVE:
+        return
+    try:
+        from handlers import liqmap
+        m, last, _inst = await liqmap._get(top["sym"], "7日")
+        buf = liqmap.render(m, top["sym"], "7日", last)
+        cap = (f"💣 *{escape_md(top['sym'])} 清算地图*（估算）\n"
+               f"刚刚 {top['change']:+.1f}%，看看上下还堆着多少待强平的仓位。\n"
+               f"密集区是磁吸位，止损别正好压在柱子上。\n"
+               f"⚠️ 模型估算不是交易所数据")
+        await bot.send_photo(chat_id=chat_id, photo=buf, caption=cap,
+                             parse_mode="Markdown",
+                             reply_markup=liqmap.kb(top["sym"], "7日"))
+    except Exception as e:
+        logging.info(f"合约告警配清算地图跳过 {top.get('sym')}: {e}")
 
 
 def _drop_sub(chat_id, why):
@@ -205,11 +262,12 @@ _DEAD_CHAT_HINTS = ("chat not found", "chat_id is empty", "peer_id_invalid",
                     "group chat was upgraded", "user is deactivated")
 
 
-async def _send_or_drop(bot, chat_id, text):
+async def _send_or_drop(bot, chat_id, text, kb=None):
     """发一条消息。确定性失效 → 摘订阅；临时性错误 → 只记日志、保留订阅。
     返回是否发送成功。"""
     try:
-        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown")
+        await bot.send_message(chat_id=chat_id, text=text, parse_mode="Markdown",
+                               reply_markup=kb)
         return True
     except ChatMigrated as e:
         # 群升级成超级群，chat_id 变了：把所有订阅搬过去，别让告警从此石沉大海

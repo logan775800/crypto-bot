@@ -261,6 +261,67 @@ async def get_funding_interval(sym):
     return None
 
 
+# ---------- 把数字翻译成人话 ----------
+# 卡片上一堆数字，光给数值等于没给：46 算高算低、持仓量降了说明什么、
+# 贪婪 74 该干嘛——不看过刻度的人一个都读不出来。
+# 群里有人专门贴了一段解释多空比 0.43，那说明卡片自己没说清。
+
+def _rsi_words(r4, r1):
+    """RSI 的人话。以日线为准（短周期噪音大），拿不到就用 4h。"""
+    v = r1 if r1 is not None else r4
+    if v is None:
+        return ""
+    if v >= 70:
+        return "超买，追高风险大"
+    if v >= 60:
+        return "偏强"
+    if v <= 30:
+        return "超卖，可能有反弹"
+    if v <= 40:
+        return "偏弱"
+    return "中性"
+
+
+def _oi_quadrant(price_chg, oi_chg):
+    """持仓量 × 价格方向的四象限解读。
+
+    **持仓量单独看没有意义**——涨了可能是新多进场也可能是新空进场，
+    要和价格方向配着看才知道是谁在进场。这是永续里最基本的一层结构信息，
+    而卡片以前只印一个金额。
+
+    两个输入卡片上本来就有，不用多打接口。任一缺失就不说话。
+    """
+    if price_chg is None or oi_chg is None:
+        return ""
+    if abs(price_chg) < 0.5 and abs(oi_chg) < 0.5:
+        return "价格和持仓都没怎么动，多空都在观望"
+    up_p, up_oi = price_chg > 0, oi_chg > 0
+    if up_p and up_oi:
+        return "价涨+仓增：新资金在做多，涨势有人接力"
+    if up_p and not up_oi:
+        return "价涨+仓减：空头在平仓推上去的（轧空），不是新资金进场，追要小心"
+    if not up_p and up_oi:
+        return "价跌+仓增：新资金在做空，跌势有人推"
+    return "价跌+仓减：多头在离场认赔，抛压在释放，跌势可能接近尾声"
+
+
+def _fng_words(v):
+    """恐惧贪婪指数怎么用。它是**全市场**情绪，不是这个币的。"""
+    try:
+        v = int(v)
+    except Exception:
+        return ""
+    if v >= 75:
+        return "全市场极度贪婪，追高性价比下降"
+    if v >= 55:
+        return "全市场偏贪婪"
+    if v <= 25:
+        return "全市场极度恐慌，往往在这种时候出现机会"
+    if v <= 45:
+        return "全市场偏恐慌"
+    return "全市场情绪中性"
+
+
 # ---------- 信息卡（消息 1） ----------
 async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_pre=None):
     """组装完整信息卡文本。spot/swap 为 quick_price 已取到的行情，避免重复请求。"""
@@ -320,7 +381,8 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_
         s4 = f"{r4:.0f}" if r4 is not None else "—"
         s1 = f"{r1:.0f}" if r1 is not None else "—"
         lines.append("")
-        lines.append(f"RSI: 4h {s4} | 1d {s1}")
+        # 光给数字没用：46 到底算高算低，不看过刻度的人根本不知道
+        lines.append(f"RSI: 4h {s4} | 1d {s1}　{_rsi_words(r4, r1)}")
 
     # 资金费率（带结算周期：1h 这类高频 = 持仓成本高，重点提醒）
     if swap_fr is not None:
@@ -336,14 +398,24 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_
         if oils.get("oi_usd"):
             chg = f" (24h {oils['oi_chg']:+.1f}%)" if oils.get("oi_chg") is not None else ""
             lines.append(f"持仓量: ${oils['oi_usd']:,.0f}{chg}")
+            # 持仓量单独看没有意义，要和价格方向配着读（经典四象限）。
+            # 这两个数卡片上本来就有，不用多打一次接口。
+            pc = (spot or swap or {}).get("change")
+            q = _oi_quadrant(pc, oils.get("oi_chg"))
+            if q:
+                lines.append(f"　└ {q}")
         if oils.get("ls") is not None:
-            hint = "散户偏多" if oils["ls"] > 1 else "散户偏空"
-            lines.append(f"多空比: {oils['ls']:.2f}（{hint}，常作反向参考）")
+            # 复用 /lsr 那套解读：小于 1 的比值人脑读不出量级，必须翻成倍数。
+            # 以前这里只写「散户偏多」，同一个数在两个地方说法不一样。
+            from handlers.lsratio import read as _ls_read, tag as _ls_tag
+            v = oils["ls"]
+            lines.append(f"多空比: {v:.2f}　{_ls_read(v)}（{_ls_tag(v)}）")
+            lines.append("　└ 口径是**账户数**不是持仓金额，反映散户情绪，常作反向参考")
 
     # 恐惧贪婪指数（全局）
     if isinstance(fng, dict) and fng.get("value") is not None:
         zh = _FNG_ZH.get(fng.get("classification"), fng.get("classification", ""))
-        lines.append(f"恐惧贪婪指数: {fng['value']}（{zh}）")
+        lines.append(f"恐惧贪婪指数: {fng['value']}（{zh}）　{_fng_words(fng['value'])}")
 
     # 全市场买卖估算（四所齐全才显示）
     if isinstance(flow, list) and flow:

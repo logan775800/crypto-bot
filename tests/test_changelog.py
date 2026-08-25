@@ -128,3 +128,58 @@ def test_startup_notify_uses_it():
     import inspect
     from handlers import monitor
     assert "startup_text" in inspect.getsource(monitor.startup_notify)
+
+
+# ── 多行条目（这个 bug 静默了很多版）──────────────────────────
+# CHANGELOG.md 里为了不超行宽，长条目都是折行写的。解析器原来**只收
+# `- ` 开头的行**，缩进的续行被静默丢掉——于是播报出去的每条都断在
+# 第一行末尾的半句话上：
+#     「后台任务心跳巡检：告警任务挂掉的表现是「什么都没发生」，」
+# 他截图问「你做的这些怎么用都不知道」，一半原因就是说明根本没发完整。
+
+def test_multi_line_entries_are_joined():
+    text = ("## v9.9.9　(2026-01-01)\n"
+            "- 第一条前半句，\n"
+            "  第一条后半句\n"
+            "- 第二条\n")
+    items = C._parse(text)[0][2]
+    assert items == ["第一条前半句，第一条后半句", "第二条"], \
+        "缩进续行没被拼回来，播报会断在半句话上"
+
+
+def test_continuation_does_not_leak_into_the_next_version():
+    text = ("## v9.9.9　(2026-01-01)\n"
+            "- 甲\n"
+            "## v9.9.8　(2026-01-01)\n"
+            "- 乙\n")
+    parsed = {v: items for v, _d, items in C._parse(text)}
+    assert parsed["v9.9.9"] == ["甲"]
+    assert parsed["v9.9.8"] == ["乙"]
+
+
+def test_prose_before_the_first_version_is_ignored():
+    """文件开头那几行说明文字不能被当成条目。"""
+    text = ("# 更新日志\n\n每次发版在最上面加一段。\n\n"
+            "## v9.9.9　(2026-01-01)\n- 甲\n")
+    assert C._parse(text)[0][2] == ["甲"]
+
+
+# ── 播报要短、而且要说去哪看怎么用 ────────────────────────────
+def test_broadcast_gives_one_line_per_item():
+    """CHANGELOG 条目是写给仓库看的（判据、取舍）。群里的人只要一句
+    「变了什么」——把整段原文播出去，他看完的原话是「怎么用都不知道」。"""
+    for it in C.notes_for(VERSION):
+        assert len(C.brief(it)) <= 62, f"播报这条还是太长：{C.brief(it)}"
+
+
+def test_brief_never_cuts_mid_word_markdown():
+    """截断后残留半个 ** 会把整段格式带歪。"""
+    assert "**" not in C.brief("**加粗的开头**：后面还有很长很长很长的解释文字")
+
+
+def test_broadcast_tells_you_where_the_how_to_is():
+    """**这是他反复卡住的那一点**：知道变了什么，不知道怎么用。
+    播报必须指向 /howto，否则更新说明本身就是个死胡同。"""
+    out = C.update_text(VERSION)
+    assert "/howto" in out, "播报没告诉人去哪看怎么用"
+    assert "/changelog" in out

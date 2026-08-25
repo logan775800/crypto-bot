@@ -22,7 +22,17 @@ _cache = {"mtime": None, "data": None}
 
 
 def _parse(text):
-    """→ [(版本, 日期, [条目...])]，保持文件里的顺序（新版在前）。"""
+    """→ [(版本, 日期, [条目...])]，保持文件里的顺序（新版在前）。
+
+    ⚠️ **一条目可以写好几行**（CHANGELOG.md 里为了不超行宽，长条目都是折行写的）。
+    这里必须把缩进的续行拼回上一条——原来只收 `- ` 开头的行，续行被静默丢掉，
+    于是播报出去的每条都在第一行末尾**断在半句话上**：
+
+        「后台任务心跳巡检：告警任务挂掉的表现是「什么都没发生」，」
+
+    他截图问「你做的这些怎么用都不知道」，一半原因就是这儿——
+    说明本身根本没发完整。
+    """
     out, cur = [], None
     for line in text.splitlines():
         m = _HEAD.match(line.strip())
@@ -35,6 +45,12 @@ def _parse(text):
         s = line.strip()
         if s.startswith(("- ", "* ")):
             cur[2].append(s[2:].strip())
+        elif s and cur[2] and line[:1] in (" ", "\t"):
+            # 缩进的续行 → 接到上一条后面。中文之间不加空格，
+            # 折行处本来就没有空格，加了会在句中多出一个洞。
+            prev = cur[2][-1]
+            sep = "" if (prev and prev[-1] >= "一") or s[0] >= "一" else " "
+            cur[2][-1] = prev + sep + s
     return out
 
 
@@ -144,16 +160,37 @@ def startup_text(version):
     return f"{head}\n\n本次更新：\n{body}{more}\n\n所有功能已加载，开始运行"
 
 
+def brief(item, limit=60):
+    """把一条更新说明压成一句话，**在句子边界断，不在半句话上断**。
+
+    CHANGELOG 里的条目是写给仓库看的（判据、取舍、为什么这么定），
+    群里的人不需要那些。播报只给一句「变了什么」，想看细节自己发 /changelog。
+    """
+    s = item.strip()
+    # Markdown 记号在一句话里往往不成对，截断后会把整段格式带歪，先去掉
+    s = s.replace("**", "").replace("`", "")
+    for stop in ("：", ":", "。", "——"):
+        i = s.find(stop)
+        if 0 < i <= limit:
+            return s[:i]
+    return s[:limit].rstrip("，,、 ") + ("…" if len(s) > limit else "")
+
+
 def update_text(version):
     """发给订阅会话的更新播报。
 
     和 startup_text 分开写：管理员要的是「进程起来了」这个运维信号，每次重启都该发；
     群里的人不关心容器重启，只关心**行为变了什么** —— 拿「已启动/重启」去刷群，
     几次之后大家就不看了。没有更新说明就返回空，宁可不播报也不发一句废话。
+
+    **只给一句一条 + 怎么用去哪看**：以前把整条 CHANGELOG 原文播出去，
+    又长又全是内部判据，他看完的原话是「你做的这些怎么用都不知道」。
+    播报要回答的是"我现在能干什么"，不是"你改了什么"。
     """
     items = notes_for(version)
     if not items:
         return ""
-    body = "\n".join(f"• {it}" for it in items[:8])
-    more = f"\n…共 {len(items)} 条，/changelog 看全部" if len(items) > 8 else ""
-    return f"🆕 机器人已更新到 {version}\n\n{body}{more}"
+    body = "\n".join(f"• {brief(it)}" for it in items[:8])
+    more = f"\n（共 {len(items)} 条）" if len(items) > 8 else ""
+    return (f"🆕 机器人已更新到 {version}\n\n{body}{more}\n\n"
+            f"📖 怎么用：发 /howto\n📋 完整说明：发 /changelog")

@@ -208,6 +208,39 @@ def test_selfcheck_tells_a_private_chat_target_apart_from_a_group(monkeypatch):
     assert "拉进那个群" not in txt, "没有群的时候不能让他去拉群"
 
 
+def test_hint_knows_he_is_already_standing_in_the_group(monkeypatch):
+    """真机第二次踩到：他人已经在群里了，提示还在说"去你要收消息的那个群里"——
+    读起来像还要再去别的地方。知道他在哪儿，下一步就能压成一句直接照做的话。
+
+    顺带点破 `/relay check` 不改目标——他就是把 check 当成 here 用了。
+    """
+    import asyncio
+
+    class _C:
+        async def get_me(self):
+            return type("M", (), {"first_name": "大", "username": None, "id": 1})()
+
+        async def get_entity(self, x):
+            raise RuntimeError("nope")
+
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.setattr(R, "_client", _C())
+    R.cfg()["target"] = 7774574457
+    txt = asyncio.run(R.selfcheck(here=-1003950673952, in_group=True))
+    assert "你现在就在群里" in txt
+    assert "只自检、不会改目标" in txt
+    assert "去你要收消息的那个群里" not in txt, "他就在群里，别再让他去别处"
+
+
+def test_check_passes_the_chat_context_in():
+    """上下文不传进去的话，上面那条改进等于没有。"""
+    import inspect
+    assert "in_group" in inspect.signature(R.selfcheck).parameters
+    src = inspect.getsource(R.relay_cmd)
+    assert "effective_chat" in src and "supergroup" in src
+
+
 def test_selfcheck_still_says_pull_me_in_for_a_real_group(monkeypatch):
     import asyncio
 

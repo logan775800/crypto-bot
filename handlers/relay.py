@@ -195,7 +195,13 @@ async def handle(event):
 # 所以"我在面板上设好了"完全不代表"那个号进得了群、订阅了那些频道"。
 # 转发失败只会进日志，他那边看到的是"没反应"——这个项目最贵的那类 bug。
 # 所以逐条实测：号是谁、群进没进、频道订没订、能不能转。
-async def selfcheck():
+async def selfcheck(here=None, in_group=False):
+    """here / in_group：**他是在哪儿发的这次自检**。
+
+    没有这个上下文的话，提示只能笼统地说「去目标群里发 /relay here」——
+    可他往往就站在那个群里，读起来像还要再去别的地方。
+    知道他在哪儿，下一步就能压缩成一句能直接照做的话。
+    """
     conf = cfg()
     lines = ["🩺 *搬运自检*", ""]
     if not configured():
@@ -222,15 +228,23 @@ async def selfcheck():
         # 正数目标 = 他在**私聊**里发的 /relay here。
         # 这时候不该说"把搬运号拉进群"——根本没有群。指错方向的提示比不提示更费时间。
         lines.append(f"❌ 目标 `{tgt}` 是一个**私聊**，不是群")
-        lines.append("　 （你在和机器人的私聊里发的 `/relay here`，"
-                     "所以目标成了你自己）")
-        lines.append("　 → **去你要收消息的那个群里**再发一次 `/relay here`")
+        lines.append("　 （之前在私聊里发过 `/relay here`，所以目标成了你自己）")
+        if in_group:
+            # 他就站在群里问"是不是没进群"——别再让他"去某个群"。
+            # 直接说清现在这一条命令就能设好，顺便点破 check 不改目标
+            lines.append("　 → **你现在就在群里，直接发** `/relay here` **就设好了**")
+            lines.append("　 　（`/relay check` 只自检、不会改目标）")
+        else:
+            lines.append("　 → **去你要收消息的那个群里**发一次 `/relay here`")
         lines.append("　 （搬运号也发不了私聊给你：两个号之间没有过对话）")
     else:
         try:
             ent = await _client.get_entity(int(tgt))
             name = getattr(ent, "title", None) or str(tgt)
-            lines.append(f"✅ 目标群：*{escape_md(name)}*，这个号在里面")
+            same = here is not None and int(here) == int(tgt)
+            lines.append(f"✅ 目标群：*{escape_md(name)}*"
+                         + ("（就是当前这个群）" if same else "")
+                         + "，搬运号在里面")
         except Exception as e:
             lines.append(f"❌ 目标群 `{tgt}` 进不去：{str(e)[:60]}")
             lines.append("　 → 用你的主号把搬运号拉进那个群（它得先是群成员才转得进去）")
@@ -358,7 +372,11 @@ async def relay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conf["exclude"] = list(rest)
         save_data()
     elif act in ("check", "自检", "test"):
-        await safe_reply(update.message, await selfcheck(), parse_mode="Markdown")
+        ch = update.effective_chat
+        await safe_reply(
+            update.message,
+            await selfcheck(ch.id, ch.type in ("group", "supergroup")),
+            parse_mode="Markdown")
         return
     elif act in ("on", "开"):
         conf["on"] = True
@@ -388,7 +406,9 @@ async def on_button(query, context):
     elif act == "check":
         await query.answer("逐条验中…")
         try:
-            txt = await selfcheck()
+            ch = query.message.chat if query.message else None
+            txt = await selfcheck(getattr(ch, "id", None),
+                                  getattr(ch, "type", "") in ("group", "supergroup"))
         except Exception as e:
             log.error(f"搬运自检出错: {e}")
             txt = f"自检失败：{str(e)[:100]}"

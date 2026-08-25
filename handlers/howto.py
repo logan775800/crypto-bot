@@ -11,10 +11,14 @@
 在群里点一下等于把自己的持仓贴给全群看。文字里提一句就够了，
 他们私聊发命令。
 """
+import logging
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from handlers.util import safe_reply
+
+log = logging.getLogger(__name__)
 
 # 指南跟着代码一起版本管理，改功能时顺手改它，链接不变
 GUIDE_URL = "https://github.com/logan775800/crypto-bot/blob/main/docs/guide.md"

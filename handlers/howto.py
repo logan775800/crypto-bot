@@ -87,30 +87,77 @@ def pinned_text():
 
     return (
         f"{PIN_HEAD}\n\n"
-        "行情 + 分析 + 模拟交易。不用记命令，绝大多数功能点按钮就行。\n\n"
-        "━━━ 先试这三个 ━━━\n"
-        "1️⃣ 直接发币名就查价 —— 发 BTC 试试\n"
-        "2️⃣ 发 /menu —— 功能菜单，点按钮出结果\n"
-        "3️⃣ 发 /howto —— 随时调出使用指南\n\n"
-        "━━━ 按你想干什么找 ━━━\n"
-        "💰 查价 —— 直接发币名｜/oc BANK 查交易所还没上的链上币\n"
-        "📅 看榜 —— /rank 3 三日涨跌榜｜/top 24小时榜\n"
-        "⚖️ 看情绪 —— /lsr 多空比，谁最被看多、谁最被看空\n"
-        "🔍 找机会 —— /scan 按能不能下单打分，不是涨幅榜\n"
-        "📈 看图 —— /achart BTC 1h 结构位和止损带画在图上\n"
-        "💣 看风险 —— /liqmap BTC 清算地图\n"
-        "🎮 练手 —— /vtrade 虚拟交易台，1 万 U 起步，全按钮\n"
-        "🔔 提醒 —— /alert 到价提醒｜/watchpct BTC 2 涨跌超 2% 就叫你\n"
-        "🚨 告警订阅 —— /menu → 提醒与订阅（两下）：急涨急跌 / 合约异动 / 极端拉升\n"
-        "💧 链上防跑路 —— /watchpct 合约地址 5　建完自动带 LP 撤出告警\n"
-        "💬 问它 —— 群里 @机器人 或回复它的消息\n\n"
+        "行情 + 分析 + 模拟交易 + 告警。不用记命令，绝大多数功能点按钮就行。\n"
+        "找不到就发 /commands（全部命令按分类列出，点一下直接执行）。\n\n"
+
+        "━━━ 不知道从哪开始就试这三个 ━━━\n"
+        "1️⃣ 直接发币名 —— 发 BTC。回行情卡 + 4小时/日线/周线三张图 + 研判\n"
+        "2️⃣ 发 /menu —— 功能菜单，10 个入口全平铺，点按钮出结果\n"
+        "3️⃣ 发 /howto —— 随时调出这份指南\n\n"
+
+        "━━━ 💰 查行情 ━━━\n"
+        "直接发币名｜/oc BANK 链上币（交易所没上的也能查，中文名也认）\n"
+        "/info 币详情　/compare 对比　/fear 恐惧贪婪　/index 大盘　/gas 手续费\n"
+        "菜单：📊 行情\n\n"
+
+        "━━━ 📅 看榜单 ━━━\n"
+        "/rank 3 三日涨跌榜　/top 24小时榜　/movers 异动快照\n"
+        "/upstreak 连涨　/downstreak 连跌（和涨跌榜不是一回事）\n"
+        "/lsr 多空比极值　/fex 资金费率极端榜　/pumptop 15m滚动榜\n\n"
+
+        "━━━ 🔍 找机会 ━━━\n"
+        "/scan 按能不能下单打分（不是涨幅榜）　/microcap 微市值\n"
+        "/breakout 箱体破位　/steady 稳健　/arb 跨所价差　/whale 巨鲸\n"
+        "菜单：🔍 机会扫描\n\n"
+
+        "━━━ 📈 看图和分析 ━━━\n"
+        "/achart BTC 1h 标注图（结构位、止损带画在图上）\n"
+        "/chart K线　/analyze 技术分析　/backtest 回测　/btcregime 大盘环境\n"
+        "/liqmap BTC 清算地图（模型估算，不是交易所数据）\n"
+        "菜单：📈 分析与图表\n\n"
+
+        "━━━ 🔔 提醒（你盯某个条件）━━━\n"
+        "/alert BTC 70000 到价提醒　/myalert 我的提醒\n"
+        "/watchpct BTC 2 涨跌超2%就叫你（报完自动续盯）\n"
+        "/cond 条件提醒（价格+指标组合）　/rsialert RSI 提醒\n"
+        "菜单：🔔 提醒与订阅 → 价格/条件提醒\n\n"
+
+        "━━━ 🚨 告警订阅（我主动推给你）━━━\n"
+        "菜单：🔔 提醒与订阅（两下就到，✅=已订阅）\n"
+        "⚡ /watchpump 急涨急跌 —— 15分钟内涨跌到阈值，币安+Bybit 约600个永续\n"
+        "📊 /watchcontract 合约异动 —— 24h破台阶(20%起)，自带清算地图\n"
+        "🚨 /pump3 极端拉升 —— 15m暴拉且多日已涨，一个月响几次\n"
+        "📈 /watchmarket 市场异动 —— 新币上线 + 放量\n"
+        "💧 链上防跑路 —— /watchpct 合约地址 5，建完自动带 LP 撤出告警\n"
+        "📰 /subnews 新闻　/subscribe 早报　/unlock 解锁提醒\n"
+        "/follow BTC ETH 只看关注的币　/quiet 23:00 8:00 免打扰\n\n"
+
+        "━━━ 🎮 模拟交易（练手，不是真钱）━━━\n"
+        "/vtrade 交易台，1万U起步，开仓五步全按钮\n"
+        "合约 /vopen /vclose /vpos /vtpsl 止盈损　/vhistory 胜率\n"
+        "现货 /vbuy /vsell /vspot　委托 /vorders /vcancel　重来 /vreset\n\n"
+
+        "━━━ 📅 复盘和风险 ━━━\n"
+        "/rstats 30 v 近30天模拟盘成绩单（加 ai 让它挑你的行为漏洞）\n"
+        "/weekly 周报　/plan 交易计划　/checklist 开仓自查\n"
+        "/risk 风险中心　/cockpit 持仓驾驶舱　/net 成本计算\n\n"
+
+        "━━━ 💬 问它 ━━━\n"
+        "群里 @机器人 或回复它的消息就能直接对话｜私聊 /ask 问题\n\n"
+
+        "━━━ ⚙️ 设置 ━━━\n"
+        "/source 换默认数据源（一条命令切15个模块）　/venue 换交易所\n"
+        "/datacheck 系统体检　/version 当前版本　/changelog 更新记录\n\n"
+
         "━━━ 新人最容易卡的三件事 ━━━\n"
-        "① 账户类功能（虚拟盘、持仓、复盘）必须私聊，群里会拒绝\n"
-        "② 找不到某个功能就发 /commands，全部命令按分类列出来，点一下直接执行\n"
-        "③ 不知道某个命令怎么用，就只发命令本身不带参数，它会告诉你用法\n\n"
+        "① 账户类功能（模拟盘、持仓、复盘）必须私聊，群里会拒绝\n"
+        "　 那是不让你的持仓被全群看见\n"
+        "② 找不到某个功能就发 /commands，全部命令按分类列出来\n"
+        "③ 不知道命令怎么用，只发命令本身不带参数，它会告诉你用法\n\n"
+
         "━━━ 三条先记住 ━━━\n"
-        "· /vtrade 是模拟盘，不是真钱，亏光了 /vreset 重来\n"
-        "· /liqmap 那张清算图是模型估算，不是交易所数据\n"
+        "· /vtrade 是模拟盘，不是真钱，随便试\n"
+        "· /liqmap 那张清算图是模型估算，没有交易所公布这个\n"
         "· 所有数据仅供参考，不构成投资建议"
         + new)
 
@@ -139,16 +186,33 @@ async def refresh_pin(context, chat_id):
                 return True, "置顶内容已经是最新的"
             log.info(f"[pin] 编辑旧置顶失败，改发新的: {e}")
 
+    # 先把消息发出去、记住 id，再单独去钉。
+    # 原来发和钉在同一个 try 里：钉失败就整件事算失败，连内容都没留下，
+    # 而其实内容已经发出去了——他看到的是"❌ 置顶失败"，却不知道消息就在上面。
     try:
         m = await context.bot.send_message(chat_id, text,
                                            disable_web_page_preview=True)
+    except Exception as e:
+        return False, f"消息都没发出去：{e}"
+
+    store[key] = m.message_id
+    save_data()
+    try:
         await context.bot.pin_chat_message(chat_id, m.message_id,
                                            disable_notification=True)
-        store[key] = m.message_id
-        save_data()
         return True, "已发新置顶并钉住"
     except Exception as e:
-        return False, f"置顶失败：{e}\n（机器人需要群管理员权限里的「置顶消息」）"
+        # **这条提示以前指错了地方。** 他照着去「用户权限」里勾了「置顶消息」，
+        # 结果还是失败——那是**群成员的默认权限**，对机器人无效：
+        # Telegram 的 Bot API 要求置顶必须是**管理员**。
+        # 提示指错方向比不提示更浪费时间，所以这里把两条路径都写出来。
+        return False, (
+            f"内容已经发出来了（就在上面这条），但钉不上去：{e}\n\n"
+            "机器人必须是**管理员**才能置顶，注意别走错菜单：\n"
+            "❌ 群资料 →「用户权限」里勾「置顶消息」—— 那是普通成员的权限，对机器人无效\n"
+            "✅ 群资料 →「管理员」→ 添加管理员 → 选这个机器人 → 打开「置顶消息」\n\n"
+            "不想给管理员也行：**长按上面那条消息手动置顶**，\n"
+            "以后每次更新我照样会把那条编辑成最新的（编辑不需要管理员）。")
 
 
 async def pin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

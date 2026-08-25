@@ -163,3 +163,68 @@ def test_pin_command_is_registered():
         encoding="utf-8")
     assert 'CommandHandler("pinhowto"' in src
     assert "auto_refresh_pins" in src, "没注册自动刷新，还是得手动改置顶"
+
+
+# ── 置顶要写全，而且提示不能指错地方 ──────────────────────────
+def test_pinned_text_fits_in_one_telegram_message():
+    """Telegram 单条上限 4096 字。超了整条发不出去，
+    而"发不出去"的表现是置顶功能整个不工作。"""
+    t = H.pinned_text()
+    assert len(t) < 3800, f"置顶已经 {len(t)} 字，逼近 4096 上限"
+
+
+def test_pinned_text_covers_every_major_area():
+    """他的原话：置顶「不能概括全部命令功能按钮」。
+    178 个命令塞不进一条消息，但**每个大类都得有代表**，
+    而且要写清对应的菜单入口在哪。"""
+    t = H.pinned_text()
+    areas = {
+        "查行情": ("/oc", "/info", "/fear"),
+        "榜单": ("/rank", "/top", "/lsr", "/fex"),
+        "找机会": ("/scan", "/microcap", "/breakout"),
+        "看图": ("/achart", "/chart", "/liqmap"),
+        "提醒": ("/alert", "/watchpct", "/cond"),
+        "告警订阅": ("/watchpump", "/watchcontract", "/pump3", "/watchmarket"),
+        "模拟交易": ("/vtrade", "/vopen", "/vbuy", "/vreset"),
+        "复盘风险": ("/rstats", "/weekly", "/plan", "/risk"),
+        "设置": ("/source", "/venue", "/datacheck", "/changelog"),
+    }
+    for area, cmds in areas.items():
+        for c in cmds:
+            assert c in t, f"「{area}」这块少了 {c}"
+
+
+def test_pinned_text_points_at_the_menu_paths():
+    """光给命令不够——他反复说的是"按钮在哪不清楚"。"""
+    t = H.pinned_text()
+    assert t.count("菜单：") >= 4, "至少几个大类要写明菜单入口在哪"
+    assert "提醒与订阅" in t
+
+
+def test_pin_failure_points_at_the_admin_menu_not_member_permissions():
+    """**这条提示指错过一次。**
+
+    他照着"需要置顶消息权限"去群资料 →「用户权限」里勾了「置顶消息」，
+    结果还是失败——那是**群成员的默认权限**，对机器人无效：
+    Telegram 的 Bot API 要求置顶必须是管理员。
+    指错方向的提示比不提示更浪费时间。
+    """
+    import inspect
+    src = inspect.getsource(H.refresh_pin)
+    assert "用户权限" in src and "管理员" in src, "没写清该点哪个菜单"
+    assert "长按" in src, "要给一条不用管理员也能走的退路"
+
+
+def test_content_is_sent_even_when_pinning_fails():
+    """钉不上也要把内容留在群里。
+
+    原来发和钉在同一个 try 里，钉失败就整件事算失败——
+    他看到「❌ 置顶失败」，却不知道消息其实已经在上面了。
+    """
+    import inspect
+    src = inspect.getsource(H.refresh_pin)
+    send_at = src.index("send_message")
+    pin_at = src.index("pin_chat_message")
+    between = src[send_at:pin_at]
+    assert "return False" in between or "except" in between, \
+        "发送和置顶要分开处理，钉失败不能连内容一起丢"

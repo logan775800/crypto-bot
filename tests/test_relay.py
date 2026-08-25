@@ -181,6 +181,62 @@ def test_selfcheck_shows_underscore_names_verbatim(monkeypatch):
     assert r"\_" not in txt
 
 
+def test_selfcheck_tells_a_private_chat_target_apart_from_a_group(monkeypatch):
+    """真机踩到：他在**私聊**里发了 /relay here，目标成了他自己的 user id。
+
+    Telegram 的 id 有符号约定：正数是用户，负数才是群。原来的提示一律说
+    "把搬运号拉进那个群"——可根本没有群，指错方向比不提示更浪费时间。
+    """
+    import asyncio
+
+    class _C:
+        async def get_me(self):
+            return type("M", (), {"first_name": "大", "username": None,
+                                  "id": 8764435268})()
+
+        async def get_entity(self, x):
+            raise RuntimeError("Could not find the input entity for PeerUser")
+
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.setattr(R, "_client", _C())
+    c = R.cfg()
+    c["target"] = 7774574457          # 正数 = 用户
+    txt = asyncio.run(R.selfcheck())
+    assert "私聊" in txt
+    assert "去你要收消息的那个群里" in txt
+    assert "拉进那个群" not in txt, "没有群的时候不能让他去拉群"
+
+
+def test_selfcheck_still_says_pull_me_in_for_a_real_group(monkeypatch):
+    import asyncio
+
+    class _C:
+        async def get_me(self):
+            return type("M", (), {"first_name": "大", "username": None, "id": 1})()
+
+        async def get_entity(self, x):
+            raise RuntimeError("nope")
+
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.setattr(R, "_client", _C())
+    c = R.cfg()
+    c["target"] = -1003950673952      # 负数 = 群
+    txt = asyncio.run(R.selfcheck())
+    assert "拉进那个群" in txt and "私聊" not in txt
+
+
+def test_panel_flags_a_private_chat_target(monkeypatch):
+    """别等他跑自检才发现——面板上就该看得见。"""
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    c = R.cfg()
+    c["target"] = 7774574457
+    txt, _kb = R.panel()
+    assert "这是私聊不是群" in txt
+
+
 def test_default_is_off():
     """默认必须是关的——搬运会往群里发东西，不能装上就开始刷。"""
     assert R.cfg()["on"] is False

@@ -217,14 +217,23 @@ async def selfcheck():
     lines.append("")
     if not tgt:
         lines.append("❌ 还没设转发目标（在目标群里发 `/relay here`）")
+    elif int(tgt) > 0:
+        # Telegram 的 id 有符号约定：**正数是用户，负数才是群/频道**。
+        # 正数目标 = 他在**私聊**里发的 /relay here。
+        # 这时候不该说"把搬运号拉进群"——根本没有群。指错方向的提示比不提示更费时间。
+        lines.append(f"❌ 目标 `{tgt}` 是一个**私聊**，不是群")
+        lines.append("　 （你在和机器人的私聊里发的 `/relay here`，"
+                     "所以目标成了你自己）")
+        lines.append("　 → **去你要收消息的那个群里**再发一次 `/relay here`")
+        lines.append("　 （搬运号也发不了私聊给你：两个号之间没有过对话）")
     else:
         try:
             ent = await _client.get_entity(int(tgt))
             name = getattr(ent, "title", None) or str(tgt)
             lines.append(f"✅ 目标群：*{escape_md(name)}*，这个号在里面")
         except Exception as e:
-            lines.append(f"❌ 目标 `{tgt}` 进不去：{str(e)[:60]}")
-            lines.append("　 → 用你的主号把这个搬运号拉进那个群")
+            lines.append(f"❌ 目标群 `{tgt}` 进不去：{str(e)[:60]}")
+            lines.append("　 → 用你的主号把搬运号拉进那个群（它得先是群成员才转得进去）")
 
     # 每个来源频道：订没订、能不能转
     lines.append("")
@@ -279,7 +288,9 @@ def panel():
     lines += [
         f"账号连接：{'✅ 已连上' if live else '❌ 没连上（看日志）'}",
         f"开关：{'🟢 开启中' if conf.get('on') else '🔴 已关闭'}",
-        f"转发到：`{conf.get('target') or '（未设置）'}`",
+        f"转发到：`{conf.get('target') or '（未设置）'}`"
+        + ("　⚠️ 这是私聊不是群，去群里发 /relay here"
+           if conf.get("target") and int(conf["target"]) > 0 else ""),
         f"盯着的频道（{len(srcs)}）："
         # ⚠️ 反引号里**不要** escape_md：旧版 Markdown 在代码块里不处理转义，
         # `blockbeats\_chart` 会原样显示出那个反斜杠，他照着复制就是错的。

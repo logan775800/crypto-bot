@@ -80,17 +80,55 @@ async def announce_update(context, version):
             # 单个会话发失败（被踢、群解散）不能挡住其余会话，也不该让版本标记不落地
             logging.warning(f"更新播报发送失败 {cid}: {e}")
     # 无论发成功几个都记下来：否则一个死会话会让每次重启都重播一遍
-    data["announced_version"] = version
-    save_data()
-    # 发了 0 个要单独喊一声：这正是"部署成功但群里什么都没有"的现场，
-    # 只记一条 info 的话，日志里根本看不出这是异常。
+    # ⚠️ **只有真发出去过才标记已播报。**
+    #
+    # 老写法是"无论发成功几个都记下来"，理由是"否则一个死会话会让每次重启都重播"。
+    # 但那把两件事混了：**一个会话失败**和**一个都没成功**完全不同。
+    # startup_notify 挂在容器启动后 15 秒，那时网络/Telegram 连接常常还没稳——
+    # 只要那一次全挂，版本就被永久标记成"已播报"，再也不会重试。
+    # 现场表现正是他说的：部署成功了，群里**经常**没有更新内容（不是每次都没有）。
     if sent == 0:
         logging.warning(
-            f"更新播报 {version}：一个会话都没发出去。"
-            f"候选 {len(list(subscribed_chats()))} 个、排除管理员 {len(admins)} 个——"
-            f"检查 ADMIN_CHAT_ID 是不是把目标群自己填进去了")
-    else:
-        logging.info(f"更新播报 {version}：已通知 {sent} 个会话")
+            f"更新播报 {version}：一个会话都没发出去，**不标记已播报**，下一轮会重试。"
+            f"候选 {len(list(subscribed_chats()))} 个、排除管理员 {len(admins)} 个")
+        return
+    data["announced_version"] = version
+    save_data()
+    logging.info(f"更新播报 {version}：已通知 {sent} 个会话")
+
+
+async def retry_announce(context: ContextTypes.DEFAULT_TYPE):
+    """定时补发更新播报。已经播过就是个空操作。
+
+    光靠启动后 15 秒那一次太脆：那时连接常常还没稳，而一次失败就再也没有第二次。
+    挂个便宜的重试，把"偶尔发不出去"变成"最多晚几分钟"。
+    """
+    from config import VERSION
+    await announce_update(context, VERSION)
+
+
+def broadcast_state():
+    """更新播报这条链的现状，给 /datacheck 和排障用。
+
+    这条链出问题时**完全没有可观测性**——部署成功了、群里没东西，
+    而日志在服务器上、他看不到。所以做成能在 Telegram 里直接查的。
+    """
+    from config import VERSION
+    from handlers.changelog import update_text
+    from storage import data, subscribed_chats     # 都是函数内 import，别靠模块级
+    subs = list(subscribed_chats())
+    admins = {int(a) for a in ADMIN_IDS
+              if str(a).lstrip("-").isdigit() and int(a) > 0}
+    targets = [c for c in subs if c not in admins]
+    return {
+        "version": VERSION,
+        "announced": data.get("announced_version"),
+        "will_send": data.get("announced_version") != VERSION,
+        "text_len": len(update_text(VERSION) or ""),
+        "subscribed": len(subs),
+        "excluded_admins": len(subs) - len(targets),
+        "targets": targets[:20],
+    }
 
 # 数据源健康检查（定时调用）
 async def health_check(context: ContextTypes.DEFAULT_TYPE):

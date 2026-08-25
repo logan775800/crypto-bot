@@ -435,6 +435,26 @@ async def system_health():
                      "很容易被误认为「没交易记录」：_")
         lines.append("_/trade /rpos /cockpit /rstats /weekly、组合风险、亏损归因、"
                      "计划vs成交、连亏自动降险_")
+    # 更新播报这条链：部署成功了群里却没有更新内容时，以前完全没有可观测性
+    # （日志在服务器上，他看不到），只能靠猜。现在体检里直接给出状态。
+    try:
+        from handlers.monitor import broadcast_state
+        b = broadcast_state()
+        lines.append("")
+        lines.append("📣 *更新播报*")
+        mark = "⏳ 待发" if b["will_send"] else "✅ 已发过"
+        lines.append(f"当前 {b['version']}｜已播报 {b['announced'] or '—'}　{mark}")
+        lines.append(f"订阅会话 {b['subscribed']} 个，"
+                     f"排除管理员私聊 {b['excluded_admins']} 个，"
+                     f"实际目标 {len(b['targets'])} 个")
+        if not b["targets"]:
+            lines.append("⚠️ 一个目标都没有——群没订阅过任何推送，"
+                         "或者 ADMIN_CHAT_ID 把目标群自己填进去了")
+        if b["text_len"] == 0:
+            lines.append("⚠️ 这一版在 CHANGELOG.md 里没有条目，所以不会播报")
+    except Exception as e:
+        log.info(f"播报状态取不到: {e}")
+
     lines.append("")
     lines.append("查单个币的数据维度：`/datacheck BTC`")
     return "\n".join(lines)

@@ -144,3 +144,77 @@ def test_every_module_that_logs_defines_its_logger():
         if "log." in src and not defines:
             bad.append(f.name)
     assert not bad, f"这些模块用了 log 却没定义：{bad}"
+
+
+# ── 更新播报：一次失败不能变成永久不播 ────────────────────────
+# 现场：部署成功了，群里**经常**没有更新内容（不是每次都没有——所以是时序问题）。
+# `startup_notify` 挂在容器启动后 15 秒，那时网络/Telegram 连接常常还没稳。
+# 老写法"无论发成功几个都记下来"把两件事混了：**一个会话失败** vs **一个都没成功**。
+# 后者一旦发生，版本就被永久标记成已播报，再也不会重试。
+
+class _BadBot:
+    async def send_message(self, **kw):
+        raise RuntimeError("Timed out")
+
+
+class _OkBot:
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, chat_id=None, text=None, **kw):
+        self.sent.append(chat_id)
+
+
+@pytest.fixture
+def _one_group():
+    storage.data["market_watch"] = [-100999]
+    storage.data.pop("announced_version", None)
+    yield
+    storage.data["market_watch"] = []
+    storage.data.pop("announced_version", None)
+
+
+def test_total_failure_does_not_mark_it_as_announced(_one_group):
+    """全挂了就**别标记**，留给下一轮重试。这是"经常不发"的真因。"""
+    from config import VERSION
+    from handlers import monitor as M
+    _run(M.announce_update(types.SimpleNamespace(bot=_BadBot()), VERSION))
+    assert storage.data.get("announced_version") is None
+
+
+def test_retry_delivers_it_later(_one_group):
+    from config import VERSION
+    from handlers import monitor as M
+    _run(M.announce_update(types.SimpleNamespace(bot=_BadBot()), VERSION))
+    bot = _OkBot()
+    _run(M.retry_announce(types.SimpleNamespace(bot=bot)))
+    assert bot.sent == [-100999]
+    assert storage.data.get("announced_version") == VERSION
+
+
+def test_retry_is_a_noop_once_announced(_one_group):
+    """补发任务每 5 分钟跑一次，播过之后必须是空操作，不然会刷屏。"""
+    from handlers import monitor as M
+    bot = _OkBot()
+    _run(M.retry_announce(types.SimpleNamespace(bot=bot)))
+    bot2 = _OkBot()
+    _run(M.retry_announce(types.SimpleNamespace(bot=bot2)))
+    assert not bot2.sent
+
+
+def test_broadcast_state_actually_runs(_one_group):
+    """**又是那一类**：`broadcast_state` 里用了函数内 import 的 `subscribed_chats`，
+    第一版写完就是 NameError——真跑一次当场抓到，只做字符串检查照样全绿。"""
+    from config import VERSION
+    from handlers import monitor as M
+    st = M.broadcast_state()
+    assert st["version"] == VERSION
+    assert st["will_send"] is True
+    assert st["subscribed"] >= 1
+    assert st["text_len"] > 0
+
+
+def test_retry_job_is_registered():
+    src = (pathlib.Path(__file__).resolve().parent.parent / "bot.py").read_text(
+        encoding="utf-8")
+    assert "retry_announce" in src, "只有启动那一次的话，失败一次就永远没有了"

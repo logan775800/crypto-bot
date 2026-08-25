@@ -733,6 +733,9 @@ def main():
     # /microcap 直接读现成的（否则会在命令里被限频截断，越小的市值越容易缺）
     jq.run_repeating(microcap.prebuild, interval=6 * 3600, first=300)
     jq.run_once(monitor.startup_notify, when=15)  # 启动告警
+    # 补发更新播报：启动后 15 秒那一次太脆（连接常常还没稳），一次失败就再无第二次。
+    # 这个重试已播过就是空操作，把"偶尔发不出去"变成"最多晚几分钟"。
+    jq.run_repeating(monitor.retry_announce, interval=300, first=180)  # 更新播报补发
     # 每日播报：每天固定时间（用 UTC，注意时区换算）
     jq.run_daily(broadcast.daily_analysis, time=datetime.time(hour=1, minute=0))
     jq.run_daily(summary.daily_summary, time=datetime.time(hour=0, minute=0))

@@ -270,6 +270,45 @@ def test_panel_flags_a_private_chat_target(monkeypatch):
     assert "这是私聊不是群" in txt
 
 
+def test_setting_target_to_the_same_chat_says_so_loudly(monkeypatch):
+    """真机踩到：目标已经是当前群时再点【转发到当前会话】，面板内容一个字
+    没变，safe_edit 撞上 not modified 被咽掉——**屏幕上什么都不动，
+    看起来就是坏了**，他会一直点。
+
+    "操作成功但没有可见变化"的按钮必须弹窗告诉他"本来就是"。
+    """
+    import asyncio
+    import types
+    R.cfg()["target"] = -100123
+    answered = {}
+
+    class Q:
+        data = "rl:here"
+        from_user = types.SimpleNamespace(id=111)
+        message = types.SimpleNamespace(chat_id=-100123)
+
+        async def answer(self, text=None, show_alert=False, **k):
+            answered["text"] = text
+            answered["alert"] = show_alert
+
+        async def edit_message_text(self, *a, **k):
+            answered["edited"] = True
+
+    monkeypatch.setattr("handlers.relay.is_admin", lambda uid: True)
+    asyncio.run(R.on_button(Q(), None))
+    assert answered.get("alert") is True, "没有可见变化时必须弹窗，不能只发悄悄话"
+    assert "本来就是" in answered.get("text", "")
+    assert "edited" not in answered, "内容没变就别去编辑，那只会撞 not modified"
+
+
+def test_panel_says_history_is_not_backfilled(monkeypatch):
+    """刚配好时"已转 0 条"会被当成坏了——先说清它只转新帖。"""
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    txt, _kb = R.panel()
+    assert "只转新发的帖" in txt and "不补历史" in txt
+
+
 def test_default_is_off():
     """默认必须是关的——搬运会往群里发东西，不能装上就开始刷。"""
     assert R.cfg()["on"] is False

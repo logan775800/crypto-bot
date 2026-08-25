@@ -318,6 +318,8 @@ def panel():
     lines += [
         "",
         f"每个频道每小时最多转 {MAX_PER_HOUR} 条。转发带原生「转发自」的头，出处不丢。",
+        "**只转新发的帖，不补历史**——刚配好时「已转 0 条」是正常的，"
+        "等频道下次发帖就有了。",
         "",
         "⚠️ **配置的是你，干活的是上面那个号**。它必须自己订阅了那些频道、"
         "而且在目标群里，否则不报错、就是不转。点【🩺 自检】逐条验。",
@@ -400,9 +402,18 @@ async def on_button(query, context):
         save_data()
         await query.answer("已开启" if conf["on"] else "已关闭")
     elif act == "here":
-        conf["target"] = query.message.chat_id if query.message else None
+        cur = query.message.chat_id if query.message else None
+        # 已经是当前会话时，面板内容一个字都不会变，safe_edit 会撞上
+        # Telegram 的「not modified」被咽掉——**屏幕上什么都不动，看起来就是坏了**。
+        # 这种"操作成功但没有可见变化"的按钮，必须用 show_alert 弹一下告诉他
+        # 「本来就是」，否则他会一直点。
+        if conf.get("target") and cur and int(conf["target"]) == int(cur):
+            await query.answer("这里本来就是转发目标了，不用再点 ✅",
+                               show_alert=True)
+            return
+        conf["target"] = cur
         save_data()
-        await query.answer("转发目标已设为当前会话")
+        await query.answer("✅ 转发目标已设为当前会话", show_alert=True)
     elif act == "check":
         await query.answer("逐条验中…")
         try:

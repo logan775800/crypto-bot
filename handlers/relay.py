@@ -86,18 +86,31 @@ def _norm(s):
 
 
 # ── 过滤 ────────────────────────────────────────────────────
-def wanted(text, conf):
+def rules_for(conf, source=None):
+    """这个频道该用哪套关键词。**按频道设的优先，没设才用全局那套。**
+
+    为什么必须分频道：搬马斯克推文的频道里九成不是币圈内容，得用
+    「只要含币圈词」筛；而律动那种频道本来就全是币圈内容，同一把尺子
+    会把好东西误杀掉。一套全局规则表达不了"这个要筛、那个不筛"。
+    """
+    per = (conf.get("rules") or {}).get(str(source)) if source is not None else None
+    if per and (per.get("include") or per.get("exclude")):
+        return per.get("include") or [], per.get("exclude") or []
+    return conf.get("include") or [], conf.get("exclude") or []
+
+
+def wanted(text, conf, source=None):
     """这条要不要转。
 
     include 为空 = 全都要；非空 = 命中任一关键词才要。
     exclude 命中任一就丢，**exclude 优先于 include**——
     「我要解锁消息，但广告一律不要」这个意图，只有 exclude 优先才表达得出来。
     """
+    inc, exc = rules_for(conf, source)
     t = (text or "").lower()
-    for kw in conf.get("exclude") or []:
+    for kw in exc:
         if kw.lower() in t:
             return False, f"命中排除词「{kw}」"
-    inc = conf.get("include") or []
     if not inc:
         return True, ""
     for kw in inc:
@@ -176,7 +189,7 @@ async def handle(event):
     if src is None:
         return
 
-    ok, _why = wanted(event.message.message or "", conf)
+    ok, _why = wanted(event.message.message or "", conf, src)
     if not ok:
         return
     if not rate_ok(str(src)):
@@ -312,9 +325,17 @@ def panel():
         + ("、".join(f"`{s}`" for s in srcs) if srcs else "（空）"),
     ]
     if conf.get("include"):
-        lines.append(f"只转含：{'、'.join(conf['include'])}")
+        lines.append(f"只转含（全局）：{'、'.join(conf['include'])}")
     if conf.get("exclude"):
-        lines.append(f"不转含：{'、'.join(conf['exclude'])}")
+        lines.append(f"不转含（全局）：{'、'.join(conf['exclude'])}")
+    for src, r in (conf.get("rules") or {}).items():
+        bits = []
+        if r.get("include"):
+            bits.append("只转含 " + "、".join(r["include"]))
+        if r.get("exclude"):
+            bits.append("不转含 " + "、".join(r["exclude"]))
+        if bits:
+            lines.append(f"　`{src}`：{'；'.join(bits)}")
     lines += [
         "",
         f"每个频道每小时最多转 {MAX_PER_HOUR} 条。转发带原生「转发自」的头，出处不丢。",
@@ -327,8 +348,9 @@ def panel():
         "`/relay add @频道名`　加一个（私密频道用 id）",
         "`/relay del @频道名`　去掉",
         "`/relay here`　　　　把当前会话设为转发目标",
-        "`/relay only 解锁 上币`　只转含这些词的",
-        "`/relay skip 广告 推广`　不转含这些词的",
+        "`/relay only 解锁 上币`　只转含这些词的（对所有频道）",
+        "`/relay only @某频道 币 BTC`　**只给这个频道**设（搬推文的频道最需要）",
+        "`/relay skip @某频道 广告`　不转这个频道里含这些词的",
         "`/relay check`　　　 自检：这个号进群了吗、订阅了吗、能不能转",
     ]
     rows = [[InlineKeyboardButton("🔴 关闭" if conf.get("on") else "🟢 开启",
@@ -367,11 +389,14 @@ async def relay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif act == "here":
         conf["target"] = update.effective_chat.id
         save_data()
-    elif act == "only":
-        conf["include"] = list(rest)
-        save_data()
-    elif act == "skip":
-        conf["exclude"] = list(rest)
+    elif act in ("only", "skip"):
+        key = "include" if act == "only" else "exclude"
+        # 第一个参数是已加过的频道 → 只给这个频道设；否则设成全局
+        tgt_src = _norm(rest[0]) if rest else None
+        if tgt_src is not None and tgt_src in conf.get("sources", []):
+            conf.setdefault("rules", {}).setdefault(str(tgt_src), {})[key] =                 list(rest[1:])
+        else:
+            conf[key] = list(rest)
         save_data()
     elif act in ("check", "自检", "test"):
         ch = update.effective_chat

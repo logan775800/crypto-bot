@@ -112,6 +112,52 @@ def test_filter_survives_an_empty_message():
     assert R.wanted(None, {"include": ["解锁"]})[0] is False
 
 
+# ── 按频道分开设关键词 ──────────────────────────────────────
+def test_per_channel_rules_beat_the_global_ones():
+    """搬马斯克推文的频道九成不是币圈内容，得筛；律动那种本来就全是币圈，
+    筛了反而误杀。一套全局规则表达不了"这个要筛、那个不筛"。"""
+    conf = {"sources": ["musk_cn", "blockbeats_chart"],
+            "include": [],
+            "rules": {"musk_cn": {"include": ["币", "BTC", "crypto"]}}}
+    # 马斯克频道：只放币圈内容过
+    assert R.wanted("聊聊 BTC 的未来", conf, "musk_cn")[0] is True
+    assert R.wanted("今天发射了一枚火箭", conf, "musk_cn")[0] is False
+    # 律动频道没设规则 → 走全局（空）→ 全都要，不被误杀
+    assert R.wanted("今天发射了一枚火箭", conf, "blockbeats_chart")[0] is True
+
+
+def test_global_rules_still_apply_where_no_per_channel_rule():
+    conf = {"sources": ["a", "b"], "include": ["解锁"],
+            "rules": {"a": {"include": ["币"]}}}
+    assert R.wanted("解锁公告", conf, "b")[0] is True      # 走全局
+    assert R.wanted("解锁公告", conf, "a")[0] is False     # a 自己那套没有"解锁"
+    assert R.wanted("币价", conf, "a")[0] is True
+
+
+def test_rules_for_falls_back_when_channel_rule_is_empty():
+    conf = {"include": ["解锁"], "rules": {"a": {}}}
+    inc, _exc = R.rules_for(conf, "a")
+    assert inc == ["解锁"], "频道规则是空的就该回落到全局，不能变成全都要"
+
+
+def test_handle_passes_the_source_into_the_filter():
+    """不把来源传进去的话，上面那套按频道的规则等于没有。"""
+    import inspect
+    src = inspect.getsource(R.handle)
+    assert "wanted(event.message.message or \"\", conf, src)" in src
+
+
+def test_panel_shows_per_channel_rules(monkeypatch):
+    """设了看不见等于没设。"""
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    c = R.cfg()
+    c["sources"] = ["musk_cn"]
+    c["rules"] = {"musk_cn": {"include": ["币", "BTC"]}}
+    txt, _kb = R.panel()
+    assert "musk_cn" in txt and "只转含 币、BTC" in txt
+
+
 # ── 限流：别把群淹了 ────────────────────────────────────────
 def test_rate_limit_per_source():
     now = time.time()

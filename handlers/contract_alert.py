@@ -236,10 +236,27 @@ async def _attach_liqmap(bot, chat_id, alerts):
         from handlers import liqmap
         m, last, _inst = await liqmap._get(top["sym"], "7日")
         buf = liqmap.render(m, top["sym"], "7日", last)
-        cap = (f"💣 *{escape_md(top['sym'])} 清算地图*（估算）\n"
-               f"刚刚 {top['change']:+.1f}%，看看上下还堆着多少待强平的仓位。\n"
-               f"密集区是磁吸位，止损别正好压在柱子上。\n"
-               f"⚠️ 模型估算不是交易所数据")
+        # 涨和跌该盯的**不是同一侧**：砸下来要看下方还有多少多单等着被连环打掉
+        # （那是继续下跌的燃料），拉上去要看上方还有多少空单会被逼空。
+        # 文案一样的话，等于把最该说的那句话省掉了
+        if top["change"] < 0:
+            zones = liqmap.zones(m, "long")
+            side = ("🔻 *下方还有多少多单等着被打掉* —— 那是继续往下的燃料。\n"
+                    "扫穿密集区往往加速，跌进去之后反而容易插针反抽。")
+        else:
+            zones = liqmap.zones(m, "short")
+            side = ("🔺 *上方还有多少空单会被逼* —— 那是继续往上的燃料。\n"
+                    "空单密集区常被当成磁吸位，价格容易被推过去扫一轮。")
+        near = ""
+        if zones:
+            z = zones[0]
+            mid = (z["lo"] + z["hi"]) / 2
+            near = (f"\n最密的一档：{liqmap._px(z['lo'])}–{liqmap._px(z['hi'])}"
+                    f"　约 {liqmap._money(z['amount'])} U"
+                    f"　距现价 {(mid / last - 1) * 100:+.1f}%")
+        cap = (f"💣 *{escape_md(top['sym'])} 清算地图*（估算）　刚刚 "
+               f"{top['change']:+.1f}%\n{side}{near}\n"
+               f"止损别正好压在柱子上。⚠️ 模型估算不是交易所数据")
         await bot.send_photo(chat_id=chat_id, photo=buf, caption=cap,
                              parse_mode="Markdown",
                              reply_markup=liqmap.kb(top["sym"], "7日"))

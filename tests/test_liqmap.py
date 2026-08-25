@@ -206,6 +206,25 @@ def test_attach_failure_is_silent():
          "direction": "down", "price": 1}]))
 
 
+def test_drops_and_pumps_are_both_covered():
+    """他专门问了"大跌也带上"——判据用的是幅度绝对值，涨跌一视同仁。"""
+    import inspect
+    from handlers import contract_alert as CA
+    src = inspect.getsource(CA._attach_liqmap)
+    assert 'abs(a["change"])' in src and 'abs(top["change"])' in src
+
+
+def test_caption_points_at_the_side_that_matters():
+    """涨和跌该盯的不是同一侧：砸下来看下方多单（继续往下的燃料），
+    拉上去看上方空单（继续往上的燃料）。文案一样等于把最该说的省掉了。"""
+    import inspect
+    from handlers import contract_alert as CA
+    src = inspect.getsource(CA._attach_liqmap)
+    assert 'zones(m, "long")' in src and 'zones(m, "short")' in src
+    assert "下方还有多少多单" in src and "上方还有多少空单" in src
+    assert 'top["change"] < 0' in src, "要按方向分，不能两边一个文案"
+
+
 def test_small_moves_do_not_get_a_map():
     import asyncio
     from handlers import contract_alert as CA

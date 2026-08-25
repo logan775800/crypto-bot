@@ -777,11 +777,28 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _back()]), parse_mode="Markdown")
 
     elif d == "cat_notify":
+        # 三个告警直接摆在这一层。它们原来分别埋在「价格/条件提醒」和
+        # 「定期订阅推送」里面，从 /menu 数下去要点**三下**——而规矩是
+        # 超过两层就当成 bug 去修入口，别在说明里绕。
+        # 原来的位置一个都没删（那两个面板里照样点得到），这里只是把最常用的提上来。
+        from storage import data as _sd
+        _cid = query.message.chat_id
+        _pp = "✅" if str(_cid) in (_sd.get("pump_watch") or {}) else "⬜"
+        _cw = _sd.get("contract_watch") or []
+        _cp = "✅" if (_cid in _cw or str(_cid) in [str(s) for s in _cw]) else "⬜"
+        _p3 = "✅" if str(_cid) in (_sd.get("pump3") or {}) else "⬜"
         await safe_edit(query,
             "🔔 *提醒与订阅*\n\n"
             "**提醒**是你盯某个条件（到价、波动、指标）；\n"
-            "**订阅**是我定期推给你（早报、新闻、异动）。",
+            "**订阅**是我定期推给你（早报、新闻、异动）。\n"
+            "下面三个是最常用的，✅已订阅 ⬜未订阅：",
             reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton(f"{_pp} ⚡急涨急跌(15m,可调阈值)",
+                                      callback_data="pump:panel")],
+                [InlineKeyboardButton(f"{_cp} 📊合约异动(24h±20%起,带清算地图)",
+                                      callback_data="ctr:panel")],
+                [InlineKeyboardButton(f"{_p3} 🚨极端拉升(15m暴拉+多日已涨)",
+                                      callback_data="p3:panel")],
                 [InlineKeyboardButton("🔔 价格/条件提醒", callback_data="cat_alert")],
                 [InlineKeyboardButton("📬 定期订阅推送", callback_data="cat_subs")],
                 _back()]), parse_mode="Markdown")

@@ -1,12 +1,16 @@
-"""Bybit 全永续「短窗急涨/急跌」告警：默认 15 分钟内涨跌 ≥15% 就推送。
+"""全永续「短窗急涨/急跌」告警：默认 15 分钟内涨跌 ≥15% 就推送。
+
+⚠️ v1.46.0 起币池是**币安 + Bybit 取并集**（约 600 个），不再只有 Bybit。
+取数函数名 `_fetch_bybit_perps` 沿用旧名（引用点多），别被名字骗了。
 
 和现有告警的区别（别搞混）：
   • contract_alert.py 看的是 **24h 涨跌幅** 分档（20/30/…%）；
   • market_alert.py 看的是放量/新币；
   • 本模块看的是 **滚动 15 分钟窗口的涨跌幅**——抓的是"刚刚拉起来/砸下去"。
 
-实现：每 60 秒拉一次 Bybit `/v5/market/tickers?category=linear`（一次返回全部
-~500 个 U 本位永续），在内存里给每个币存一小段 (时间, 价格) 历史，用
+实现：每 60 秒各拉一次币安 `/fapi/v1/ticker/24hr` 和 Bybit
+`/v5/market/tickers?category=linear`（各自一次返回全部 U 本位永续），
+按币去重后在内存里给每个币存一小段 (时间, 价格) 历史，用
 **现价 vs 约 15 分钟前的价** 算滚动涨跌幅。历史只放内存、不写 pickle
 （几千个元组，落盘不值当）；重启后 15 分钟内自行重建，期间不误报（没够 15 分钟
 历史的币直接跳过）。
@@ -312,8 +316,8 @@ async def _push(bot, chat_id, hits, pct):
                         f"（15m）现 ${h['price']:,.4g}")
     chunks = [body[i:i + MAX_LINES] for i in range(0, len(body), MAX_LINES)]
     for idx, chunk in enumerate(chunks):
-        head = (f"⚡ *Bybit 急涨急跌*（15分钟 ≥{pct:g}%）\n" if idx == 0
-                else "⚡ *Bybit 急涨急跌*（续）\n")
+        head = (f"⚡ *急涨急跌*（币安+Bybit，15分钟 ≥{pct:g}%）\n" if idx == 0
+                else "⚡ *急涨急跌*（续）\n")
         text = head + "\n".join(chunk)
         if idx == len(chunks) - 1:
             text += "\n\n⚠️ 短时剧烈波动，追高风险大，不构成投资建议"
@@ -335,10 +339,10 @@ def _panel(chat_id):
         status = "⬜️ *未订阅*　点下面任一阈值即可开启"
 
     text = (
-        "⚡ *Bybit 急涨急跌监控*\n"
+        "⚡ *急涨急跌监控*\n"
         "━━━━━━━━━━━━━━\n"
         f"{status}\n\n"
-        "• 监控全部 U 本位永续（~500个）\n"
+        "• 监控币安 + Bybit 全部 U 本位永续，取并集（约 600 个）\n"
         "• 15 分钟内涨跌到阈值就推送，涨🚀跌💥都报\n"
         f"• 已滤掉 24h 成交额 < {MIN_TURNOVER/1e4:g}万U 的僵尸盘\n"
         "━━━━━━━━━━━━━━\n"
@@ -454,7 +458,7 @@ async def on_button(query, context):
 
 # ---------- 订阅命令 ----------
 async def watch_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/watchpump [百分比] —— 订阅 Bybit 全永续 15 分钟急涨急跌告警。"""
+    """/watchpump [百分比] —— 订阅全永续 15 分钟急涨急跌告警（币安+Bybit）。"""
     chat_id = str(update.effective_chat.id)
     data.setdefault("pump_watch", {})
     pct = DEFAULT_PCT
@@ -474,8 +478,8 @@ async def watch_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_data()
     verb = "已更新" if existed else "已订阅"
     await update.message.reply_text(
-        f"⚡ {verb}【Bybit 急涨急跌告警】\n\n"
-        f"• 监控 **全部 U 本位永续**（~500 个）\n"
+        f"⚡ {verb}【急涨急跌告警】\n\n"
+        f"• 监控 **币安 + Bybit 全部 U 本位永续**，取并集（约 600 个）\n"
         f"• 触发：任一币 **15 分钟内涨跌 ≥ {pct:g}%**\n"
         f"• 涨🚀 跌💥 都报，基准=现价对比 15 分钟前\n"
         f"• 每 60 秒扫一次；同币同方向不重复刷屏，再冲高 {REALERT_STEP:g} 个点才升级\n"
@@ -525,7 +529,7 @@ async def pump_top(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ups = sorted([r for r in ranked if r[1] > 0], key=lambda x: -x[1])[:8]
     downs = sorted([r for r in ranked if r[1] < 0], key=lambda x: x[1])[:8]
 
-    lines = [f"📊 *Bybit 15m 滚动涨跌榜*（共监控 {len(ranked)} 个永续）"]
+    lines = [f"📊 *15m 滚动涨跌榜*（币安+Bybit，共监控 {len(ranked)} 个永续）"]
     if sub:
         lines.append(f"你的告警线：涨跌 ≥ *{pct:g}%*")
     else:
@@ -564,6 +568,6 @@ async def unwatch_pump(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data["pump_watch"].pop(chat_id, None)
         data.get("pump_alerted", {}).pop(chat_id, None)
         save_data()
-        await update.message.reply_text("已取消 Bybit 急涨急跌告警")
+        await update.message.reply_text("已取消急涨急跌告警")
     else:
         await update.message.reply_text("本群还没订阅急涨急跌告警（用 /watchpump 开启）")

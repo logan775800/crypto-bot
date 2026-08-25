@@ -117,3 +117,44 @@ def test_merged_panels_all_have_a_way_back():
     for key in ("cat_market", "cat_venues", "cat_notify"):
         seg = src.split(f'elif d == "{key}":')[1].split("elif d ==")[0]
         assert "_back()" in seg, f"{key} 面板没有返回键"
+
+
+# ── 告警入口不许再沉到第三层 ──────────────────────────────────
+# 2026-08-25：写使用指南时数出来的——三个告警分别埋在「价格/条件提醒」和
+# 「定期订阅推送」里面，从 /menu 点下去要**三下**。
+# 他的规矩是「按钮超过两层就当成 bug 去修入口，别在说明里绕」，所以提到了
+# cat_notify 这一层（原位置一个没删，那两个面板里照样点得到）。
+# 这条护栏防的是下次有人整理菜单时又把它们收回去。
+ALERT_ENTRIES = {
+    "pump:panel": "⚡ 急涨急跌",
+    "ctr:panel": "📊 合约异动",
+    "p3:panel": "🚨 极端拉升",
+}
+
+
+@pytest.mark.parametrize("cb,name", ALERT_ENTRIES.items())
+def test_alert_entries_are_two_clicks_from_home(cb, name):
+    """/menu → 🔔 提醒与订阅 → 它本身，两下点得到。"""
+    assert "cat_notify" in HOME, "提醒与订阅不在首页了，下面这条就无从谈起"
+    src = inspect.getsource(menu._dispatch)
+    seg = src.split('elif d == "cat_notify":')[1].split("elif d ==")[0]
+    assert f'"{cb}"' in seg, f"{name} 又沉回第三层了（cat_notify 面板里没有它）"
+
+
+def test_alert_entries_show_whether_you_are_subscribed():
+    """设了看不见等于没设——这一层也要有 ✅/⬜，不能只在下级面板里有。"""
+    src = inspect.getsource(menu._dispatch)
+    seg = src.split('elif d == "cat_notify":')[1].split("elif d ==")[0]
+    assert "✅" in seg and "⬜" in seg
+
+
+@pytest.mark.parametrize("cb,where", [
+    ("pump:panel", "cat_subs"),
+    ("ctr:panel", "cat_subs"),
+    ("p3:panel", "cat_alert"),
+])
+def test_hoisting_did_not_remove_the_original_entries(cb, where):
+    """提级不是搬家。他否决过「藏起来」，原来的位置得照样点得到。"""
+    src = inspect.getsource(menu._dispatch)
+    seg = src.split(f'elif d == "{where}":')[1].split("elif d ==")[0]
+    assert f'"{cb}"' in seg, f"{cb} 从 {where} 里消失了——这是搬家不是提级"

@@ -102,3 +102,27 @@ def test_turnover_floor_applies_to_both():
     perps = run(P._fetch_bybit_perps(client(
         binance=[bn_row("DEAD", 1, 100)], bybit=[by_row("ALSODEAD", 1, 100)])))
     assert perps == []
+
+
+# ── 屏幕上写的覆盖范围要跟得上取数 ──────────────────────────────
+# v1.46.0 把币池换成并集，**但订阅回执、告警抬头、滚动榜标题整整一版还写着
+# 「Bybit 急涨急跌」「监控全部 U 本位永续（~500个）」**——少报了一百多个币，
+# 还把币安独占的那批说成不在监控里。
+#
+# 口径写在脸上是这个项目的规矩，而写错的口径比不写更糟：它看起来像个确定的事实。
+# 取数改了、文案没改，是这里最容易漏的一种不一致，所以钉死。
+
+def test_user_facing_copy_does_not_claim_a_single_venue():
+    import inspect
+    src = inspect.getsource(P)
+    for stale in ("Bybit 急涨急跌", "Bybit 15m", "Bybit 全永续"):
+        assert stale not in src, (
+            f"文案还写着「{stale}」，但币池已经是币安+Bybit 并集了")
+
+
+def test_user_facing_copy_does_not_understate_the_universe():
+    import inspect
+    src = inspect.getsource(P)
+    for stale in ("~500个", "~500 个", "约 500 个"):
+        assert stale not in src, (
+            f"文案还写着「{stale}」，并集之后实际约 600 个")

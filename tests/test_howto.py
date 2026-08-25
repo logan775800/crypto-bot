@@ -100,3 +100,53 @@ def test_link_preview_is_disabled():
     """一张 GitHub 大卡片会把消息撑得老长，按钮又被挤下去。"""
     import inspect
     assert "disable_web_page_preview" in inspect.getsource(H.howto)
+
+
+# ── docs/guide.md 本身 ──────────────────────────────────────
+# `/howto` 把群友引到这份文件上，所以它写错 = 一群人照着抄错的命令。
+# 2026-08-25 复盘发现它建好之后一次没更新过：`/pump3`、`/relay` 和整个
+# v1.43~v1.46 都是在它之后上的，而**没有任何测试看着它**。
+# 下面两条不要求"每个命令都写进指南"（178 个命令，指南只讲怎么上手，
+# 全清单归 /help 和 /commands），只要求**指南里出现的命令必须真的存在**。
+
+def _guide():
+    import pathlib
+    return (pathlib.Path(__file__).resolve().parent.parent
+            / "docs" / "guide.md").read_text(encoding="utf-8")
+
+
+def _registered():
+    import pathlib
+    import re
+    src = (pathlib.Path(__file__).resolve().parent.parent / "bot.py").read_text(
+        encoding="utf-8")
+    return set(re.findall(r'CommandHandler\("([a-z0-9_]+)"', src))
+
+
+def test_every_command_in_the_guide_actually_exists():
+    """指南里给的命令必须能打得通。
+
+    照着文档抄一条不存在的命令，机器人一声不吭——这比文档缺一节严重得多，
+    因为人会以为是自己打错了。
+    """
+    import re
+    cmds = set(re.findall(r'(?<![\w/])/([a-z0-9_]{2,})', _guide()))
+    known = _registered()
+    unknown = sorted(c for c in cmds if c not in known)
+    assert not unknown, f"指南里这些命令并不存在：{unknown}"
+
+
+def test_the_alert_chapter_is_present():
+    """告警是这几版更新的主线，也是唯一"我主动推给你"的一类功能。
+    指南长期没有这一章，等于订阅了什么、怎么取消都没地方查。"""
+    g = _guide()
+    for cmd in ("/watchpump", "/watchcontract", "/pump3", "/watchmarket",
+                "/pumptop", "/alertnow"):
+        assert cmd in g, f"指南里少了 {cmd}"
+
+
+def test_coverage_claims_match_the_code():
+    """覆盖范围写在脸上是这个项目的规矩，写错的口径比不写更糟。"""
+    g = _guide()
+    assert "并集" in g, "急涨急跌是币安+Bybit 取并集，指南要说清扫的是哪些盘子"
+    assert "~500" not in g and "约 500 个" not in g

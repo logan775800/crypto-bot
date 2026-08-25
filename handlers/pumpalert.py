@@ -87,14 +87,10 @@ def _change_and_span(hist, now):
     return (cur - ref_p) / ref_p * 100.0, now - ref_ts
 
 
-async def _fetch_bybit_perps(client=None):
-    """拉全部 U 本位永续，返回 [{sym, price, turnover}]（已过滤成交额下限）。
+BN_FAPI = "https://fapi.binance.com"
 
-    单交易所、无需和别人共享连接池，默认自建 client（测试可注入 fake client）。
-    """
-    if client is None:
-        async with httpx.AsyncClient(timeout=12) as c:
-            return await _fetch_bybit_perps(c)
+
+async def _bybit_perps(client):
     r = await client.get(f"{BYBIT_BASE}/v5/market/tickers",
                          params={"category": "linear"})
     r.raise_for_status()
@@ -115,6 +111,63 @@ async def _fetch_bybit_perps(client=None):
             continue
         out.append({"sym": s[:-4], "price": price, "turnover": turnover})
     return out
+
+
+async def _binance_perps(client):
+    r = await client.get(f"{BN_FAPI}/fapi/v1/ticker/24hr")
+    r.raise_for_status()
+    out = []
+    for t in r.json() or []:
+        s = t.get("symbol", "")
+        # "_" 是交割合约（BTCUSDT_240329），不是永续
+        if not s.endswith("USDT") or "_" in s:
+            continue
+        try:
+            price = float(t["lastPrice"])
+            turnover = float(t.get("quoteVolume", 0) or 0)
+        except (ValueError, KeyError, TypeError):
+            continue
+        if price <= 0 or turnover < MIN_TURNOVER:
+            continue
+        out.append({"sym": s[:-4], "price": price, "turnover": turnover})
+    return out
+
+
+async def _fetch_bybit_perps(client=None):
+    """拉全部 U 本位永续，返回 [{sym, price, turnover}]（已过滤成交额下限）。
+
+    名字沿用旧的（很多地方引用了），实际是**币安 + Bybit 取并集**：
+    实测两家各有独占——只有币安有且成交额≥500万的 19 个（PROM/PUMP/FET…），
+    只有 Bybit 有的 6 个（MNT/AGI/CASHCAT…）。只扫一家等于固定看漏一批。
+
+    同一个币两家都有时留**成交额大**的那家，理由和涨跌榜一样：
+    那是流动性更好、更有代表性的报价。
+
+    **一家挂了不影响另一家**：两家都取不到才抛异常。急涨急跌是每 60 秒的
+    实时告警，不能因为一家抽风就整条哑掉。
+    """
+    if client is None:
+        async with httpx.AsyncClient(timeout=12) as c:
+            return await _fetch_bybit_perps(c)
+    got, errs, ok = {}, [], 0
+    for name, fn in (("币安", _binance_perps), ("Bybit", _bybit_perps)):
+        try:
+            for m in await fn(client):
+                cur = got.get(m["sym"])
+                if cur is None or m["turnover"] > cur["turnover"]:
+                    got[m["sym"]] = m
+            ok += 1
+        except Exception as e:
+            errs.append(f"{name}: {str(e)[:60]}")
+    # 只有**两家都出错**才算取数失败。
+    # 按 `not got` 判是错的：那会把「取到了，但没有一个币过成交额门槛」
+    # 也当成故障报出去——"没有合格的币"和"取不到数据"是两回事，
+    # 混在一起的话，日志里的错误就再也不能信了
+    if not ok:
+        raise RuntimeError("；".join(errs) or "两家都没取到永续行情")
+    if errs:
+        log.warning(f"急涨急跌取数部分失败（另一家仍在用）：{'；'.join(errs)}")
+    return list(got.values())
 
 
 def _ingest(perps, now):

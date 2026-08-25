@@ -189,11 +189,21 @@ async def pick_type(query, sym, side, lev, margin):
     d = "做多 📈" if side == "long" else "做空 📉"
     r = await get_price(sym)
     px = f"现价 ${fmt(r['price'])}\n" if r else ""
+    # 下单前检查放在最后一屏：虚拟盘的意义是手感能迁移，
+    # 而"开仓前看一眼费率方向和拥挤度"正是最该练成条件反射的那个动作。
+    # 实盘确认卡也有同一段（rtrade._precheck_block），刻意一样。
+    check = ""
+    try:
+        from handlers import precheck
+        check = precheck.block(await precheck.build(sym, side))
+    except Exception as e:
+        log.info(f"[vpanel] {sym} 下单前检查跳过: {e}")
     await safe_edit(query,
         f"➕ *{sym} {d} {lev}x*　保证金 {margin}U\n{px}\n"
         f"第 5 步：怎么进场\n"
         f"　⚡ 市价 = 立刻成交，按吃单费率\n"
-        f"　📋 限价 = 挂在你要的价位等，成交费率更低（0.02%）",
+        f"　📋 限价 = 挂在你要的价位等，成交费率更低（0.02%）"
+        + check,
         reply_markup=_kb(rows), parse_mode="Markdown")
 
 

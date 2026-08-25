@@ -635,7 +635,21 @@ def render_token(t, pools=1, same_name=0):
     if t["fdv"]:
         lines.append(f"市值(FDV) ${t['fdv']:,.0f}")
     if t["buys"] or t["sells"]:
-        lines.append(f"24h 买 {t['buys']:.0f} 笔／卖 {t['sells']:.0f} 笔")
+        line = f"24h 买 {t['buys']:.0f} 笔／卖 {t['sells']:.0f} 笔"
+        # 每笔均额：**光看笔数分不清"很多人在买"和"几个号在对倒"**。
+        # 真想要的是独立买家地址数，但 DexScreener 不给（要接 Bitquery 这类
+        # 索引器，另一套 key），每笔均额是现有数据能给出的最接近的答案：
+        #   均额几美元 = 大概率机器人刷量；均额几万 = 就那么几个人在动。
+        n = (t["buys"] or 0) + (t["sells"] or 0)
+        if n >= 10 and t.get("vol24"):
+            avg = t["vol24"] / n
+            if avg < 20:
+                line += f"，每笔均 ${avg:,.0f} ⚠️ 笔均过小，像机器人刷量"
+            elif avg > 20_000:
+                line += f"，每笔均 ${avg:,.0f} ⚠️ 参与者很少，几个人就能定价"
+            else:
+                line += f"，每笔均 ${avg:,.0f}"
+        lines.append(line)
     if t["created_ms"]:
         age_h = (time.time() * 1000 - t["created_ms"]) / 3_600_000
         age = f"{age_h:.0f} 小时" if age_h < 48 else f"{age_h/24:.0f} 天"

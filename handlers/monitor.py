@@ -4,7 +4,10 @@ from telegram.ext import ContextTypes
 from config import ADMIN_IDS
 
 # 数据源健康状态（内存记录，检测状态变化）
-_health = {"coingecko": True, "okx": True}
+# 币安是 v1.46.0 之后的**主源**（扫描/清算地图/急涨急跌都币安优先），
+# 它挂了大半个机器人会哑——而在补上之前，这里只探 CoinGecko 和 OKX，
+# 于是最要紧的那家反而没人看着。
+_health = {"coingecko": True, "okx": True, "binance": True, "bybit": True}
 
 async def notify_admin(context, text):
     """发告警给所有管理员"""
@@ -84,6 +87,12 @@ async def health_check(context: ContextTypes.DEFAULT_TYPE):
     # 检查 OKX
     await _check_source(context, "okx",
         "https://www.okx.com/api/v5/public/time", "OKX交易所源")
+    # 币安：现在的主源，扫描/清算地图/急涨急跌/K线都优先走它
+    await _check_source(context, "binance",
+        "https://api.binance.com/api/v3/ping", "币安行情源")
+    # Bybit：账户类功能和一半告警的兜底源
+    await _check_source(context, "bybit",
+        "https://api.bybit.com/v5/market/time", "Bybit行情源")
 
 log = logging.getLogger(__name__)
 
@@ -98,6 +107,10 @@ IMPACT = {
     "coingecko": ("现货报价、涨跌榜、技术分析、每日播报。"
                   "价格预警/持仓监控会自动切到 Bybit 永续价（有基差但能用）"),
     "okx": "OKX 专区、清算数据、部分合约行情（币安/Bybit 路径不受影响）",
+    "binance": ("**主源**：急涨急跌、清算地图、K线与研判卡、多日涨跌榜、"
+                "资金费率榜。多数模块会退到 Bybit，但覆盖的币会少一批"),
+    "bybit": ("账户类功能（余额/持仓/复盘）、以及币安独缺时的兜底行情。"
+              "币安正常的话行情侧影响不大"),
 }
 
 
@@ -138,3 +151,89 @@ async def _check_source(context, key, url, name):
     await notify_admin(context,
         f"🔴 数据源异常\n{name} 连续 {_fails[key]} 次探测失败"
         f"（间隔 5 分钟，非瞬时抖动）\n\n受影响：{IMPACT.get(key, '未知')}{extra}")
+
+
+# ── 后台任务心跳 ────────────────────────────────────────────────
+# 告警任务挂掉的表现就是**安静地什么都不发生**——和"这段时间市场没异动"
+# 在屏幕上一模一样。数据源探测管不到这一层：源好好的，任务自己抛异常死循环，
+# 照样一条告警都推不出来。
+#
+# ⚠️ 这层能看见什么、看不见什么，要说清楚：
+#   看得见：任务抛异常逃到框架、任务压根没被调度到。
+#   看不见：任务内部自己 try/except 把错吞了然后正常返回——那种"成功但没结果"
+#           只能靠各模块自己报数（比如急涨急跌的 /pumptop 自检）。
+import time as _time
+
+_BEATS = {}          # 任务名 -> {last_run, last_ok, fails, err, interval}
+JOB_FAIL_STREAK = 3  # 连续失败这么多轮才报（一次网络抖动不值得惊动人）
+_job_alerted = set()
+
+
+def beat(name, ok, interval=None, err=""):
+    """登记一次任务运行结果。一般不用直接调，用 `tracked()` 包一层。"""
+    r = _BEATS.setdefault(name, {"last_run": 0, "last_ok": 0, "fails": 0,
+                                 "err": "", "interval": interval})
+    if interval:
+        r["interval"] = interval
+    r["last_run"] = _time.time()
+    if ok:
+        r["last_ok"] = r["last_run"]
+        r["fails"] = 0
+        r["err"] = ""
+    else:
+        r["fails"] += 1
+        r["err"] = err
+
+
+def tracked(fn, name, interval):
+    """把一个定时任务包起来，跑完登记心跳。返回可直接交给 job queue 的协程。
+
+    **异常在这里被吃掉不再往上抛**：抛出去的结果只是框架记一条日志，
+    任务下一轮照跑，没有任何人知道。既然已经登记进心跳了，watchdog 会报。
+    """
+    async def _wrapped(context):
+        try:
+            await fn(context)
+            beat(name, True, interval)
+        except Exception as e:                      # noqa: BLE001
+            beat(name, False, interval, f"{type(e).__name__}: {e}")
+            log.error(f"[任务] {name} 出错: {e}", exc_info=True)
+    _wrapped.__name__ = f"tracked_{getattr(fn, '__name__', 'job')}"
+    return _wrapped
+
+
+def job_health():
+    """返回 (有问题的任务列表, 全部任务快照)，供 watchdog 和 /datacheck 用。"""
+    now = _time.time()
+    bad = []
+    for name, r in _BEATS.items():
+        iv = r.get("interval") or 300
+        if r["fails"] >= JOB_FAIL_STREAK:
+            bad.append((name, f"连续失败 {r['fails']} 轮：{r['err']}"))
+        elif r["last_ok"] and now - r["last_ok"] > iv * 4:
+            mins = (now - r["last_ok"]) / 60
+            bad.append((name, f"已经 {mins:.0f} 分钟没成功跑完（间隔应为 {iv}s）"))
+    return bad, dict(_BEATS)
+
+
+async def job_watchdog(context: ContextTypes.DEFAULT_TYPE):
+    """定时检查任务心跳，出问题就私聊管理员。
+
+    恢复也要报一声——只报坏不报好的话，他会一直不确定现在到底恢复没有。
+    """
+    bad, _all = job_health()
+    bad_names = {n for n, _why in bad}
+
+    new = [(n, why) for n, why in bad if n not in _job_alerted]
+    if new:
+        lines = ["🔴 后台任务异常（告警可能已经在静默失效）", ""]
+        lines += [f"• {n}：{why}" for n, why in new]
+        lines.append("")
+        lines.append("这类问题的表现是「什么都没发生」，和「市场没异动」看起来一样，")
+        lines.append("所以必须主动报。看容器日志里对应任务名的 traceback。")
+        await notify_admin(context, "\n".join(lines))
+        _job_alerted.update(bad_names)
+
+    for n in list(_job_alerted - bad_names):
+        _job_alerted.discard(n)
+        await notify_admin(context, f"🟢 后台任务恢复：{n} 已经能正常跑完了")

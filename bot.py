@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -694,29 +694,35 @@ def main():
 
     # 定时任务
     jq = app.job_queue
-    jq.run_repeating(alert.check_alerts, interval=60, first=10)
+    jq.run_repeating(monitor.tracked(alert.check_alerts, "价格预警", 60), interval=60, first=10)
     jq.run_repeating(indicator_alert.check_ti_alerts, interval=900, first=45)  # 技术指标告警，每15分钟
-    jq.run_repeating(market_alert.scan_market, interval=300, first=30)  # 市场异动扫描
-    jq.run_repeating(contract_alert.scan_contracts, interval=300, first=40)  # 合约异动兜底轮询(币安主路+WS安全网)，每5分钟
+    jq.run_repeating(monitor.tracked(market_alert.scan_market, "市场异动", 300), interval=300, first=30)  # 市场异动扫描
+    jq.run_repeating(monitor.tracked(contract_alert.scan_contracts, "合约异动", 300), interval=300, first=40)  # 合约异动兜底轮询(币安主路+WS安全网)，每5分钟
     jq.run_repeating(breakout.job, interval=300, first=90)  # 5分钟箱体破位（均线顺势），每5分钟
-    jq.run_repeating(pumpalert.scan_pump, interval=60, first=65)  # Bybit全永续15m急涨急跌，每60秒
+    jq.run_repeating(monitor.tracked(pumpalert.scan_pump, "急涨急跌", 60), interval=60, first=65)  # Bybit全永续15m急涨急跌，每60秒
     jq.run_repeating(news.push_news, interval=3600, first=120)  # 新闻推送
     jq.run_repeating(unlock.check_unlocks, interval=86400, first=180)  # 解锁检查，每天
     jq.run_repeating(backup.auto_backup, interval=86400, first=60)  # 每天自动备份
     jq.run_repeating(prune_job, interval=86400, first=300)  # 每天清理 data.json 冗余(冷却/去重/历史封顶)
     jq.run_repeating(regime.check_regime, interval=regime.CHECK_EVERY, first=150)  # BTC市场环境(4h均线排列)变化
     jq.run_repeating(monitor.health_check, interval=300, first=120)  # 数据源健康检查，每5分钟
+    # 任务心跳巡检：告警任务死掉的表现是「什么都没发生」，和「市场没异动」
+    # 长得一模一样，只能靠主动巡检发现。15 分钟一轮足够，报得太勤反而成噪音。
+    jq.run_repeating(monitor.job_watchdog, interval=900, first=600)  # 后台任务心跳巡检，每15分钟
     jq.run_repeating(portfolio.check_holding_moves, interval=900, first=90)  # 持仓异动检查，每15分钟
     jq.run_repeating(market.check_gas_alerts, interval=300, first=100)  # Gas阈值提醒，每5分钟
     jq.run_repeating(arbitrage.scan_arb, interval=300, first=150)  # 套利监控扫描，每5分钟
     jq.run_repeating(whale_track.check_tracked, interval=600, first=200)  # 巨鲸地址追踪，每10分钟
     jq.run_repeating(grid.poll_grids, interval=20, first=25)  # 网格成交轮询+反向补单，每20秒
-    jq.run_repeating(watchpct.check_watchpct, interval=60, first=35)  # 持续波动监控，每60秒
+    jq.run_repeating(monitor.tracked(watchpct.check_watchpct, "波动监控", 60), interval=60, first=35)  # 持续波动监控，每60秒
+    # LP 撤出告警：跑路是几分钟内发生的事，但 DexScreener 的流动性本身几分钟才更新一次，
+    # 5 分钟一轮既跟得上又不至于把接口打爆。
+    jq.run_repeating(monitor.tracked(rugwatch.check_rugs, "LP撤出告警", 300), interval=300, first=90)   # LP撤出告警，每5分钟
     jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
-    jq.run_repeating(rtrade.check_liq_alerts, interval=60, first=55)  # 实盘爆仓临近预警，每60秒
-    jq.run_repeating(riskguard.check_risk, interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒
-    jq.run_repeating(condalert.check_conds, interval=120, first=80)  # 条件触发提醒(价格+指标组合)，每2分钟
-    jq.run_repeating(plan.check_plans, interval=120, first=95)  # 交易计划生命周期(触发/止盈/失效/过期)，每2分钟
+    jq.run_repeating(monitor.tracked(rtrade.check_liq_alerts, "实盘爆仓预警", 60), interval=60, first=55)  # 实盘爆仓临近预警，每60秒
+    jq.run_repeating(monitor.tracked(riskguard.check_risk, "风险守护", 60), interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒
+    jq.run_repeating(monitor.tracked(condalert.check_conds, "条件提醒", 120), interval=120, first=80)  # 条件触发提醒(价格+指标组合)，每2分钟
+    jq.run_repeating(monitor.tracked(plan.check_plans, "交易计划", 120), interval=120, first=95)  # 交易计划生命周期(触发/止盈/失效/过期)，每2分钟
     jq.run_repeating(events.check_events, interval=300, first=110)  # 事件驱动预警(OI跳升/四象限切换/费率跨阈/盘口翻转)，每5分钟
     jq.run_repeating(fundextreme.scan_fex, interval=3600, first=240)  # 资金费极值订阅扫描，每小时
     # 微市值扫描的市值表：翻 16 页 + 限频退避要一两分钟，放后台建好，

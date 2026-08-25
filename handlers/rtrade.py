@@ -602,8 +602,24 @@ async def prepare_open(message, context, symbol_raw, side, margin, lev, price, t
         f"限价 ${_fmt(price_s)}｜数量 {qty_s}\n"
         f"保证金约 ${margin:,.2f}｜名义 ${notional:,.2f}{extra}"
         + await _cost_block(symbol, side, float(price_s), sl_s, tp_s, notional, lev)
+        + await _precheck_block(symbol, side)
         + f"\n\n确认后挂 GTC 限价单。",
         reply_markup=kb, parse_mode="Markdown")
+
+
+async def _precheck_block(symbol, side):
+    """这一单的检查（费率方向 + 拥挤度）。
+
+    和上面的 `_cost_block` 分工：那边算钱（亏多少、费多少、爆仓多远），
+    这边看**你站在哪一边**。两条都是 /checklist 上点名要看、而确认卡以前
+    一条都没有的。取不到数据就整块省略——绝不能让它挡下单。
+    """
+    try:
+        from handlers import precheck
+        return precheck.block(await precheck.build(symbol, side))
+    except Exception as e:
+        log.warning(f"确认卡下单前检查失败 {symbol}: {e}")
+        return ""
 
 
 async def _cost_block(symbol, side, entry, sl, tp, notional, lev):

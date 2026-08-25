@@ -243,7 +243,7 @@ async def selfcheck():
             else:
                 lines.append(f"✅ *{escape_md(name)}*　可读可转")
         except Exception as e:
-            lines.append(f"❌ `{escape_md(str(s))}`：{str(e)[:50]}")
+            lines.append(f"❌ `{s}`：{str(e)[:50]}")   # 反引号里不转义，见上面
             lines.append("　 → 让这个搬运号先去订阅这个频道")
 
     lines.append("")
@@ -281,7 +281,10 @@ def panel():
         f"开关：{'🟢 开启中' if conf.get('on') else '🔴 已关闭'}",
         f"转发到：`{conf.get('target') or '（未设置）'}`",
         f"盯着的频道（{len(srcs)}）："
-        + ("、".join(f"`{escape_md(str(s))}`" for s in srcs) if srcs else "（空）"),
+        # ⚠️ 反引号里**不要** escape_md：旧版 Markdown 在代码块里不处理转义，
+        # `blockbeats\_chart` 会原样显示出那个反斜杠，他照着复制就是错的。
+        # 频道名里带下划线是常态（blockbeats_chart 就是），这条必踩。
+        + ("、".join(f"`{s}`" for s in srcs) if srcs else "（空）"),
     ]
     if conf.get("include"):
         lines.append(f"只转含：{'、'.join(conf['include'])}")

@@ -156,6 +156,31 @@ def test_panel_shows_state_when_configured(monkeypatch):
     assert str(R.MAX_PER_HOUR) in txt
 
 
+def test_channel_names_with_underscores_are_shown_verbatim(monkeypatch):
+    """频道名带下划线是常态（他要接的第一个就是 blockbeats_chart）。
+
+    旧版 Markdown 在反引号里**不处理转义**，所以代码块里再 escape_md 的话，
+    屏幕上会多出一个反斜杠——他照着复制去 /relay add 就是错的。
+    比"难看"严重的是：给出的东西照抄必错。
+    """
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    c = R.cfg()
+    c["sources"] = ["blockbeats_chart"]
+    txt, _kb = R.panel()
+    assert "blockbeats_chart" in txt
+    assert r"\_" not in txt, "反引号里不该出现转义反斜杠"
+
+
+def test_selfcheck_shows_underscore_names_verbatim(monkeypatch):
+    import asyncio
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.setattr(R, "_client", None)
+    txt = asyncio.run(R.selfcheck())
+    assert r"\_" not in txt
+
+
 def test_default_is_off():
     """默认必须是关的——搬运会往群里发东西，不能装上就开始刷。"""
     assert R.cfg()["on"] is False

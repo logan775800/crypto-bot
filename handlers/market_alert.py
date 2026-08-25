@@ -20,8 +20,23 @@ OKX_BASE = "https://www.okx.com"
 BINANCE_SPOT = "https://api.binance.com"
 BYBIT_BASE = "https://api.bybit.com"
 
-SURGE_RATIO = 3            # 成交额突增倍数阈值
+# ── 放量检测的口径（2026-08-25 重写，之前那版是错的）─────────
+# 老版本拿「这一轮的 24h 成交额」除「上一轮的 24h 成交额」当倍数。
+# 实测证伪：90 秒内 149 个成交额≥200万的币，这个比值最大 1.008、中位数 1.000，
+# **没有一个到 1.5 倍**。24h 累计值在几分钟里根本不会动。
+# 所以老版本：真放量永远测不到，而能触发的只有基线是脏数据的时候
+# ——表现就是同样几个币天天报（他截图里的 UTK / LRC）。
+#
+# 现在改成：拿**这段时间的净增量**比**它自己的平均速率**。
+#   这段时间成交了多少 = 现在的24h总额 − 上一轮的24h总额
+#   同样时长平时该成交多少 = 24h总额 × (这段时长 / 24h)
+# 两者一比，才是真正的"这阵子比平时活跃几倍"。零额外请求。
+SURGE_RATIO = 3            # 这段时间的量是平时同时长的几倍才算放量
 SURGE_MIN_VOL = 2_000_000  # 放量币的最小 24h 成交额（USDT）
+SURGE_MIN_DELTA = 300_000  # 这段时间至少真的成交了这么多，防小池子按比例炸出来
+SURGE_COOLDOWN = 4 * 3600  # 同币冷却：不加的话每 5 分钟重报一次同一件事
+MIN_ELAPSED = 120          # 两次快照间隔太短，净增量的噪声比信号大
+MAX_ELAPSED = 3600         # 间隔太久（重启/停机）基线不可信，这轮只重建不告警
 LEV_SUFFIX = ("UP", "DOWN", "BULL", "BEAR")   # 币安杠杆代币
 _BYBIT_LEV_RE = re.compile(r"\d+[LS]$")         # Bybit 杠杆代币 BTC3L/ETH3S
 
@@ -154,7 +169,11 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
 
     data.setdefault("user_prefs", {})
     data.setdefault("known_coins_ex", {})    # {交易所: [已知币]}
-    data.setdefault("last_volumes_ex", {})   # {交易所: {币: 成交额}}
+    import time as _t
+    now = _t.time()
+    # {交易所: {"v": {币: 24h成交额}, "t": 快照时间}}。老格式（直接是 {币: 额}）
+    # 会被下面当成"没有基线"跳过一轮，然后自动换成新格式，不用手工迁移
+    data.setdefault("last_volumes_ex", {})
     known_ex = data["known_coins_ex"]
     lastvol_ex = data["last_volumes_ex"]
 
@@ -178,22 +197,50 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
                     new_coins.append({"ex": ex_name, "sym": m["sym"]})
         known_ex[ex_name] = cur_syms
 
-        # 放量检测：对比上轮该所成交额（首轮只建基线，不告警）
-        prev_vol = lastvol_ex.get(ex_name, {})
-        for m in res:
-            pv = prev_vol.get(m["sym"])
-            if pv and pv > 0 and m["vol"] >= SURGE_MIN_VOL:
-                ratio = m["vol"] / pv
+        # 放量检测：这段时间的净增量 vs 它自己的平均速率（首轮只建基线，不告警）
+        snap = lastvol_ex.get(ex_name) or {}
+        prev_vol = snap.get("v") if isinstance(snap.get("v"), dict) else {}
+        prev_ts = snap.get("t") or 0
+        elapsed = now - prev_ts if prev_ts else 0
+        if prev_vol and MIN_ELAPSED <= elapsed <= MAX_ELAPSED:
+            for m in res:
+                pv = prev_vol.get(m["sym"])
+                if not pv or pv <= 0 or m["vol"] < SURGE_MIN_VOL:
+                    continue
+                delta = m["vol"] - pv          # 这段时间大约成交了多少
+                if delta < SURGE_MIN_DELTA:
+                    continue                   # 量太小，比例再高也是噪音
+                typical = m["vol"] * (elapsed / 86400.0)   # 平时同样时长的量
+                if typical <= 0:
+                    continue
+                ratio = delta / typical
                 if ratio >= SURGE_RATIO:
                     volume_surges.append({"ex": ex_name, "sym": m["sym"], "ratio": ratio,
-                                          "change": m["change"], "price": m["price"]})
-        lastvol_ex[ex_name] = vol_map
+                                          "change": m["change"], "price": m["price"],
+                                          "delta": delta, "mins": elapsed / 60.0})
+        lastvol_ex[ex_name] = {"v": vol_map, "t": now}
 
     save_data()
 
     if not new_coins and not volume_surges:
         return
 
+    # 冷却：不加的话同一件事每 5 分钟重报一次——他就是这么被 UTK/LRC 刷了一整天
+    cooled = data.setdefault("surge_alerted", {})
+    kept = []
+    for v in volume_surges:
+        ck = f"{v['ex']}:{v['sym']}"
+        if now - cooled.get(ck, 0) < SURGE_COOLDOWN:
+            continue
+        cooled[ck] = now
+        kept.append(v)
+    for k in [k for k, t in cooled.items() if now - t > SURGE_COOLDOWN * 2]:
+        cooled.pop(k, None)
+    volume_surges = kept
+    if not volume_surges and not new_coins:
+        save_data()
+        return
+    save_data()
     volume_surges.sort(key=lambda v: v["ratio"], reverse=True)
 
     for chat_id in data["market_watch"]:
@@ -218,9 +265,13 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
         if vs:
             vlines = ["📊 *放量异动*（成交量突增）\n"]
             for v in vs[:10]:
-                vlines.append(f"🔊 [{v['ex']}] {v['sym']}: 量增{v['ratio']:.1f}倍 "
-                              f"价{v['change']:+.2f}% (${v['price']:,.4g})")
-            vlines.append("\n(放量常预示大资金进出，早于价格变化)\n⚠️ 不构成投资建议")
+                vlines.append(
+                    f"🔊 [{v['ex']}] {v['sym']}: 近{v.get('mins', 5):.0f}分钟"
+                    f"成交 ${v.get('delta', 0):,.0f}，是平时同时长的 "
+                    f"*{v['ratio']:.1f}倍*　价{v['change']:+.2f}% (${v['price']:,.4g})")
+            vlines.append("\n口径：这段时间的成交额 ÷ 它自己 24h 的平均速率。"
+                          "\n(放量常预示大资金进出，早于价格变化)"
+                          "\n同一个币 4 小时内不重复报。\n⚠️ 不构成投资建议")
             try:
                 await context.bot.send_message(chat_id=chat_id, text="\n".join(vlines), parse_mode="Markdown")
             except Exception as e:

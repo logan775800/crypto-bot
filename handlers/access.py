@@ -51,12 +51,62 @@ def _ids(key):
 
 
 def allowed(chat_id, user_id):
-    """这个会话/这个人能不能用。管理员永远能用。"""
+    """这个会话/这个人能不能用（**不含群成员自动放行**，那条要查 Telegram，
+    是异步的，见 `member_allowed`）。管理员永远能用。"""
     if not enabled():
         return True
     if is_admin(user_id) or is_admin(chat_id):
         return True
     return str(chat_id) in _ids("chats") or str(user_id) in _ids("users")
+
+
+# ── 群成员自动放行 ────────────────────────────────────────────
+# 他的原话：「谁知道机器人的用户名就可以使用，这样太危险了，
+# 我只想要加入了群组的用户可以私聊」。
+#
+# 白名单要一个个 /allow，群里十个人就得加十次，人一多必然放弃 → 开关最后被关掉。
+# 所以加一条：**在指定群里的人，私聊自动放行**，退群后自动失效。
+#
+# 判定要问 Telegram（`get_chat_member`），所以带缓存——每条消息都问一次
+# 既慢又会被限流。缓存只存"通过"，不存"不通过"：刚被拉进群的人
+# 不该等一小时才能用。
+_MEMBER_TTL = 3600
+_member_cache = {}          # user_id -> 通过时刻
+_MEMBER_OK = ("member", "administrator", "creator", "restricted")
+
+
+def member_gate_on():
+    """群成员自动放行开着吗。默认**开**——它是让准入控制真正可用的前提。"""
+    return bool(_cfg().get("member_gate", True))
+
+
+def gate_chats():
+    """拿来判成员资格的群。没单独配就用已放行的群 + 管理员里的负数 id
+    （负数 = 群/频道，见 Telegram 的 id 符号约定）。"""
+    out = [str(c) for c in _cfg().get("chats", []) if str(c).startswith("-")]
+    for a in ADMIN_IDS:
+        if str(a).startswith("-") and str(a) not in out:
+            out.append(str(a))
+    return out
+
+
+async def member_allowed(bot, user_id):
+    """这个人在我们的群里吗。查不到（接口报错）时**返回 False**——
+    准入控制上"查不出来就放行"等于没有控制。"""
+    if not member_gate_on():
+        return False
+    hit = _member_cache.get(str(user_id))
+    if hit and time.time() - hit < _MEMBER_TTL:
+        return True
+    for cid in gate_chats():
+        try:
+            m = await bot.get_chat_member(int(cid), int(user_id))
+            if getattr(m, "status", None) in _MEMBER_OK:
+                _member_cache[str(user_id)] = time.time()
+                return True
+        except Exception as e:      # 不在群里会直接抛，属正常路径
+            log.debug(f"[access] 查 {user_id} 是否在 {cid}: {e}")
+    return False
 
 
 def add(kind, value):
@@ -120,6 +170,10 @@ async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if allowed(chat.id, user.id):
         return
+    # 白名单没命中，再问一次「他在不在我们群里」。
+    # 放在最后是因为这条要打 Telegram 接口，前面能判掉的就别浪费一次请求。
+    if await member_allowed(context.bot, user.id):
+        return
 
     now = time.time()
     if now - _last_deny.get(user.id, 0) > DENY_COOLDOWN:
@@ -129,8 +183,9 @@ async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.callback_query.answer("这个机器人未对你开放", show_alert=True)
             elif update.effective_message:
                 await safe_reply(update.effective_message,
-                                 "🚪 这个机器人是私人使用的，未对你开放。\n"
-                                 f"要用的话把这个 id 发给管理员：{user.id}")
+                                 "🚪 这个机器人只对群成员开放。\n"
+                                 "先加入群，之后直接私聊就能用（可能要等一下生效）。\n"
+                                 f"已经在群里还是被挡，把这个 id 发给管理员：{user.id}")
         except Exception as e:
             log.debug(f"拒绝提示发送失败: {e}")
         await _notify_admin_once(context, update, user.id, chat.id)
@@ -140,13 +195,18 @@ async def gate(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── 管理命令 ──────────────────────────────────────────────
 def _status_text():
     c = _cfg()
+    mg = "✅ 开" if member_gate_on() else "⬜ 关"
     return ("🚪 *准入控制*\n"
-            f"状态：{'✅ 已开启（白名单外的人用不了）' if c.get('on') else '🔓 关闭（任何人都能用）'}\n"
+            f"状态：{'✅ 已开启（名单外的人用不了）' if c.get('on') else '🔓 关闭（任何人都能用）'}\n"
+            f"群成员自动放行：{mg}　判定用的群：{len(gate_chats())} 个\n"
             f"管理员：{len(ADMIN_IDS)} 人（永远放行）\n"
             f"放行的会话：{len(c.get('chats', []))} 个\n"
             f"放行的用户：{len(c.get('users', []))} 人\n\n"
             "`/access on` 开启　`/access off` 关闭\n"
-            "`/allow <id>` 放行　`/deny <id>` 撤销　`/allowed` 看名单\n"
+            "`/access member on|off` 群成员自动放行（默认开）\n"
+            "`/allow <id>` 放行　`/deny <id>` 撤销　`/allowed` 看名单\n\n"
+            "开着「群成员自动放行」时：**在群里的人私聊直接能用，退群后自动失效**，\n"
+            "不用一个个 /allow。缓存 1 小时，刚拉进群的人可能要等一下。\n"
             "开启时会自动把管理员和当前会话放进名单，不会把你自己锁在外面")
 
 
@@ -164,15 +224,38 @@ async def access_cmd(update, context):
         add("chats", update.effective_chat.id)
         add("users", update.effective_user.id)
         save_data()
+        extra = ""
+        if member_gate_on():
+            n = len(gate_chats())
+            extra = (f"\n\n👥 **群成员自动放行是开着的**：在这 {n} 个群里的人，"
+                     f"私聊直接能用，退群后自动失效——不用一个个 `/allow`。\n"
+                     f"不想要就发 `/access member off`。")
         await safe_reply(update.message,
                          "✅ 已开启准入控制。\n当前会话和你本人已在名单里。\n"
-                         "**其他群/其他人现在用不了了**——要放行发 `/allow <id>`。\n"
-                         "有人被挡时我会把他的 id 发给你，直接照着放行即可。",
+                         "**名单外的人现在用不了了**——要单独放行发 `/allow <id>`。\n"
+                         "有人被挡时我会把他的 id 发给你，直接照着放行即可。" + extra,
                          parse_mode="Markdown")
     elif a[0] in ("off", "关"):
         c["on"] = False
         save_data()
         await safe_reply(update.message, "🔓 已关闭准入控制——任何人都能用了。")
+    elif a[0] in ("member", "群成员", "成员"):
+        # /access member on|off —— 单独控制"在群里就放行"这条，不带参数只报状态
+        if len(a) > 1 and a[1] in ("off", "关"):
+            c["member_gate"] = False
+            save_data()
+            await safe_reply(update.message,
+                             "⬜ 已关闭群成员自动放行——现在只认 `/allow` 加过的名单。",
+                             parse_mode="Markdown")
+        elif len(a) > 1 and a[1] in ("on", "开"):
+            c["member_gate"] = True
+            save_data()
+            await safe_reply(update.message,
+                             f"✅ 已开启群成员自动放行。判定用的群有 {len(gate_chats())} 个：\n"
+                             + ("\n".join(gate_chats()) or "（一个都没有——先把群 `/allow` 进来）"),
+                             parse_mode="Markdown")
+        else:
+            await safe_reply(update.message, _status_text(), parse_mode="Markdown")
     else:
         await safe_reply(update.message, _status_text(), parse_mode="Markdown")
 

@@ -62,8 +62,13 @@ async def announce_update(context, version):
     text = update_text(version)
     if not text:
         return
-    # 管理员刚在私聊收过 startup_text，别再让他收一遍几乎一样的
-    admins = {int(a) for a in ADMIN_IDS if str(a).lstrip("-").isdigit()}
+    # 管理员刚在私聊收过 startup_text，别再让他收一遍几乎一样的。
+    # ⚠️ **只排除正数 id**：Telegram 的 id 有符号约定，正数是用户、负数是群/频道。
+    # ADMIN_CHAT_ID 里填群 id 是常见配置（想让整个群都能管），
+    # 而按老写法那会把**整个群**从更新播报里静默剔掉——
+    # 表现就是"部署成功了但群里没有更新内容"，而且完全查不出原因。
+    admins = {int(a) for a in ADMIN_IDS
+              if str(a).lstrip("-").isdigit() and int(a) > 0}
     sent = 0
     for cid in subscribed_chats():
         if cid in admins:
@@ -77,7 +82,15 @@ async def announce_update(context, version):
     # 无论发成功几个都记下来：否则一个死会话会让每次重启都重播一遍
     data["announced_version"] = version
     save_data()
-    logging.info(f"更新播报 {version}：已通知 {sent} 个会话")
+    # 发了 0 个要单独喊一声：这正是"部署成功但群里什么都没有"的现场，
+    # 只记一条 info 的话，日志里根本看不出这是异常。
+    if sent == 0:
+        logging.warning(
+            f"更新播报 {version}：一个会话都没发出去。"
+            f"候选 {len(list(subscribed_chats()))} 个、排除管理员 {len(admins)} 个——"
+            f"检查 ADMIN_CHAT_ID 是不是把目标群自己填进去了")
+    else:
+        logging.info(f"更新播报 {version}：已通知 {sent} 个会话")
 
 # 数据源健康检查（定时调用）
 async def health_check(context: ContextTypes.DEFAULT_TYPE):

@@ -274,7 +274,14 @@ async def watchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "交易所可写 okx / 币安 / bybit / gate。\n"
             "支持小盘/合约币（如 KORU、RAM）。取消：/unwatchpct 币")
         return
-    symbol = norm_symbol(args[0])
+    # 合约地址**不能过 norm_symbol**：它会 .upper()，把 `0x1706…` 变成 `0X1706…`，
+    # 于是下游 add_watch 里那道 is_address() 判断当场失效，请求掉进"交易所找不到
+    # 这个币"的分支，回一句「没查到 0X…的价格」。
+    # add_watch 里早就写明了这条，但**大写发生在它之前**，那道防线永远轮不到。
+    # 2026-08-25 他盯一个 BSC 币时踩到，表现是"链上监控根本建不了"。
+    from handlers.onchain import is_address as _is_addr
+    raw = args[0].strip()
+    symbol = raw if _is_addr(raw) else norm_symbol(raw)
     try:
         pct = float(args[1])
     except ValueError:
@@ -295,9 +302,15 @@ async def unwatchpct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("用法：/unwatchpct 币　或　/unwatchpct all 全部取消")
         return
-    arg = context.args[0].upper()
-    if arg != "ALL":
-        arg = norm_symbol(arg)
+    # 同 watchpct：地址不能大写，否则取消时对不上已存的那条（存的是原样地址）
+    from handlers.onchain import is_address as _is_addr
+    raw = context.args[0].strip()
+    if _is_addr(raw):
+        arg = raw
+    else:
+        arg = raw.upper()
+        if arg != "ALL":
+            arg = norm_symbol(arg)
     before = len(lst)
     if arg == "ALL":
         lst[:] = [w for w in lst if w["chat_id"] != chat_id]

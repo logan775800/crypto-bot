@@ -450,6 +450,7 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     # 使用指南：群里发一下大家都看得到（/help 是全部命令清单，这条是怎么上手）
     app.add_handler(CommandHandler("howto", howto.howto))
+    app.add_handler(CommandHandler("pinhowto", howto.pin_cmd))   # 管理员在群里刷新置顶
     # 频道搬运（管理员）：把订阅的频道新帖转到群里
     app.add_handler(CommandHandler("relay", relay.relay_cmd))
     app.add_handler(CommandHandler("id", chat_id_cmd))
@@ -709,6 +710,9 @@ def main():
     # 任务心跳巡检：告警任务死掉的表现是「什么都没发生」，和「市场没异动」
     # 长得一模一样，只能靠主动巡检发现。15 分钟一轮足够，报得太勤反而成噪音。
     jq.run_repeating(monitor.job_watchdog, interval=900, first=600)  # 后台任务心跳巡检，每15分钟
+    # 版本变了就自动把置顶刷成最新——他要的"每次更新都更新置顶"。
+    # 只刷已经 /pinhowto 建立过置顶的群，不会去别的群刷屏。
+    jq.run_repeating(howto.auto_refresh_pins, interval=600, first=150)  # 置顶自动跟版本
     jq.run_repeating(portfolio.check_holding_moves, interval=900, first=90)  # 持仓异动检查，每15分钟
     jq.run_repeating(market.check_gas_alerts, interval=300, first=100)  # Gas阈值提醒，每5分钟
     jq.run_repeating(arbitrage.scan_arb, interval=300, first=150)  # 套利监控扫描，每5分钟

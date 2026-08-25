@@ -243,6 +243,45 @@ def test_poc_states_its_window_and_distance():
 # 周线/日线/4h 三张一条相册（参考 Go 那个机器人：宏观定大势 → 微观找入场）。
 # 单看日线的「多头排列」分不清它是周线趋势里的顺势，还是周线跌势里的一次反抽。
 
+def test_kline_lookup_falls_back_to_futures():
+    """**只有合约没有现货的币必须也能出图。**
+
+    2026-08-25 真机：他发 `ake`，信息卡出来了、图一张没有，而且一声不吭。
+    实测 AKE 币安现货 400、OKX 现货 51001，但**币安合约 200 有数据**——
+    数据明明就在（信息卡上那行"合约 $0.009144 费率 Binance"就是它），
+    只是取数只查了两家现货。
+
+    这里验的是尝试顺序里确实带了合约兜底，而且现货排在前面（同一个币
+    现货流动性通常更能代表真实成交）。
+    """
+    import inspect
+    src = inspect.getsource(D._ohlcv)
+    assert "fapi.binance.com" in src, "没有币安合约兜底，只有合约的币会一张图都没有"
+    assert "-USDT-SWAP" in src, "没有 OKX 合约兜底"
+    assert src.index("api.binance.com") < src.index("fapi.binance.com"), \
+        "现货应该排在合约前面"
+
+
+def test_kline_source_is_printed_on_the_card():
+    """来源要写在脸上：同一个币的现货和合约 K 线不是一条。
+    只有合约的币画出来的是合约图，不说清会被当成现货读。"""
+    import inspect
+    assert "K线来源" in inspect.getsource(D.build_signal_chart)
+    assert "K线来源" in inspect.getsource(D.build_multi_charts)
+
+
+def test_no_chart_is_never_silent():
+    """一张图都画不出来时**必须说一声**。
+
+    之前是静默的：屏幕上只剩一张信息卡，看起来就是"功能坏了"。
+    他的原话是「啥也没有？」——这正是最贵的那类 bug（不报错、日志干净、
+    只是某个东西永远不发生）。
+    """
+    import inspect
+    src = inspect.getsource(D.send_full_detail)
+    assert "画不出 K 线图" in src, "没图时要给用户一句话，不能什么都不发"
+
+
 def test_okx_bar_names_cover_every_timeframe():
     """OKX 的周期名和币安不一样（1w vs 1W）。**漏一个不会报错**——
     `_OKX_BAR.get(interval, "1D")` 会默默回退成日线，于是"周线图"其实是日线图，
@@ -257,7 +296,7 @@ def _fake_ohlcv(n=60):
 
 def test_multi_charts_returns_none_when_nothing_renders(monkeypatch):
     async def _no_data(sym, interval="1d", limit=120):
-        return None
+        return None, None
     monkeypatch.setattr(D, "_ohlcv", _no_data)
     assert asyncio.run(D.build_multi_charts("BTC")) is None
 
@@ -265,7 +304,7 @@ def test_multi_charts_returns_none_when_nothing_renders(monkeypatch):
 def test_multi_charts_skips_timeframes_without_data(monkeypatch):
     """某个周期取不到（新币没有周线）不能让整条相册黄掉，画出几张发几张。"""
     async def _only_daily(sym, interval="1d", limit=120):
-        return _fake_ohlcv() if interval == "1d" else None
+        return (_fake_ohlcv(), "币安现货") if interval == "1d" else (None, None)
     monkeypatch.setattr(D, "_ohlcv", _only_daily)
     monkeypatch.setattr(D, "_render_candles",
                         lambda s, i, o: (io.BytesIO(b"png"),
@@ -282,7 +321,7 @@ def test_multi_charts_labels_which_timeframes_made_it(monkeypatch):
     """相册说明要写清这次到底给了哪几个周期——少一张而不说，
     看的人会以为周线就长这样。"""
     async def _all(sym, interval="1d", limit=120):
-        return _fake_ohlcv()
+        return _fake_ohlcv(), "币安现货"
     monkeypatch.setattr(D, "_ohlcv", _all)
     monkeypatch.setattr(D, "_render_candles",
                         lambda s, i, o: (io.BytesIO(b"png"),
@@ -300,7 +339,7 @@ def test_multi_charts_refuses_to_judge_on_the_wrong_timeframe(monkeypatch):
     """日线没取到时**不能拿周线硬算研判**：均线口径 MA3/13/23 是按日线定的语义，
     换个周期同一套阈值说的不是一回事。宁可只给图。"""
     async def _no_daily(sym, interval="1d", limit=120):
-        return None if interval == "1d" else _fake_ohlcv()
+        return (None, None) if interval == "1d" else (_fake_ohlcv(), "币安合约")
     monkeypatch.setattr(D, "_ohlcv", _no_daily)
     monkeypatch.setattr(D, "_render_candles",
                         lambda s, i, o: (io.BytesIO(b"png"),

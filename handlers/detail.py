@@ -372,35 +372,51 @@ _OKX_BAR = {"1w": "1W", "1d": "1D", "4h": "4H", "1h": "1H"}
 
 
 async def _ohlcv(symbol, interval="1d", limit=120):
-    """某周期的 OHLCV：返回 [(ts_ms,o,h,l,c,vol), ...] 正序；先币安后 OKX。"""
+    """某周期的 OHLCV：返回 (candles, 来源名) 或 (None, None)。candles 为正序。
+
+    **必须带合约兜底**：原来只查两家的现货，于是「只有合约没有现货」的币
+    （AKE 实测：币安现货 400、OKX 51001，而币安合约 200 有数据）三个周期
+    全部落空，图一张都发不出来——而且当时是**静默**的，屏幕上只有信息卡，
+    看起来像功能坏了。信息卡本身还显示着「合约 $0.009144 费率 Binance」，
+    也就是数据明明就在，只是我没去那儿取。
+    """
     sym = symbol.upper()
+    bar = _OKX_BAR.get(interval, "1D")
+    attempts = [
+        ("币安现货", "https://api.binance.com/api/v3/klines",
+         {"symbol": f"{sym}USDT", "interval": interval, "limit": limit}, "binance"),
+        ("币安合约", "https://fapi.binance.com/fapi/v1/klines",
+         {"symbol": f"{sym}USDT", "interval": interval, "limit": limit}, "binance"),
+        ("OKX现货", "https://www.okx.com/api/v5/market/candles",
+         {"instId": f"{sym}-USDT", "bar": bar, "limit": str(limit)}, "okx"),
+        ("OKX合约", "https://www.okx.com/api/v5/market/candles",
+         {"instId": f"{sym}-USDT-SWAP", "bar": bar, "limit": str(limit)}, "okx"),
+    ]
     async with httpx.AsyncClient(timeout=10) as client:
-        try:
-            r = await client.get("https://api.binance.com/api/v3/klines",
-                                 params={"symbol": f"{sym}USDT", "interval": interval,
-                                         "limit": limit})
-            r.raise_for_status()
-            return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]),
-                     float(k[4]), float(k[5])) for k in r.json()]
-        except Exception:
-            pass
-        try:
-            r = await client.get("https://www.okx.com/api/v5/market/candles",
-                                 params={"instId": f"{sym}-USDT",
-                                         "bar": _OKX_BAR.get(interval, "1D"),
-                                         "limit": str(limit)})
-            d = r.json()
-            if d.get("code") == "0" and d.get("data"):
-                return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]),
-                         float(k[4]), float(k[5])) for k in reversed(d["data"])]
-        except Exception:
-            pass
-    return None
+        for name, url, params, kind in attempts:
+            try:
+                r = await client.get(url, params=params)
+                if kind == "binance":
+                    r.raise_for_status()
+                    rows = r.json()
+                    if rows:
+                        return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]),
+                                 float(k[4]), float(k[5])) for k in rows], name
+                else:
+                    d = r.json()
+                    if d.get("code") == "0" and d.get("data"):
+                        return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]),
+                                 float(k[4]), float(k[5]))
+                                for k in reversed(d["data"])], name
+            except Exception:
+                continue
+    return None, None
 
 
 async def _daily_ohlcv(symbol, limit=120):
-    """日线 OHLCV（`_ohlcv` 的老入口，保留给既有调用方）。"""
-    return await _ohlcv(symbol, "1d", limit)
+    """日线 OHLCV（`_ohlcv` 的老入口，只回蜡烛不回来源，保留给既有调用方）。"""
+    candles, _src = await _ohlcv(symbol, "1d", limit)
+    return candles
 
 
 def _build_signal_text(o, h, l, c, v, closes_4h=None, flow=None):
@@ -661,7 +677,7 @@ def _render_candles(sym, interval, ohlcv):
 async def build_signal_chart(symbol, flow=None):
     """日线蜡烛图 + 综合研判文案。返回 (buf, caption) 或 None。"""
     sym = symbol.upper()
-    ohlcv = await _ohlcv(sym, "1d")
+    ohlcv, src = await _ohlcv(sym, "1d")
     if not ohlcv or len(ohlcv) < 30:
         return None
     # 4h 收盘价给早期反转预警的 L4 用（4h RSI 从超买/超卖回头，领先日线约一天）。
@@ -675,8 +691,9 @@ async def build_signal_chart(symbol, flow=None):
     if not r:
         return None
     buf, cols = r
-    caption = (_build_signal_text(cols["o"], cols["h"], cols["l"], cols["c"], cols["v"],
-                                  closes_4h=closes_4h, flow=flow)
+    caption = (f"K线来源：{src}\n"
+               + _build_signal_text(cols["o"], cols["h"], cols["l"], cols["c"], cols["v"],
+                                    closes_4h=closes_4h, flow=flow)
                + "\n⚠️ 仅供参考，不构成投资建议")
     return buf, caption
 
@@ -700,16 +717,21 @@ async def build_multi_charts(symbol, flow=None):
     fetched = await asyncio.gather(
         *[_ohlcv(sym, tf) for tf, _ in _TF_LABELS], return_exceptions=True)
 
-    charts, daily_cols = [], None
-    for (tf, label), ohlcv in zip(_TF_LABELS, fetched):
-        if isinstance(ohlcv, Exception) or not ohlcv or len(ohlcv) < 30:
-            log.info(f"[chart] {sym} {tf} 数据不足，这张跳过")
+    charts, daily_cols, src = [], None, None
+    for (tf, label), got in zip(_TF_LABELS, fetched):
+        if isinstance(got, Exception) or not got:
+            log.info(f"[chart] {sym} {tf} 取数失败，这张跳过")
+            continue
+        ohlcv, this_src = got
+        if not ohlcv or len(ohlcv) < 30:
+            log.info(f"[chart] {sym} {tf} 只有 {len(ohlcv or [])} 根，这张跳过")
             continue
         r = _render_candles(sym, tf, ohlcv)
         if not r:
             continue
         buf, cols = r
         charts.append((buf, label))
+        src = src or this_src
         if tf == "1d":
             daily_cols = cols
     if not charts:
@@ -729,8 +751,11 @@ async def build_multi_charts(symbol, flow=None):
         # 日线没取到就只给图，不拿别的周期硬算研判——那会用错阈值
         text = "日线数据暂缺，本次只给图不给研判"
 
-    got = "／".join(lb for _, lb in charts)
-    caption = f"{got}（宏观定大势 → 微观找入场）\n{text}\n⚠️ 仅供参考，不构成投资建议"
+    tfs = "／".join(lb for _, lb in charts)
+    # 来源要写在脸上：同一个币在现货和合约上的 K 线不是一条，
+    # 只有合约的币（AKE）画出来的是合约图，不说清会被当成现货读。
+    caption = (f"{tfs}（宏观定大势 → 微观找入场）｜K线来源：{src}\n"
+               f"{text}\n⚠️ 仅供参考，不构成投资建议")
     return charts, caption
 
 
@@ -778,5 +803,17 @@ async def send_full_detail(message, symbol, spot, spot_src, swap, swap_fr, swap_
         if chart:
             buf, caption = chart
             await message.reply_photo(photo=buf, caption=caption, do_quote=False)
+            return
     except Exception as e:
         log.error(f"[detail] {sym} 蜡烛图失败: {e}")
+
+    # 走到这儿 = 一张图都没发出去。**必须说一声**：
+    # 之前是静默的，屏幕上只剩一张信息卡，看起来就是"功能坏了"
+    # （AKE 实测：四个 K 线接口全没有它，而信息卡照常显示，最难查的那种）。
+    try:
+        await safe_reply(message,
+                         "📉 这个币暂时画不出 K 线图：四个接口（币安现货/合约、"
+                         "OKX 现货/合约）都没有它的 K 线。上面的行情数据仍然有效。",
+                         do_quote=False)
+    except Exception as e:
+        log.error(f"[detail] {sym} 无图提示也发失败: {e}")

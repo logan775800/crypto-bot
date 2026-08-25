@@ -12,8 +12,11 @@ import asyncio
 import logging
 import httpx
 
+from telegram import InputMediaPhoto
+
 from api import get_market_data, get_fear_greed
-from indicators import rsi as _rsi, sma, macd_hist, adx as _adx, support_resistance
+from indicators import (rsi as _rsi, sma, macd_hist, dmi as _dmi, support_resistance,
+                        rsi_divergence, early_reversal, volume_poc)
 from handlers.util import escape_md, safe_reply
 
 log = logging.getLogger(__name__)
@@ -106,9 +109,12 @@ _EXCHANGES = [("Binance", _binance_klines), ("OKX", _okx_klines),
               ("Bitget", _bitget_klines), ("Bybit", _bybit_klines)]
 
 
-async def build_flow_block(symbol):
-    """四所现货主动买卖聚合。按用户要求：四所必须齐全，缺一所则整块不显示。
-    返回文本行(list[str])或 None。"""
+async def flow_totals(symbol):
+    """四所现货主动买卖聚合的**数字**，形如 {"4h_buy":…, "4h_sell":…, "1d_buy":…}。
+    四所必须齐全，缺一所返回 None。
+
+    拆出这一层是因为同一份数据有两个消费者：信息卡要排版成文字、信号引擎要拿它
+    做资金面确认。各拉一遍等于把四家交易所的请求翻倍。"""
     sym = symbol.upper()
     results = {}
     async with httpx.AsyncClient(timeout=10) as client:
@@ -120,14 +126,30 @@ async def build_flow_block(symbol):
             return None   # 四所齐全才显示
         results[name] = candles
 
-    lines = ["全市场买卖估算(现货) 来源: Binance/OKX/Bitget/Bybit"]
+    out = {}
     for label, n in _WINDOWS:
         buy = sell = 0.0
         for candles in results.values():
             for c in candles[-n:]:
                 buy += c["buy"]; sell += c["sell"]
-        lines.append(f"{label}: 买入 {_fmt_amt(buy)} 枚  |  卖出 {_fmt_amt(sell)} 枚")
+        out[f"{label}_buy"], out[f"{label}_sell"] = buy, sell
+    return out
+
+
+def flow_lines(totals):
+    """把 flow_totals 的数字排版成信息卡里那几行。totals 为 None 时返回 None。"""
+    if not totals:
+        return None
+    lines = ["全市场买卖估算(现货) 来源: Binance/OKX/Bitget/Bybit"]
+    for label, _ in _WINDOWS:
+        lines.append(f"{label}: 买入 {_fmt_amt(totals[f'{label}_buy'])} 枚  "
+                     f"|  卖出 {_fmt_amt(totals[f'{label}_sell'])} 枚")
     return lines
+
+
+async def build_flow_block(symbol):
+    """四所现货主动买卖聚合，返回文本行(list[str])或 None。自己取数的老入口。"""
+    return flow_lines(await flow_totals(symbol))
 
 
 # ---------- RSI 4h / 1d ----------
@@ -240,7 +262,7 @@ async def get_funding_interval(sym):
 
 
 # ---------- 信息卡（消息 1） ----------
-async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
+async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_pre=None):
     """组装完整信息卡文本。spot/swap 为 quick_price 已取到的行情，避免重复请求。"""
     sym = symbol.upper()
     lines = [f"💎 *{escape_md(sym)}*\n"]
@@ -259,8 +281,12 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src):
     lines.append(f"来源: {spot_src or swap_src or '—'}")
 
     # 市值 / RSI / 四所买卖聚合 / 合约深度 / 恐惧贪婪 五块并发拉取
+    # flow_pre 是调用方已经取好的买卖聚合（send_full_detail 会取一次给两条消息共用）；
+    # 没给才自己取，保证这个函数单独调用时行为不变。
+    _flow_job = (asyncio.sleep(0, result=flow_lines(flow_pre)) if flow_pre is not None
+                 else build_flow_block(sym))
     md_res, rsi_res, flow, oils, fng, fint = await asyncio.gather(
-        get_market_data([sym]), build_rsi_multi(sym), build_flow_block(sym),
+        get_market_data([sym]), build_rsi_multi(sym), _flow_job,
         build_oi_ls(sym), get_fear_greed(), get_funding_interval(sym),
         return_exceptions=True)
 
@@ -338,13 +364,21 @@ def _fmt_price(p):
 
 
 # ---------- 蜡烛图 + 综合研判（消息 2） ----------
-async def _daily_ohlcv(symbol, limit=120):
-    """日线 OHLCV：返回 [(ts_ms,o,h,l,c,vol), ...] 正序；先币安后 OKX。"""
+# 多周期看图的顺序：宏观定大势 → 微观找入场。三张一起看才知道
+# "日线的多头" 到底是周线趋势里的顺势，还是周线跌势里的一次反抽。
+_TF_LABELS = [("1w", "周线"), ("1d", "日线"), ("4h", "4小时")]
+# OKX 的周期名和币安不一样，取数时要翻译（写错不会报错，只会拿到另一个周期的图）
+_OKX_BAR = {"1w": "1W", "1d": "1D", "4h": "4H", "1h": "1H"}
+
+
+async def _ohlcv(symbol, interval="1d", limit=120):
+    """某周期的 OHLCV：返回 [(ts_ms,o,h,l,c,vol), ...] 正序；先币安后 OKX。"""
     sym = symbol.upper()
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             r = await client.get("https://api.binance.com/api/v3/klines",
-                                 params={"symbol": f"{sym}USDT", "interval": "1d", "limit": limit})
+                                 params={"symbol": f"{sym}USDT", "interval": interval,
+                                         "limit": limit})
             r.raise_for_status()
             return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]),
                      float(k[4]), float(k[5])) for k in r.json()]
@@ -352,7 +386,9 @@ async def _daily_ohlcv(symbol, limit=120):
             pass
         try:
             r = await client.get("https://www.okx.com/api/v5/market/candles",
-                                 params={"instId": f"{sym}-USDT", "bar": "1D", "limit": str(limit)})
+                                 params={"instId": f"{sym}-USDT",
+                                         "bar": _OKX_BAR.get(interval, "1D"),
+                                         "limit": str(limit)})
             d = r.json()
             if d.get("code") == "0" and d.get("data"):
                 return [(int(k[0]), float(k[1]), float(k[2]), float(k[3]),
@@ -362,9 +398,31 @@ async def _daily_ohlcv(symbol, limit=120):
     return None
 
 
-def _build_signal_text(o, h, l, c, v):
-    """由日线 OHLCV 生成 综合信号/趋势/动能/量能/强度 五行研判。"""
+async def _daily_ohlcv(symbol, limit=120):
+    """日线 OHLCV（`_ohlcv` 的老入口，保留给既有调用方）。"""
+    return await _ohlcv(symbol, "1d", limit)
+
+
+def _build_signal_text(o, h, l, c, v, closes_4h=None, flow=None):
+    """由日线 OHLCV 生成综合研判。
+
+    2026-08-25 大改：原来只有 MA/MACD/RSI/量能四项相加，**ADX 只印在屏幕上、
+    一分不参与**。参考 `D:\\Scripts\\bit` 那个 Go 机器人补上了四层：
+
+      1. ADX 当闸门 —— 震荡市(ADX<20)里顺势指标会被反复打脸，要降级；
+      2. +DI/-DI 方向校验 —— 这条是**修 bug**，见下；
+      3. 背离与早期反转预警 —— 在均线掉头之前降级；
+      4. 量能中枢 POC / 资金面 —— 位置与资金的修正。
+
+    **第 2 条修的是什么**：ADX 只测强度不带方向。一段猛跌里的逆势反抽同样能把
+    ADX 顶到 80，而反抽那几根上 MA/MACD/RSI 全部翻多——老版本据此给出
+    「买入·强」，而那恰恰是最容易被套的位置。判据钉在
+    `tests/test_signal_factors.py::test_counter_trend_bounce_is_not_a_bull_signal`。
+
+    closes_4h / flow 都可以为 None（取不到就少一层确认，不影响主结论）。
+    """
     closes, highs, lows, vols = c, h, l, v
+    opens = o
     last = closes[-1]
     # 均线口径全局统一成 MA3/13/23（annotchart.MA_PERIODS）——
     # 以前这张日线图是 MA7/25/99、标注图是 EMA20/50/200、破位扫描又是 3/13/23，
@@ -377,7 +435,11 @@ def _build_signal_text(o, h, l, c, v):
     ma_mid_prev = sma(closes[:-3], _P2) if len(closes) > _P2 + 3 else None
     mh = macd_hist(closes)
     r = _rsi(closes, 14)
-    ax = _adx(highs, lows, closes, 14)
+    dm = _dmi(highs, lows, closes, 14)
+    ax = dm["adx"] if dm else None
+    div = rsi_divergence(closes)
+    rev = early_reversal(opens, highs, lows, closes, closes_4h)
+    poc = volume_poc(highs, lows, vols)
 
     # 量能：最近一根 vs 前若干根均量
     prior = vols[-6:-1] if len(vols) >= 6 else vols[:-1]
@@ -435,62 +497,116 @@ def _build_signal_text(o, h, l, c, v):
         vol_desc = f"量能正常（近量约 {vol_ratio:.1f}× 前均量）"
     vol_line = f"量能：{vol_desc}"
 
-    # —— 强度 ——
+    # —— 强度（ADX 只测强弱，方向要看 DI）——
     if ax is not None:
+        # 措辞里**不能出现"可顺势"**：ADX 只测强弱，顺哪个方向由下面的 DI 说了算。
+        # 原来写"趋势较强，可顺势"，碰上逆势反抽就会一边写"可顺势"、
+        # 一边在下面警告"别当趋势追"，自己跟自己打架。
         if ax >= 40:
-            strg = f"ADX {ax:.0f}（趋势较强，可顺势）"
+            strg = f"ADX {ax:.0f}（趋势很强）"
         elif ax >= 25:
             strg = f"ADX {ax:.0f}（趋势成形）"
         elif ax >= 20:
             strg = f"ADX {ax:.0f}（趋势萌芽）"
         else:
             strg = f"ADX {ax:.0f}（无明显趋势，震荡为主）"
+        if dm:
+            di_word = "多头占优" if dm["pdi"] > dm["mdi"] else "空头占优"
+            strg += f"｜+DI {dm['pdi']:.0f} / -DI {dm['mdi']:.0f} {di_word}"
     else:
         strg = "ADX 数据不足"
     strg_line = f"强度：{strg}"
 
     # —— 综合信号 ——
-    if score >= 2:
-        head = "买入信号"
+    # 背离优先级最高：它是反转信号，直接决定方向，不跟着顺势分数走。
+    if div["bearish"]:
+        head, base = "卖出信号", -1
+    elif div["bullish"]:
+        head, base = "买入信号", 1
+    elif score >= 2:
+        head, base = "买入信号", 1
     elif score <= -2:
-        head = "卖出信号"
+        head, base = "卖出信号", -1
     else:
-        head = "观望信号"
-    # 强度按分数分档；量能不足(缩量/参与度低)时降一级——避免"缩量却给强信号"自相矛盾
+        head, base = "观望信号", 0
+
     levels = ["弱", "中", "强"]
     lvl = 2 if abs(score) >= 3 else (1 if abs(score) >= 2 else 0)
+    warns = []
+
+    # 量能不足时降一级——避免"缩量却给强信号"自相矛盾
     if vol_ratio <= 0.7:
         lvl = max(0, lvl - 1)
+
+    if base != 0 and ax is not None:
+        strong_trend = ax >= 25
+        # ① 方向冲突：ADX 再高也不能顺着反抽喊多。这是整套改造里最要紧的一条。
+        if dm and strong_trend:
+            di_dir = 1 if dm["pdi"] > dm["mdi"] else -1
+            if di_dir != base:
+                lvl = 0
+                warns.append("ADX 高但 DI 方向相反，多半是逆势反抽，别当趋势追")
+        # ② 震荡市：顺势指标在横盘里会被反复打脸
+        if ax < 20:
+            lvl = max(0, lvl - 1)
+            warns.append("ADX<20 无明显趋势，震荡里的方向信号可信度低")
+        # ③ 多因子共振但趋势没确认——多半是趋势刚起。这时不能一边写"多头排列"
+        #    一边喊"横盘震荡"自相矛盾，给弱信号并说清在等什么。
+        elif not strong_trend and abs(score) >= 3:
+            lvl = min(lvl, 1)
+            warns.append("多因子共振但 ADX 未确认，或为趋势初起，等放量突破再确认")
+
+    # ④ 早期反转预警：领先信号已共振指向反转，且和当前顺势方向相反 → 降级
+    if (rev["top_risk"] and base > 0) or (rev["bottom_risk"] and base < 0):
+        lvl = max(0, lvl - 1)
+        warns.append("反转预警：" + " + ".join(rev["reasons"]))
+
+    # ⑤ 资金面确认：喊反转却和近日资金流反着来，说明还没获得资金面配合
+    if flow and base != 0:
+        net = flow.get("1d_buy", 0) - flow.get("1d_sell", 0)
+        if net and (1 if net > 0 else -1) != base:
+            lvl = max(0, lvl - 1)
+            warns.append("近一日资金流与该方向相反，尚未获资金面配合")
+
     strength = levels[lvl]
     suffix = f"（{('，'.join(parts))}）" if parts else ""
     signal_line = f"综合信号：{head}·{strength}{suffix}"
 
-    # —— 关键位（近30根支撑/阻力）——
+    # —— 关键位（近30根支撑/阻力 + 量能中枢）——
     sr = support_resistance(closes)
-    sr_line = (f"关键位：阻力 ${_fmt_price(sr['resistance'])} | 支撑 ${_fmt_price(sr['support'])}"
-               if sr else None)
+    sr_line = None
+    if sr:
+        sr_line = (f"关键位：阻力 ${_fmt_price(sr['resistance'])} "
+                   f"| 支撑 ${_fmt_price(sr['support'])}")
+        if poc:
+            sr_line += f" | POC ${_fmt_price(poc)}"
 
     out = [signal_line, trend_line, momo_line, vol_line, strg_line]
     if sr_line:
         out.append(sr_line)
+    if div["text"]:
+        out.append("⚠️ " + div["text"])
+    # 贴近 POC：多空换手最密集，容易在这里反复纠缠
+    if poc and last and abs(last - poc) / last <= 0.02:
+        out.append("贴近量能中枢 POC，此处易反复")
+    for w in warns:
+        out.append("⚠️ " + w)
     return "\n".join(out)
 
 
-async def build_signal_chart(symbol):
-    """生成蜡烛图(MA3/13/23+量) 并附综合研判文案。返回 (buf, caption) 或 None。"""
-    ohlcv = await _daily_ohlcv(symbol)
-    if not ohlcv or len(ohlcv) < 30:
-        return None
+def _render_candles(sym, interval, ohlcv):
+    """把一段 OHLCV 画成蜡烛图 PNG。返回 (buf, 列数据字典) 或 None。
+
+    列数据一并回传，是为了让调用方不用再把 DataFrame 拆一遍。"""
     try:
         import datetime
         import pandas as pd
         import mplfinance as mpf
-        from handlers.annotchart import MA_PERIODS
+        from handlers.annotchart import MA_PERIODS, apply_cjk
     except Exception as e:
         log.error(f"[chart] 绘图库缺失: {e}")
         return None
 
-    sym = symbol.upper()
     idx = [datetime.datetime.utcfromtimestamp(row[0] / 1000) for row in ohlcv]
     df = pd.DataFrame(
         {"Open": [r[1] for r in ohlcv], "High": [r[2] for r in ohlcv],
@@ -498,11 +614,9 @@ async def build_signal_chart(symbol):
          "Volume": [r[5] for r in ohlcv]},
         index=pd.DatetimeIndex(idx),
     )
-    # 只画最近 ~120 根，均线用全量算好再截可保证长周期均线有值
     last = df["Close"].iloc[-1]
     mc = mpf.make_marketcolors(up="#26a69a", down="#ef5350", edge="inherit",
                                wick="inherit", volume="in")
-    from handlers.annotchart import apply_cjk
     style = mpf.make_mpf_style(**apply_cjk(dict(
         base_mpf_style="charles", marketcolors=mc,
         gridstyle=":", facecolor="white",
@@ -511,33 +625,134 @@ async def build_signal_chart(symbol):
     buf = io.BytesIO()
     try:
         mpf.plot(df, type="candle", mav=MA_PERIODS, volume=True, style=style,
-                 title=f"[{sym}] 1d  #{last:g}", figsize=(11, 6.5),
+                 title=f"[{sym}] {interval}  #{last:g}", figsize=(11, 6.5),
                  tight_layout=True, savefig=dict(fname=buf, dpi=90, format="png"))
     except Exception as e:
-        log.error(f"[chart] {sym} 绘图失败: {e}")
+        log.error(f"[chart] {sym} {interval} 绘图失败: {e}")
         return None
     buf.seek(0)
+    cols = {"o": list(df["Open"]), "h": list(df["High"]), "l": list(df["Low"]),
+            "c": list(df["Close"]), "v": list(df["Volume"])}
+    return buf, cols
 
-    o = list(df["Open"]); h = list(df["High"]); l = list(df["Low"])
-    c = list(df["Close"]); v = list(df["Volume"])
-    caption = _build_signal_text(o, h, l, c, v) + "\n⚠️ 仅供参考，不构成投资建议"
+
+async def build_signal_chart(symbol, flow=None):
+    """日线蜡烛图 + 综合研判文案。返回 (buf, caption) 或 None。"""
+    sym = symbol.upper()
+    ohlcv = await _ohlcv(sym, "1d")
+    if not ohlcv or len(ohlcv) < 30:
+        return None
+    # 4h 收盘价给早期反转预警的 L4 用（4h RSI 从超买/超卖回头，领先日线约一天）。
+    # 取不到就少一层确认，不影响主结论。
+    try:
+        async with httpx.AsyncClient(timeout=10) as _c:
+            closes_4h = await _closes_binance(_c, sym, "4h", 120)
+    except Exception:
+        closes_4h = None
+    r = _render_candles(sym, "1d", ohlcv)
+    if not r:
+        return None
+    buf, cols = r
+    caption = (_build_signal_text(cols["o"], cols["h"], cols["l"], cols["c"], cols["v"],
+                                  closes_4h=closes_4h, flow=flow)
+               + "\n⚠️ 仅供参考，不构成投资建议")
     return buf, caption
+
+
+async def build_multi_charts(symbol, flow=None):
+    """周线 / 日线 / 4h 三张图 + 一段研判，合成一条相册消息。
+
+    返回 ([(buf, 周期名), ...], caption)；一张都画不出来时返回 None。
+
+    **为什么是三张而不是一张**：单看日线的"多头排列"分不清它是周线趋势里的顺势，
+    还是周线跌势里的一次反抽——而这两种情况该做的事完全相反。
+    宏观定大势(周线) → 微观找入场(4h)。
+
+    **研判固定用日线算**：均线口径 MA3/13/23 是按日线定的语义，
+    换个周期同一套阈值说的不是一回事。三张图只是给眼睛看的上下文。
+
+    ⚠️ 相册消息**挂不了 inline 按钮**（Telegram 的限制），所以按钮只能留在
+    前面那张信息卡上——调用方别把按钮传到这儿来。
+    """
+    sym = symbol.upper()
+    fetched = await asyncio.gather(
+        *[_ohlcv(sym, tf) for tf, _ in _TF_LABELS], return_exceptions=True)
+
+    charts, daily_cols = [], None
+    for (tf, label), ohlcv in zip(_TF_LABELS, fetched):
+        if isinstance(ohlcv, Exception) or not ohlcv or len(ohlcv) < 30:
+            log.info(f"[chart] {sym} {tf} 数据不足，这张跳过")
+            continue
+        r = _render_candles(sym, tf, ohlcv)
+        if not r:
+            continue
+        buf, cols = r
+        charts.append((buf, label))
+        if tf == "1d":
+            daily_cols = cols
+    if not charts:
+        return None
+
+    if daily_cols:
+        closes_4h = None
+        try:
+            async with httpx.AsyncClient(timeout=10) as _c:
+                closes_4h = await _closes_binance(_c, sym, "4h", 120)
+        except Exception:
+            pass
+        text = _build_signal_text(daily_cols["o"], daily_cols["h"], daily_cols["l"],
+                                  daily_cols["c"], daily_cols["v"],
+                                  closes_4h=closes_4h, flow=flow)
+    else:
+        # 日线没取到就只给图，不拿别的周期硬算研判——那会用错阈值
+        text = "日线数据暂缺，本次只给图不给研判"
+
+    got = "／".join(lb for _, lb in charts)
+    caption = f"{got}（宏观定大势 → 微观找入场）\n{text}\n⚠️ 仅供参考，不构成投资建议"
+    return charts, caption
 
 
 # ---------- 对外总入口：发两条消息 ----------
 async def send_full_detail(message, symbol, spot, spot_src, swap, swap_fr, swap_src, reply_markup=None):
     """由 quick_price 调用：先发信息卡，再发蜡烛图+研判。任一失败不影响另一条。"""
     sym = symbol.upper()
+    # 买卖聚合取一次给两条消息共用：信息卡要排版成文字，信号引擎要拿它做资金面确认。
+    # 各取各的等于把四家交易所的请求翻倍。取不到就两边都降级，不影响其余内容。
+    try:
+        flow = await flow_totals(sym)
+    except Exception as e:
+        log.info(f"[detail] {sym} 买卖聚合不可用: {e}")
+        flow = None
+
     # do_quote=False：群里直接发普通消息，不引用用户那条币名消息
     try:
-        card = await build_info_card(sym, spot, spot_src, swap, swap_fr, swap_src)
+        card = await build_info_card(sym, spot, spot_src, swap, swap_fr, swap_src,
+                                     flow_pre=flow)
         await safe_reply(message, card, reply_markup=reply_markup,
                          parse_mode="Markdown", do_quote=False)
     except Exception as e:
         log.error(f"[detail] {sym} 信息卡失败: {e}")
 
+    # 周线/日线/4h 三张图合成一条相册。任何一步出岔都退回原来的单张日线图——
+    # 相册是锦上添花，不能让它把"发币名有图看"这件事整个搞没。
     try:
-        chart = await build_signal_chart(sym)
+        multi = await build_multi_charts(sym, flow=flow)
+        if multi and len(multi[0]) >= 2:
+            charts, caption = multi
+            media = [InputMediaPhoto(media=buf,
+                                     caption=caption if i == 0 else None)
+                     for i, (buf, _lb) in enumerate(charts)]
+            await message.reply_media_group(media=media, do_quote=False)
+            return
+        if multi:                      # 只画出一张，没必要发相册
+            (buf, _lb), caption = multi[0][0], multi[1]
+            await message.reply_photo(photo=buf, caption=caption, do_quote=False)
+            return
+    except Exception as e:
+        log.error(f"[detail] {sym} 多周期相册失败，退回单图: {e}")
+
+    try:
+        chart = await build_signal_chart(sym, flow=flow)
         if chart:
             buf, caption = chart
             await message.reply_photo(photo=buf, caption=caption, do_quote=False)

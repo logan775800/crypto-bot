@@ -186,6 +186,56 @@ def test_command_is_categorised_in_the_panel():
     assert cmdpanel.MODULE_CN.get("handlers.relay")
 
 
+# ── 干活的账号可以不是他本人 ─────────────────────────────────
+def test_session_is_account_agnostic():
+    """TG_SESSION 只是"某个账号的凭证"，代码不该关心是谁的。
+    2026-08-25 他问能不能用小号——能，而且主号不暴露在自动化风险里更好。"""
+    import inspect
+    src = inspect.getsource(R.start)
+    assert "TG_SESSION" in src
+    # 不能出现任何"必须是管理员本人"之类的绑定
+    assert "is_admin" not in src, "读频道的账号和配置的管理员是两回事，别绑死"
+
+
+def test_selfcheck_covers_the_cross_account_failure_mode():
+    """配置的是他、干活的是小号——"我设好了"不代表"那个号进得去"。
+    转发失败只写日志，他那边看到的是"没反应"。"""
+    import inspect
+    src = inspect.getsource(R.selfcheck)
+    assert "get_me" in src, "要报清楚干活的是哪个号"
+    assert "get_entity" in src, "要实测目标群和每个源频道够不够得着"
+    assert "noforwards" in src, "频道开了禁止转发的话，订阅了也搬不出来"
+
+
+def test_selfcheck_is_reachable():
+    import inspect
+    src = inspect.getsource(R.relay_cmd)
+    assert "selfcheck" in src
+    assert "selfcheck" in inspect.getsource(R.on_button)
+    _txt, kb = R.panel()
+    # 未配置时面板只有返回键；配置后才有自检按钮，这里只验命令路径
+    assert "check" in src
+
+
+def test_selfcheck_says_so_when_client_is_down(monkeypatch):
+    """session 失效是最常见的故障，要直接说"重新换一串"，别只说失败。"""
+    import asyncio
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    monkeypatch.setattr(R, "_client", None)
+    txt = asyncio.run(R.selfcheck())
+    assert "没连上" in txt and "tools_tg_login" in txt
+
+
+def test_panel_warns_about_the_cross_account_trap(monkeypatch):
+    for k in ("TG_API_ID", "TG_API_HASH", "TG_SESSION"):
+        monkeypatch.setenv(k, "x")
+    txt, kb = R.panel()
+    assert "干活的是上面那个号" in txt
+    cbs = [b.callback_data for r in kb.inline_keyboard for b in r]
+    assert "rl:check" in cbs
+
+
 def test_forwarding_keeps_attribution():
     """搬别人的东西，出处不能弄丢。原生转发自带「转发自 XXX」的头。"""
     import inspect

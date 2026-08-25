@@ -5,8 +5,21 @@
 **Bot API 读不到机器人自己不是管理员的频道。** 别人的频道不可能给你加管理员，
 所以这条路是死的——不是配置问题，是接口就没这个能力。
 
-所以这里走 **MTProto（Telethon）**：用**他自己的账号**登录，
-他订阅了哪个频道就能读哪个，私密频道也行。
+所以这里走 **MTProto（Telethon）**：用**一个真人账号**登录，
+它订阅了哪个频道就能读哪个，私密频道也行。
+
+**这个账号不必是他本人的**——`TG_SESSION` 只是"某个账号的凭证"，代码不关心是谁。
+2026-08-25 他问「可以用另外一个账号的 TG_SESSION 吗」，答案是可以，
+而且这正是该做的：主号不暴露在自动化风险里。用小号的前提是
+**那个号自己订阅了源频道、而且在目标群里**。
+
+⚠️ 但别现注册一个新号：**全新账号被限制的概率反而更高**——
+刚注册、没有任何正常聊天记录、上来就只做自动转发，是标准的 spam 特征。
+
+**由此带来一个新的失效模式**：配置的人（他，通过机器人）和干活的账号（小号）
+**不是同一个**。他在面板上设好了目标群，不代表那个小号进得去；
+转发失败只写日志，他那边看到的就是"没反应"。所以有 `selfcheck()`——
+逐条实测号是谁、群进没进、频道订没订、能不能转。
 
 ⚠️ **这是拿个人账号做自动化，Telegram 对此是灰色态度，账号可能被限制。**
 2026-08-24 我把风险讲清楚之后他明确选了这条路。所以：
@@ -177,6 +190,69 @@ async def handle(event):
         log.error(f"频道搬运转发失败 {src} → {conf['target']}: {e}")
 
 
+# ── 自检 ────────────────────────────────────────────────────
+# **配置的人和干活的账号不是同一个**（session 可以是小号的），
+# 所以"我在面板上设好了"完全不代表"那个号进得了群、订阅了那些频道"。
+# 转发失败只会进日志，他那边看到的是"没反应"——这个项目最贵的那类 bug。
+# 所以逐条实测：号是谁、群进没进、频道订没订、能不能转。
+async def selfcheck():
+    conf = cfg()
+    lines = ["🩺 *搬运自检*", ""]
+    if not configured():
+        return "🩺 还没配 TG 账号（面板上有步骤）"
+    if _client is None:
+        return ("🩺 *搬运自检*\n\n❌ 客户端没连上。\n"
+                "多半是 session 失效或被踢下线了——重新跑一次 "
+                "`tools_tg_login.py` 换一串新的。")
+    try:
+        me = await _client.get_me()
+        lines.append(f"账号：*{escape_md(me.first_name or '')}* "
+                     f"@{me.username or '(无用户名)'}　id `{me.id}`")
+        lines.append("　（转发会显示成这个号转的，群友看到的是它）")
+    except Exception as e:
+        return f"🩺 取账号信息失败：{str(e)[:80]}"
+
+    # 目标群：这个号在不在里面
+    tgt = conf.get("target")
+    lines.append("")
+    if not tgt:
+        lines.append("❌ 还没设转发目标（在目标群里发 `/relay here`）")
+    else:
+        try:
+            ent = await _client.get_entity(int(tgt))
+            name = getattr(ent, "title", None) or str(tgt)
+            lines.append(f"✅ 目标群：*{escape_md(name)}*，这个号在里面")
+        except Exception as e:
+            lines.append(f"❌ 目标 `{tgt}` 进不去：{str(e)[:60]}")
+            lines.append("　 → 用你的主号把这个搬运号拉进那个群")
+
+    # 每个来源频道：订没订、能不能转
+    lines.append("")
+    srcs = conf.get("sources") or []
+    if not srcs:
+        lines.append("❌ 还没加频道（`/relay add @频道名`）")
+    for s in srcs:
+        try:
+            ent = await _client.get_entity(s if isinstance(s, str) else int(s))
+            name = getattr(ent, "title", None) or str(s)
+            # 频道可以开「限制保存内容」，那样任何人都转不出去——
+            # 不检这条的话，表现是"订阅了、也没报错、就是不转"
+            if getattr(ent, "noforwards", False):
+                lines.append(f"⚠️ *{escape_md(name)}*：订阅了，但该频道"
+                             f"**禁止转发内容**，搬不出来")
+            else:
+                lines.append(f"✅ *{escape_md(name)}*　可读可转")
+        except Exception as e:
+            lines.append(f"❌ `{escape_md(str(s))}`：{str(e)[:50]}")
+            lines.append("　 → 让这个搬运号先去订阅这个频道")
+
+    lines.append("")
+    lines.append(f"开关：{'🟢 开启中' if conf.get('on') else '🔴 已关闭（不会转）'}")
+    used = len([1 for t, _s in _sent if time.time() - t < 3600])
+    lines.append(f"最近一小时已转 {used} 条（每频道上限 {MAX_PER_HOUR}）")
+    return "\n".join(lines)
+
+
 # ── 面板 ────────────────────────────────────────────────────
 def panel():
     conf = cfg()
@@ -215,14 +291,20 @@ def panel():
         "",
         f"每个频道每小时最多转 {MAX_PER_HOUR} 条。转发带原生「转发自」的头，出处不丢。",
         "",
+        "⚠️ **配置的是你，干活的是上面那个号**。它必须自己订阅了那些频道、"
+        "而且在目标群里，否则不报错、就是不转。点【🩺 自检】逐条验。",
+        "",
         "`/relay add @频道名`　加一个（私密频道用 id）",
         "`/relay del @频道名`　去掉",
         "`/relay here`　　　　把当前会话设为转发目标",
         "`/relay only 解锁 上币`　只转含这些词的",
         "`/relay skip 广告 推广`　不转含这些词的",
+        "`/relay check`　　　 自检：这个号进群了吗、订阅了吗、能不能转",
     ]
     rows = [[InlineKeyboardButton("🔴 关闭" if conf.get("on") else "🟢 开启",
                                   callback_data="rl:toggle")],
+            [InlineKeyboardButton("🩺 自检（这个号进群了吗/订阅了吗）",
+                                  callback_data="rl:check")],
             [InlineKeyboardButton("📍 转发到当前会话", callback_data="rl:here")],
             [InlineKeyboardButton("🧹 清空关键词", callback_data="rl:clearkw"),
              InlineKeyboardButton("🔄 刷新", callback_data="rl:panel")],
@@ -261,6 +343,9 @@ async def relay_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif act == "skip":
         conf["exclude"] = list(rest)
         save_data()
+    elif act in ("check", "自检", "test"):
+        await safe_reply(update.message, await selfcheck(), parse_mode="Markdown")
+        return
     elif act in ("on", "开"):
         conf["on"] = True
         save_data()
@@ -286,6 +371,15 @@ async def on_button(query, context):
         conf["target"] = query.message.chat_id if query.message else None
         save_data()
         await query.answer("转发目标已设为当前会话")
+    elif act == "check":
+        await query.answer("逐条验中…")
+        try:
+            txt = await selfcheck()
+        except Exception as e:
+            log.error(f"搬运自检出错: {e}")
+            txt = f"自检失败：{str(e)[:100]}"
+        await safe_reply(query.message, txt, parse_mode="Markdown")
+        return
     elif act == "clearkw":
         conf["include"], conf["exclude"] = [], []
         save_data()

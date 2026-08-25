@@ -225,6 +225,28 @@ def test_caption_points_at_the_side_that_matters():
     assert 'top["change"] < 0' in src, "要按方向分，不能两边一个文案"
 
 
+def test_alertnow_looks_exactly_like_a_real_alert():
+    """`/alertnow` 的用途就是自查"告警到底工不工作"。
+
+    真告警带图带按钮，而补推是光秃秃的文字的话，等于那一半根本验不到——
+    他问"这个怎么测试"时，这条路径就是答案，所以它必须一模一样。
+    """
+    import inspect
+    from handlers import contract_alert as CA
+    src = inspect.getsource(CA._do_alert_now)
+    assert "_liq_kb(movers)" in src, "补推也要带按钮"
+    assert "_attach_liqmap(bot, chat_id, movers)" in src, "补推也要配图"
+    assert "bot=None" in src.splitlines()[0], "要能把 bot 传进来"
+
+
+def test_alertnow_callers_pass_the_bot():
+    """不传 bot 的话上面那条等于没接。"""
+    import inspect
+    from handlers import contract_alert as CA
+    src = inspect.getsource(CA)
+    assert "context.bot" in src.split("async def alert_now")[1][:400]
+
+
 def test_small_moves_do_not_get_a_map():
     import asyncio
     from handlers import contract_alert as CA

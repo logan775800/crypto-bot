@@ -503,9 +503,14 @@ async def _fetch_all_movers():
     return list(dedup.values())
 
 
-async def _do_alert_now(chat_id, reply):
+async def _do_alert_now(chat_id, reply, bot=None):
     """立即补推当前异动的核心。reply 是发消息的协程函数（命令用 message.reply_text，
-    按钮回调也用 message.reply_text，各自传进来）。"""
+    按钮回调也用 message.reply_text，各自传进来）。
+
+    bot 只为配清算地图用。**这条路径必须和真告警长得一模一样**——
+    它的用途就是自查"告警到底工不工作"，长得不一样就什么都验不了
+    （真告警带图带按钮，补推却是光秃秃的文字，等于没验到那一半）。
+    """
     mt = _min_tier(chat_id)
     try:
         movers = await _fetch_all_movers()
@@ -523,7 +528,10 @@ async def _do_alert_now(chat_id, reply):
     for idx, chunk in enumerate(chunks):
         head = (f"🚨 *当前合约异动*（补推，≥{mt}%，共{len(movers)}个）\n" if idx == 0
                 else "🚨 *当前合约异动*（续）\n")
-        await reply(head + "\n".join(chunk), parse_mode="Markdown")
+        await reply(head + "\n".join(chunk), parse_mode="Markdown",
+                    reply_markup=_liq_kb(movers))
+    if bot:
+        await _attach_liqmap(bot, chat_id, movers)
 
 
 async def alert_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -532,7 +540,8 @@ async def alert_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     解决「怎么一个告警都没有」：正常告警对已报过的币会去重，安静≠坏了。
     """
     await update.message.reply_text("🔍 正在拉取当前合约异动…")
-    await _do_alert_now(update.effective_chat.id, update.message.reply_text)
+    await _do_alert_now(update.effective_chat.id, update.message.reply_text,
+                        context.bot)
 
 
 async def _do_alert_diag(chat_id, reply):
@@ -668,7 +677,8 @@ async def on_button(query, context):
 
     if d == "ctr:now":
         await query.answer("拉取当前异动中…")
-        await _do_alert_now(chat_id, query.message.reply_text)
+        await _do_alert_now(chat_id, query.message.reply_text,
+                            getattr(context, "bot", None))
         return
 
     if d == "ctr:diag":

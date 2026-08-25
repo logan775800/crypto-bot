@@ -130,6 +130,66 @@ def test_the_image_itself_is_stamped():
 
 
 # ── 入口 ────────────────────────────────────────────────────
+# ── 数据源：币安优先，Bybit 兜底 ─────────────────────────────
+def test_binance_bad_symbol_does_not_leak_a_keyerror():
+    """真机踩到：点【💣 AGI】回了一句「画不出来：'price'」。
+
+    币安对不存在的币回 400 + {"code":-1121}，而代码直接取了 j["price"]，
+    于是把一个光秃秃的 KeyError('price') 甩给了用户。
+    **报错必须说人话**，内部异常不能原样漏出去。
+    """
+    import asyncio
+
+    class _R:
+        status_code = 200
+
+        def __init__(self, j):
+            self._j = j
+
+        def json(self):
+            return self._j
+
+    class _C:
+        async def get(self, url, **k):
+            if "openInterestHist" in url:
+                return _R([{"sumOpenInterestValue": "1", "timestamp": 1}])
+            if "klines" in url:
+                return _R([[1, 1, 1, 1, 1]] * 5)
+            return _R({"code": -1121, "msg": "Invalid symbol."})   # ticker/price
+
+    got = asyncio.run(Q._fetch_binance(_C(), "AGIUSDT", "1h", 10))
+    assert got is None, "取不到价就该让位给 Bybit，不能抛 KeyError"
+
+
+def test_error_message_names_both_venues():
+    """两家都没有时，要说清是"这两家都没有"，而不是一个内部异常。"""
+    import inspect
+    src = inspect.getsource(Q._fetch)
+    assert "币安和 Bybit" in src and "RuntimeError" in src
+
+
+def test_bybit_open_interest_is_converted_to_notional():
+    """Bybit 的持仓量是**币的个数**，币安直接给金额。
+    不乘价格的话两条路口径不一致，图的量级会差几个数量级。"""
+    import inspect
+    src = inspect.getsource(Q._fetch_bybit)
+    assert "oi_coins * px" in src
+
+
+def test_bybit_rows_are_reversed_to_oldest_first():
+    """币安旧→新，Bybit 新→旧。不翻的话 ΔOI 正负全反，
+    "加仓"被当成"减仓"，整张图直接空掉。"""
+    import inspect
+    assert "reversed(rows)" in inspect.getsource(Q._fetch_bybit)
+
+
+def test_bybit_is_tried_when_binance_has_nothing():
+    import inspect
+    src = inspect.getsource(Q._fetch)
+    assert "_fetch_binance" in src and "_fetch_bybit" in src
+    assert src.index("_fetch_binance") < src.index("_fetch_bybit"), "币安优先"
+
+
 def test_command_is_registered():
     import pathlib
     src = (pathlib.Path(__file__).resolve().parent.parent / "bot.py").read_text(

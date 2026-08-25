@@ -52,6 +52,7 @@ from handlers import busy, guided
 log = logging.getLogger(__name__)
 
 BN = "https://fapi.binance.com"
+BYBIT = "https://api.bybit.com"
 
 # 杠杆档位和假设权重。和 CoinGlass 那张图用同一批档位，方便对照。
 # 权重是**假设**：交易所不公布谁开了几倍。散户在小市值币上普遍偏高杠杆，
@@ -73,24 +74,109 @@ _cache = {}                    # (sym, win) -> {"ts", "data"}
 
 
 # ── 取数 ────────────────────────────────────────────────────
+# Bybit 的持仓量周期名和币安不一样，各写各的
+BYBIT_IV = {"15m": ("15min", "15"), "1h": ("1h", "60"), "4h": ("4h", "240")}
+
+
+async def _fetch_binance(c, inst, period, limit):
+    oi = await c.get(f"{BN}/futures/data/openInterestHist",
+                     params={"symbol": inst, "period": period, "limit": limit})
+    if oi.status_code != 200:
+        return None
+    oi_rows = oi.json()
+    if not oi_rows:
+        return None                      # 币安没这个币，交给 Bybit
+    kl = await c.get(f"{BN}/fapi/v1/klines",
+                     params={"symbol": inst, "interval": period, "limit": limit})
+    kl_rows = kl.json()
+    tk = await c.get(f"{BN}/fapi/v1/ticker/price", params={"symbol": inst})
+    j = tk.json()
+    # ⚠️ 这里以前直接 j["price"]。币安对不存在的币回 400 + {"code":-1121,...}，
+    # 于是抛出一个光秃秃的 KeyError('price')，用户看到「画不出来：'price'」
+    # ——**报错必须说人话**，不能把内部异常原样甩出去
+    if not isinstance(j, dict) or "price" not in j:
+        return None
+    if not isinstance(kl_rows, list) or len(kl_rows) < 3:
+        return None
+    return oi_rows, kl_rows, float(j["price"]), "币安"
+
+
+async def _fetch_bybit(c, inst, period, limit):
+    """Bybit 兜底。告警是全交易所的，只认币安等于一半的币点了没图。
+
+    Bybit 的持仓量是**币的个数**，不像币安直接给金额——要自己乘当时的价格
+    换成名义金额，否则和币安那条路口径不一致，图的量级会差几个数量级。
+    """
+    iv = BYBIT_IV.get(period)
+    if not iv:
+        return None
+    oi_iv, kl_iv = iv
+    r = await c.get(f"{BYBIT}/v5/market/open-interest", params={
+        "category": "linear", "symbol": inst,
+        "intervalTime": oi_iv, "limit": min(limit, 200)})
+    d = r.json()
+    rows = (d.get("result") or {}).get("list") or []
+    if d.get("retCode") != 0 or not rows:
+        return None
+    k = await c.get(f"{BYBIT}/v5/market/kline", params={
+        "category": "linear", "symbol": inst,
+        "interval": kl_iv, "limit": min(limit, 200)})
+    kd = k.json()
+    kl_rows = (kd.get("result") or {}).get("list") or []
+    if kd.get("retCode") != 0 or len(kl_rows) < 3:
+        return None
+    closes = {}
+    for row in kl_rows:
+        try:
+            closes[int(row[0])] = float(row[4])
+        except (TypeError, ValueError, IndexError):
+            continue
+    t = await c.get(f"{BYBIT}/v5/market/tickers",
+                    params={"category": "linear", "symbol": inst})
+    tl = (t.json().get("result") or {}).get("list") or []
+    if not tl:
+        return None
+    last = float(tl[0]["lastPrice"])
+    # 归一成币安那套结构，build_map 一行都不用改。
+    # 币安是旧→新，Bybit 是新→旧，这里翻过来——不翻的话 ΔOI 的正负全反，
+    # "加仓"会被当成"减仓"，整张图直接空掉
+    out = []
+    for row in reversed(rows):
+        try:
+            ts = int(row["timestamp"])
+            oi_coins = float(row["openInterest"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        px = closes.get(ts) or last
+        out.append({"sumOpenInterestValue": str(oi_coins * px), "timestamp": ts})
+    if len(out) < 3:
+        return None
+    return out, kl_rows, last, "Bybit"
+
+
 async def _fetch(symbol, win):
+    """先币安后 Bybit。两家都没有才报错，且要说清是哪一步没有。"""
     period, limit = WINDOWS[win]
     inst = symbol.upper()
     if not inst.endswith("USDT"):
         inst += "USDT"
     async with httpx.AsyncClient(timeout=20) as c:
-        oi = await c.get(f"{BN}/futures/data/openInterestHist",
-                         params={"symbol": inst, "period": period, "limit": limit})
-        if oi.status_code != 200:
-            raise RuntimeError(f"币安没有 {inst} 的持仓量历史（代号对吗？）")
-        oi_rows = oi.json()
-        kl = await c.get(f"{BN}/fapi/v1/klines",
-                         params={"symbol": inst, "interval": period, "limit": limit})
-        kl_rows = kl.json()
-        tk = await c.get(f"{BN}/fapi/v1/ticker/price", params={"symbol": inst})
-        last = float(tk.json()["price"])
-    if not oi_rows or not isinstance(kl_rows, list) or len(kl_rows) < 3:
-        raise RuntimeError(f"{inst} 的数据不够画图（新上市的币常见）")
+        got = None
+        try:
+            got = await _fetch_binance(c, inst, period, limit)
+        except Exception as e:
+            log.debug(f"清算地图取币安失败 {inst}: {e}")
+        if got is None:
+            try:
+                got = await _fetch_bybit(c, inst, period, limit)
+            except Exception as e:
+                log.debug(f"清算地图取 Bybit 失败 {inst}: {e}")
+    if got is None:
+        raise RuntimeError(
+            f"{symbol} 画不出来：币安和 Bybit 的永续上都取不到它的持仓量历史。\n"
+            f"（清算地图靠持仓量推算，只有这两家提供。"
+            f"OKX/Gate 独有的币、或刚上市不久的币会取不到）")
+    oi_rows, kl_rows, last, src = got
     return oi_rows, kl_rows, last, inst
 
 

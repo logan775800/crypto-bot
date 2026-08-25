@@ -83,3 +83,57 @@ def test_card_states_the_ratio_is_account_based():
     """账户数 ≠ 持仓金额。不写口径的话，几十个大户和几万个散户看着一样。"""
     import inspect
     assert "账户数" in inspect.getsource(D.build_info_card)
+
+
+# ── 缺失的块必须说明原因 ──────────────────────────────────────
+# 2026-08-25 他第二次抱怨「查币信息不够详细」。核对下来我加的解读**已经上线了**，
+# 薄的真因是**整块数据消失而卡片一个字不提**：
+# 同一个机器人查 AKE 有 8 行市值数据、查 TUT 一行都没有，看起来就像"功能很少"。
+
+def test_missing_market_cap_block_explains_itself():
+    """CoinGecko 没收录 / 价格交叉校验没过 / 被限频——三种都会让整块消失。
+    不说的话，用户以为这机器人就这点信息。"""
+    import inspect
+    src = inspect.getsource(D.build_info_card)
+    assert "市值/排名/多周期涨跌: 暂缺" in src
+    assert "没收录" in src and "限频" in src
+
+
+def test_missing_flow_block_explains_itself():
+    """四所缺一家就整块不显示，以前一个字不提。"""
+    import inspect
+    src = inspect.getsource(D.build_info_card)
+    assert "全市场买卖估算: 暂缺" in src
+    assert "四家现货" in src
+
+
+def test_absence_never_looks_like_a_missing_feature():
+    """通用规矩：**"这次没有"和"没这功能"在屏幕上必须长得不一样。**
+    这是这个项目反复栽的同一件事（反转扫描、LP 告警、这次的市值块）。"""
+    import inspect
+    src = inspect.getsource(D.build_info_card)
+    assert src.count("暂缺") >= 2
+
+
+# ── 白拿的推导值 ──────────────────────────────────────────────
+def test_basis_is_computed_from_prices_already_on_the_card():
+    """现货价和合约价卡片上本来就有，基差是白拿的一层情绪信息：
+    合约溢价 = 有人愿意付钱做多。不用多打一次接口。"""
+    import inspect
+    src = inspect.getsource(D.build_info_card)
+    assert "基差" in src and "合约溢价" in src and "合约折价" in src
+
+
+def test_low_float_is_flagged():
+    """低流通 = 大部分币还锁着，解锁就是持续抛压。"""
+    import inspect
+    src = inspect.getsource(D.build_info_card)
+    assert "流通率" in src and "抛压" in src
+
+
+def test_turnover_flags_both_extremes():
+    """换手太低=进出有滑点，太高=多半在刷量或被爆炒。两头都要提。"""
+    import inspect
+    src = inspect.getsource(D.build_info_card)
+    assert "换手率" in src
+    assert "刷量" in src and "滑点" in src

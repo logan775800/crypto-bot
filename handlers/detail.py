@@ -340,6 +340,14 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_
         if price is None:
             price = swap["price"]
     lines.append(f"来源: {spot_src or swap_src or '—'}")
+    # 基差：两个价卡片上本来就有，白拿的一层情绪信息。
+    # 合约比现货贵 = 有人愿意付溢价做多；反过来是空头在付钱。
+    # 差得越多说明杠杆资金越激进，也越容易被一根针清掉。
+    if spot and swap and spot.get("price"):
+        b = (swap["price"] / spot["price"] - 1) * 100
+        if abs(b) >= 0.05:
+            side = "合约溢价，杠杆资金偏多" if b > 0 else "合约折价，杠杆资金偏空"
+            lines.append(f"基差: {b:+.2f}%　{side}")
 
     # 市值 / RSI / 四所买卖聚合 / 合约深度 / 恐惧贪婪 五块并发拉取
     # flow_pre 是调用方已经取好的买卖聚合（send_full_detail 会取一次给两条消息共用）；
@@ -372,8 +380,37 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_
         if md.get("circ_supply"):
             tot = f" / 总量 {md['total_supply']:,.0f}" if md.get("total_supply") else ""
             lines.append(f"供应量: 流通 {md['circ_supply']:,.0f}{tot} 枚")
+            # 流通率：低流通=大部分币还锁着，解锁就是持续抛压。
+            # 两个数上面刚印过，白拿一层结论。
+            if md.get("total_supply"):
+                pct = md["circ_supply"] / md["total_supply"] * 100
+                tag = "　⚠️ 大部分还没解锁，注意持续抛压" if pct < 30 else ""
+                lines.append(f"　└ 流通率 {pct:.0f}%{tag}")
         if md.get("fdv"):
-            lines.append(f"FDV(完全稀释): ${md['fdv']:,.0f}")
+            gap = ""
+            if md.get("market_cap"):
+                x = md["fdv"] / md["market_cap"]
+                if x >= 2:
+                    gap = f"　⚠️ 是当前市值的 {x:.1f} 倍，全解锁后稀释很重"
+            lines.append(f"FDV(完全稀释): ${md['fdv']:,.0f}{gap}")
+        # 换手：成交额 ÷ 市值。太低=没人交易，太高=多半在刷量或正被炒作
+        if md.get("volume") and md.get("market_cap"):
+            t = md["volume"] / md["market_cap"] * 100
+            if t >= 100:
+                w = "　⚠️ 一天换手超过一整个市值，要么在被爆炒要么在刷量"
+            elif t < 1:
+                w = "　⚠️ 几乎没人交易，进出都会有滑点"
+            else:
+                w = ""
+            lines.append(f"换手率(24h量/市值): {t:.1f}%{w}")
+    else:
+        # **缺了要说为什么。** 整块消失而不解释，看起来就是"这机器人信息很少"——
+        # 他的原话「查币各方面的信息都不够详细」，一半是这么来的：
+        # 同一个机器人查 AKE 有 8 行市值数据、查 TUT 一行都没有，而卡片一个字不提。
+        lines.append("")
+        lines.append("市值/排名/多周期涨跌: 暂缺")
+        lines.append("　└ CoinGecko 没收录这个币，或它给的价和交易所差太多"
+                     "（同名币防误判），也可能是刚被限频。上面的价格和下面的合约数据不受影响")
 
     # RSI 4h / 1d
     r4, r1 = rsi_res if isinstance(rsi_res, tuple) else (None, None)
@@ -421,6 +458,10 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_
     if isinstance(flow, list) and flow:
         lines.append("")
         lines.extend(flow)
+    else:
+        # 同上：四所缺一家就整块不显示，以前一个字不提，看起来像"没这个功能"
+        lines.append("")
+        lines.append("全市场买卖估算: 暂缺（要 Binance/OKX/Bitget/Bybit 四家现货都有这个币）")
 
     return "\n".join(lines)
 

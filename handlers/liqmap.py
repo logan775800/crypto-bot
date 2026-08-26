@@ -64,15 +64,20 @@ WINDOWS = {                    # 标签 -> (openInterestHist 的 period, 取几�
     "1日": ("15m", 96),
     "7日": ("1h", 168),
     "30日": ("4h", 180),
-    # 90/180 日只有 Bybit 给得出（见 LONG_WINDOWS）。
-    # **一年做不到**：Bybit 单次硬卡 200 根，`1d` 就是 199 天上限，
-    # 而它没有比 1d 更粗的粒度；币安那边 openInterestHist 只保留 30 天，
-    # 换 period、把 limit 提到 500 都一样。别再试了。
+    # 长窗口只有 Bybit 给得出：币安 openInterestHist 只保留 30 天，
+    # 换 period、把 limit 提到 500 都一样。
+    #
+    # ⚠️ 更正一次判断：我先前认定"一年做不到"，理由是 Bybit 单次硬卡 200 根。
+    # 那只对了一半——**单次是 200 根，但换个 startTime/endTime 能拿到更老的**，
+    # 实测 500~700 天前照样有数据。所以分段拉就能到一年，见 `_bybit_paged`。
+    # 教训：接口"单次上限"不等于"历史上限"，下结论前先试一次翻页。
     "90日": ("1d", 90),
     "180日": ("1d", 180),
+    "1年": ("1d", 365),
 }
 # 这些窗口只有 Bybit 有数据，且颗粒粗到一根一天——结论要打折看，见 _long_caveat()
-LONG_WINDOWS = {"90日", "180日"}
+LONG_WINDOWS = {"90日", "180日", "1年"}
+BYBIT_PAGE = 200               # Bybit 单次返回上限，超过要分段拉
 DEFAULT_WIN = "7日"
 BUCKETS = 60                   # 价格分多少个桶
 SPAN = 0.30                    # 只画现价 ±30% 的范围，再远的位置没有参考意义
@@ -113,6 +118,54 @@ async def _fetch_binance(c, inst, period, limit):
     return oi_rows, kl_rows, float(j["price"]), "币安"
 
 
+_PERIOD_MS = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+
+
+async def _bybit_paged(c, kind, inst, iv, want, period):
+    """从 Bybit 拉 want 根，超过单次上限就**往回翻页**。
+
+    先前我以为「单次 200 根」就是历史上限，于是判定一年做不到。
+    实测不是：换个 startTime/endTime 能拿到 500~700 天前的数据。
+    **接口的单次上限 ≠ 历史上限**，下结论前先试一次翻页。
+
+    kind: "oi" 持仓量 / "kl" K线。两个接口的参数名不一样（startTime/endTime
+    vs start/end），也是那种写错不报错、只会安静少数据的地方。
+    返回按**时间正序**的列表；某一段拿不到就停（多半是这个币上市时间不够）。
+    """
+    step = _PERIOD_MS.get(period, 86_400_000)
+    end = int(time.time() * 1000)
+    out, seen = [], set()
+    while len(out) < want:
+        n = min(BYBIT_PAGE, want - len(out))
+        start = end - n * step
+        if kind == "oi":
+            r = await c.get(f"{BYBIT}/v5/market/open-interest", params={
+                "category": "linear", "symbol": inst, "intervalTime": iv,
+                "limit": BYBIT_PAGE, "startTime": start, "endTime": end})
+            d = r.json()
+            page = (d.get("result") or {}).get("list") or []
+            if d.get("retCode") != 0:
+                break
+            key = lambda x: int(x["timestamp"])          # noqa: E731
+        else:
+            r = await c.get(f"{BYBIT}/v5/market/kline", params={
+                "category": "linear", "symbol": inst, "interval": iv,
+                "limit": BYBIT_PAGE, "start": start, "end": end})
+            d = r.json()
+            page = (d.get("result") or {}).get("list") or []
+            if d.get("retCode") != 0:
+                break
+            key = lambda x: int(x[0])                    # noqa: E731
+        fresh = [x for x in page if key(x) not in seen]
+        if not fresh:
+            break            # 这个币的历史到头了（上市时间不够），有多少用多少
+        seen.update(key(x) for x in fresh)
+        out.extend(fresh)
+        end = min(key(x) for x in fresh) - 1
+    out.sort(key=key)
+    return out
+
+
 async def _fetch_bybit(c, inst, period, limit):
     """Bybit 兜底。告警是全交易所的，只认币安等于一半的币点了没图。
 
@@ -123,19 +176,11 @@ async def _fetch_bybit(c, inst, period, limit):
     if not iv:
         return None
     oi_iv, kl_iv = iv
-    r = await c.get(f"{BYBIT}/v5/market/open-interest", params={
-        "category": "linear", "symbol": inst,
-        "intervalTime": oi_iv, "limit": min(limit, 200)})
-    d = r.json()
-    rows = (d.get("result") or {}).get("list") or []
-    if d.get("retCode") != 0 or not rows:
+    rows = await _bybit_paged(c, "oi", inst, oi_iv, limit, period)
+    if not rows:
         return None
-    k = await c.get(f"{BYBIT}/v5/market/kline", params={
-        "category": "linear", "symbol": inst,
-        "interval": kl_iv, "limit": min(limit, 200)})
-    kd = k.json()
-    kl_rows = (kd.get("result") or {}).get("list") or []
-    if kd.get("retCode") != 0 or len(kl_rows) < 3:
+    kl_rows = await _bybit_paged(c, "kl", inst, kl_iv, limit, period)
+    if len(kl_rows) < 3:
         return None
     closes = {}
     for row in kl_rows:
@@ -150,10 +195,12 @@ async def _fetch_bybit(c, inst, period, limit):
         return None
     last = float(tl[0]["lastPrice"])
     # 归一成币安那套结构，build_map 一行都不用改。
-    # 币安是旧→新，Bybit 是新→旧，这里翻过来——不翻的话 ΔOI 的正负全反，
-    # "加仓"会被当成"减仓"，整张图直接空掉
+    # ⚠️ 顺序：Bybit 原始返回是新→旧，而 build_map 要旧→新（不然 ΔOI 正负全反、
+    # "加仓"被当成"减仓"，整张图直接空掉）。
+    # **翻转现在在 `_bybit_paged` 里统一做了**（它按时间正序返回），
+    # 所以这里**不能再 reversed 一次**——翻两次等于没翻。
     out = []
-    for row in reversed(rows):
+    for row in rows:
         try:
             ts = int(row["timestamp"])
             oi_coins = float(row["openInterest"])
@@ -198,7 +245,13 @@ async def _fetch(symbol, win):
     # src 以前在这儿被丢掉，于是标题永远写「币安永续」——而 90/180 日的数据
     # 其实来自 Bybit。口径写错比不写更糟：一张 Bybit 的图挂着币安的抬头，
     # 没人看得出来。
-    return oi_rows, kl_rows, last, inst, src
+    days = None
+    try:
+        ts = [int(r["timestamp"]) for r in oi_rows]
+        days = (max(ts) - min(ts)) / 86_400_000
+    except Exception:
+        pass
+    return oi_rows, kl_rows, last, inst, src, days
 
 
 # ── 推算 ────────────────────────────────────────────────────
@@ -442,10 +495,19 @@ def render(m, sym, win, last, src="币安"):
 
 
 # ── 文字 ────────────────────────────────────────────────────
-def caption(m, sym, win, last, src="币安"):
+def caption(m, sym, win, last, src="币安", days=None):
+    """days = 实际覆盖了多少天。**够不够要写出来**：新上市的币点「1年」
+    只能拿到它上市以来那几个月，标题却写着 1 年——不说的话没人看得出来
+    （AKE 实测只有 333 天，BTR 363 天）。"""
     up = zones(m, "short")
     dn = zones(m, "long")
-    lines = [f"💣 *{sym} 清算地图*（估算）· {src}永续 · 近{win}",
+    cover = ""
+    want = WINDOWS[win][1]
+    # 0.95：AKE 实测 333/365=91%，用 0.9 会漏掉——差一个月对"近1年"这个标题
+    # 已经足够误导了
+    if days is not None and want and days < want * 0.95:
+        cover = f"，实际只有 {days:.0f} 天：这个币上市时间不够"
+    lines = [f"💣 *{sym} 清算地图*（估算）· {src}永续 · 近{win}{cover}",
              f"现价 {_px(last)}"]
     if dn:
         lines.append("")
@@ -471,7 +533,7 @@ def caption(m, sym, win, last, src="币安"):
     st = totals(m, "short", last)
     if lt["all"] > 0 or st["all"] > 0:
         lines.append("")
-        lines.append(f"📊 *合计待爆*（现价 ±{SPAN * 100:.0f}% 以内 · 近{win}）")
+        lines.append(f"📊 *合计待爆*（现价 ±{SPAN * 100:.0f}% 以内 · 近{win}{cover}）")
         lines.append(f"🔻 下方多头 {_money(lt['all'])} U"
                      f"　｜跌3%内 {_money(lt['d3'])}"
                      f"　跌5%内 {_money(lt['d5'])}"
@@ -550,9 +612,9 @@ async def _get(sym, win, force=False):
     c = _cache.get(k)
     if not force and c and time.time() - c["ts"] < CACHE_TTL:
         return c["data"]
-    oi, kl, last, inst, src = await _fetch(sym, win)
+    oi, kl, last, inst, src, days = await _fetch(sym, win)
     m = build_map(oi, kl, last)
-    data = (m, last, inst, src)
+    data = (m, last, inst, src, days)
     _cache[k] = {"ts": time.time(), "data": data}
     return data
 
@@ -575,9 +637,9 @@ def kb(sym, win):
 
 
 async def _send(message, sym, win, force=False):
-    m, last, inst, src = await _get(sym, win, force)
+    m, last, inst, src, days = await _get(sym, win, force)
     buf = render(m, sym, win, last, src)
-    cap = caption(m, sym, win, last, src)
+    cap = caption(m, sym, win, last, src, days)
     try:
         await message.reply_photo(photo=buf, caption=cap, parse_mode="Markdown",
                                   reply_markup=kb(sym, win))
@@ -589,7 +651,7 @@ async def _send(message, sym, win, force=False):
 
 
 async def liqmap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/liqmap TRUMP [1日|7日|30日|90日|180日] —— 清算地图（估算各价位待强平仓位）。"""
+    """/liqmap TRUMP [1日|7日|30日|90日|180日|1年] —— 清算地图（估算各价位待强平仓位）。"""
     args = context.args or []
     if not args:
         await safe_reply(update.message,
@@ -627,7 +689,7 @@ async def from_btn(query, context, action, sym, win):
         return
     if action == "i":
         try:
-            m, _last, _inst, _src = await _get(sym, win)
+            m, _last, _inst, _src, _days = await _get(sym, win)
         except Exception as e:
             await query.answer(f"取数失败：{str(e)[:60]}", show_alert=True)
             return

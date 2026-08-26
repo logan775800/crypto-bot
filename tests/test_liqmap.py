@@ -176,11 +176,43 @@ def test_bybit_open_interest_is_converted_to_notional():
     assert "oi_coins * px" in src
 
 
-def test_bybit_rows_are_reversed_to_oldest_first():
+def test_bybit_rows_come_out_oldest_first():
     """币安旧→新，Bybit 新→旧。不翻的话 ΔOI 正负全反，
-    "加仓"被当成"减仓"，整张图直接空掉。"""
+    "加仓"被当成"减仓"，整张图直接空掉。
+
+    **这条原来断言的是 `reversed(rows)` 这个字符串在不在 `_fetch_bybit` 里。**
+    加分页之后翻转搬到了 `_bybit_paged`，行为一点没变，这条却红了——
+    源码字符串锁的是实现细节，重构就会误报。改成验**行为**：
+    真跑一次分页，看出来的是不是时间正序。
+    """
+    import asyncio
+
+    class FakeResp:
+        def __init__(self, payload):
+            self._p = payload
+
+        def json(self):
+            return self._p
+
+    class FakeClient:
+        """按 Bybit 的真实习惯回：**新→旧**。"""
+
+        async def get(self, url, params=None):
+            end = int(params["endTime"])
+            rows = [{"timestamp": str(end - i * 86_400_000), "openInterest": "1"}
+                    for i in range(5)]
+            return FakeResp({"retCode": 0, "result": {"list": rows}})
+
+    out = asyncio.run(Q._bybit_paged(FakeClient(), "oi", "BTCUSDT", "1d", 5, "1d"))
+    ts = [int(r["timestamp"]) for r in out]
+    assert ts == sorted(ts), "分页出来必须是时间正序，否则 ΔOI 正负全反"
+
+
+def test_fetch_bybit_does_not_reverse_again():
+    """翻转已经在 `_bybit_paged` 里做了，这里再翻一次等于没翻——
+    而且图会安静地空掉，看不出哪儿错。"""
     import inspect
-    assert "reversed(rows)" in inspect.getsource(Q._fetch_bybit)
+    assert "reversed(rows)" not in inspect.getsource(Q._fetch_bybit)
 
 
 def test_bybit_is_tried_when_binance_has_nothing():
@@ -370,15 +402,41 @@ def test_chart_falls_back_when_there_is_no_cjk_font():
 def test_long_windows_exist():
     from handlers import liqmap as L
     assert "90日" in L.WINDOWS and "180日" in L.WINDOWS
-    assert L.LONG_WINDOWS == {"90日", "180日"}
+    assert L.LONG_WINDOWS == {"90日", "180日", "1年"}
 
 
-def test_a_year_is_not_offered():
-    """**别加**。加了只能拿 199 天的数据画一张写着「近1年」的图——
-    那比没有更糟：标题和内容对不上，而且没人看得出来。"""
+def test_a_year_is_offered_via_pagination():
+    """**这条判据我推翻过一次，记在这儿免得反复。**
+
+    最初结论是「一年做不到」，理由是 Bybit 单次硬卡 200 根。那只对了一半——
+    单次是 200 根，但换 startTime/endTime 能拿到更老的（实测 500~700 天前
+    照样有数据）。所以分段拉就能到一年。
+    **接口的"单次上限"不等于"历史上限"，下结论前先试一次翻页。**
+    """
     from handlers import liqmap as L
-    for bad in ("365日", "1年", "一年"):
-        assert bad not in L.WINDOWS
+    assert L.WINDOWS["1年"] == ("1d", 365)
+    assert "1年" in L.LONG_WINDOWS
+
+
+def test_paging_returns_ascending_time():
+    """build_map 要旧→新，翻错方向 ΔOI 正负全反、整张图空掉。
+    翻转统一在 _bybit_paged 里做，所以 _fetch_bybit 里**不能再 reversed 一次**
+    ——翻两次等于没翻，而且看不出来。"""
+    import inspect
+    from handlers import liqmap as L
+    assert "out.sort(key=key)" in inspect.getsource(L._bybit_paged)
+    assert "for row in reversed(rows)" not in inspect.getsource(L._fetch_bybit)
+
+
+def test_short_history_is_disclosed():
+    """新上市的币点「1年」只拿得到它上市以来那几个月，
+    标题却写着 1 年——不说的话没人看得出来（AKE 实测 333 天）。"""
+    from handlers import liqmap as L
+    m = _fake_map([(98.0, 100)], [])
+    txt = L.caption(m, "AKE", "1年", 100.0, "Bybit", days=333)
+    assert "实际只有 333 天" in txt
+    full = L.caption(m, "BTC", "1年", 100.0, "Bybit", days=364)
+    assert "实际只有" not in full
 
 
 def test_long_windows_use_daily_bars():
@@ -425,7 +483,7 @@ def test_buttons_split_short_and_long():
     from handlers import liqmap as L
     rows = L.kb("BTC", "7日").inline_keyboard
     assert [b.text.lstrip("✅") for b in rows[0]] == ["1日", "7日", "30日"]
-    assert [b.text.lstrip("✅") for b in rows[1]] == ["90日", "180日"]
+    assert [b.text.lstrip("✅") for b in rows[1]] == ["90日", "180日", "1年"]
 
 
 # ── 合计待爆 + 按距离累计（2026-08-26 他要的）──────────────────

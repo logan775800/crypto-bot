@@ -357,3 +357,72 @@ def test_chart_falls_back_when_there_is_no_cjk_font():
     import inspect
     src = inspect.getsource(Q.render)
     assert "cjk_font" in src and "matplotlib.use" not in src  # 后端在模块顶层设
+
+
+# ── 90/180 日窗口（2026-08-26 他要求加）────────────────────────
+# 他问「可以加 90日 180日 和一年吗」。**一年做不到**，这是数据源的硬限制，
+# 探过了就别再试：
+#   币安 openInterestHist —— 只保留 30 天。换 period、limit 提到 500 都一样。
+#   Bybit open-interest   —— 单次硬卡 200 根，`1d` 粒度就是 199 天上限，
+#                            而它没有比 1d 更粗的 intervalTime。
+# 所以 90/180 能做（只能走 Bybit），365 天做不到。
+
+def test_long_windows_exist():
+    from handlers import liqmap as L
+    assert "90日" in L.WINDOWS and "180日" in L.WINDOWS
+    assert L.LONG_WINDOWS == {"90日", "180日"}
+
+
+def test_a_year_is_not_offered():
+    """**别加**。加了只能拿 199 天的数据画一张写着「近1年」的图——
+    那比没有更糟：标题和内容对不上，而且没人看得出来。"""
+    from handlers import liqmap as L
+    for bad in ("365日", "1年", "一年"):
+        assert bad not in L.WINDOWS
+
+
+def test_long_windows_use_daily_bars():
+    from handlers import liqmap as L
+    assert L.WINDOWS["90日"] == ("1d", 90)
+    assert L.WINDOWS["180日"] == ("1d", 180)
+
+
+def test_bybit_knows_the_daily_interval():
+    """两个 Bybit 接口的粒度写法不一样（"1d" vs "D"）。
+    漏了映射不会报错，只会拿另一个周期的 K 线去对齐 OI，图安静地画歪。"""
+    from handlers import liqmap as L
+    assert L.BYBIT_IV["1d"] == ("1d", "D")
+
+
+def test_long_windows_skip_binance():
+    """币安只有 30 天。拿它取 90 天会**安静地只回 30 天**，
+    画出来的图看着正常、实际窗口对不上标题——比画不出来更糟。"""
+    import inspect
+    from handlers import liqmap as L
+    src = inspect.getsource(L._fetch)
+    assert "LONG_WINDOWS" in src, "长窗口没跳过币安，会拿到 30 天的数据画 90 天的图"
+
+
+def test_long_windows_carry_their_own_caveat():
+    """**窗口越长这张图越是虚构**——模型假设那些仓还没平，
+    而永续里几个月不动的仓极少。不说的话，长窗口会被当成更准的图看。"""
+    from handlers import liqmap as L
+    for w in L.LONG_WINDOWS:
+        txt = "\n".join(L._long_caveat(w))
+        assert "Bybit" in txt, "要说清这张图是 Bybit 的不是币安的"
+        assert "一根一天" in txt, "要说清颗粒变粗了"
+        assert "还没平" in txt, "最要紧的那条假设必须写出来"
+
+
+def test_short_windows_have_no_extra_caveat():
+    from handlers import liqmap as L
+    assert L._long_caveat("7日") == []
+
+
+def test_buttons_split_short_and_long():
+    """五个窗口挤一行会变成一排点不准的小方块；
+    分两行顺带把「这两个是另一类」用排版说出来。"""
+    from handlers import liqmap as L
+    rows = L.kb("BTC", "7日").inline_keyboard
+    assert [b.text.lstrip("✅") for b in rows[0]] == ["1日", "7日", "30日"]
+    assert [b.text.lstrip("✅") for b in rows[1]] == ["90日", "180日"]

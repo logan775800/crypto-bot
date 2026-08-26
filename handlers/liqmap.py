@@ -64,7 +64,15 @@ WINDOWS = {                    # 标签 -> (openInterestHist 的 period, 取几�
     "1日": ("15m", 96),
     "7日": ("1h", 168),
     "30日": ("4h", 180),
+    # 90/180 日只有 Bybit 给得出（见 LONG_WINDOWS）。
+    # **一年做不到**：Bybit 单次硬卡 200 根，`1d` 就是 199 天上限，
+    # 而它没有比 1d 更粗的粒度；币安那边 openInterestHist 只保留 30 天，
+    # 换 period、把 limit 提到 500 都一样。别再试了。
+    "90日": ("1d", 90),
+    "180日": ("1d", 180),
 }
+# 这些窗口只有 Bybit 有数据，且颗粒粗到一根一天——结论要打折看，见 _long_caveat()
+LONG_WINDOWS = {"90日", "180日"}
 DEFAULT_WIN = "7日"
 BUCKETS = 60                   # 价格分多少个桶
 SPAN = 0.30                    # 只画现价 ±30% 的范围，再远的位置没有参考意义
@@ -75,7 +83,11 @@ _cache = {}                    # (sym, win) -> {"ts", "data"}
 
 # ── 取数 ────────────────────────────────────────────────────
 # Bybit 的持仓量周期名和币安不一样，各写各的
-BYBIT_IV = {"15m": ("15min", "15"), "1h": ("1h", "60"), "4h": ("4h", "240")}
+# period -> (Bybit 持仓量接口的 intervalTime, K线接口的 interval)
+# 两个接口的粒度写法不一样（一个 "1d"、一个 "D"），映射错了不会报错，
+# 只会拿到另一个周期的 K 线去对齐 OI，图安静地画歪。
+BYBIT_IV = {"15m": ("15min", "15"), "1h": ("1h", "60"), "4h": ("4h", "240"),
+            "1d": ("1d", "D")}
 
 
 async def _fetch_binance(c, inst, period, limit):
@@ -155,17 +167,23 @@ async def _fetch_bybit(c, inst, period, limit):
 
 
 async def _fetch(symbol, win):
-    """先币安后 Bybit。两家都没有才报错，且要说清是哪一步没有。"""
+    """先币安后 Bybit。两家都没有才报错，且要说清是哪一步没有。
+
+    ⚠️ 长窗口（90/180 日）**跳过币安直接走 Bybit**：币安的 openInterestHist
+    只保留 30 天，拿它取 90 天会安静地只回 30 天的数据，画出来的图看着正常、
+    实际窗口对不上标题——那比画不出来更糟。
+    """
     period, limit = WINDOWS[win]
     inst = symbol.upper()
     if not inst.endswith("USDT"):
         inst += "USDT"
     async with httpx.AsyncClient(timeout=20) as c:
         got = None
-        try:
-            got = await _fetch_binance(c, inst, period, limit)
-        except Exception as e:
-            log.debug(f"清算地图取币安失败 {inst}: {e}")
+        if win not in LONG_WINDOWS:
+            try:
+                got = await _fetch_binance(c, inst, period, limit)
+            except Exception as e:
+                log.debug(f"清算地图取币安失败 {inst}: {e}")
         if got is None:
             try:
                 got = await _fetch_bybit(c, inst, period, limit)
@@ -418,9 +436,27 @@ def detail(m, sym, win):
         "",
         f"扫描窗口：近{win}（{WINDOWS[win][1]} 根 {WINDOWS[win][0]}）",
         f"画的范围：现价 ±{SPAN * 100:.0f}%，分 {BUCKETS} 个价格桶",
+        *_long_caveat(win),
         "",
         "⚠️ 估算值，不构成投资建议",
     ])
+
+
+def _long_caveat(win):
+    """90/180 日窗口额外要说的两条。**不说的话这两个窗口会被当成更准的图看**，
+    而实际上恰恰相反——窗口越长，这张图越是虚构。"""
+    if win not in LONG_WINDOWS:
+        return []
+    return [
+        "",
+        f"*近{win}这个窗口要打折看*",
+        "· 只有 Bybit 有这么长的持仓量历史，所以这张图**是 Bybit 的**，不是币安",
+        "· 颗粒是**一根一天**：整天新增的仓都算在当天典型价上，"
+        "比短窗口粗得多",
+        "· **最要紧的一条**：这个模型假设那些仓到现在还没平。"
+        "永续里几个月不动的仓极少，所以越老的柱子越可能已经不存在了——"
+        "长窗口适合看「历史上哪些价位堆过量」，不适合当成当下的爆仓分布",
+    ]
 
 
 # ── 入口 ────────────────────────────────────────────────────
@@ -437,11 +473,16 @@ async def _get(sym, win, force=False):
 
 
 def kb(sym, win):
-    wins = [InlineKeyboardButton(f"{'✅' if w == win else ''}{w}",
-                                 callback_data=f"lq:w:{sym}:{w}")
-            for w in WINDOWS]
+    # 五个窗口一行会挤成一排小方块，点不准。切成两行：短窗口一行、长窗口一行，
+    # 顺带把「这两个是另一类」这件事用排版说出来。
+    def _b(w):
+        return InlineKeyboardButton(f"{'✅' if w == win else ''}{w}",
+                                    callback_data=f"lq:w:{sym}:{w}")
+    short = [_b(w) for w in WINDOWS if w not in LONG_WINDOWS]
+    long_ = [_b(w) for w in WINDOWS if w in LONG_WINDOWS]
     return InlineKeyboardMarkup([
-        wins,
+        short,
+        long_,
         [InlineKeyboardButton("ℹ️ 口径", callback_data=f"lq:i:{sym}:{win}"),
          InlineKeyboardButton("🔄 重算", callback_data=f"lq:r:{sym}:{win}"),
          InlineKeyboardButton("🪙 换币", callback_data="lq:pick:-:-")],
@@ -463,7 +504,7 @@ async def _send(message, sym, win, force=False):
 
 
 async def liqmap_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/liqmap TRUMP [1日|7日|30日] —— 清算地图（估算各价位待强平仓位）。"""
+    """/liqmap TRUMP [1日|7日|30日|90日|180日] —— 清算地图（估算各价位待强平仓位）。"""
     args = context.args or []
     if not args:
         await safe_reply(update.message,

@@ -115,3 +115,34 @@ def test_header_separates_layers_and_lists_missing():
 
 def test_header_empty_when_no_tool_calls():
     assert Manifest().header() == ""
+
+
+# ── 缺失维度别罗列成"系统全挂了"（2026-08-26 真机）────────────
+# 群友问「BTR 有多少空头被清算」，回答开头是
+# 「本次缺少 OI、订单簿、逐笔成交、清算、资金费率、市场联动和真实账户数据」。
+# 订单簿跟这个问题毫无关系——但列出来之后整条消息看起来就是系统全挂了，
+# 他因此问「是不是 token 不够，怎么啥都不会说了」。
+#
+# 头部那行本来就只列"调过但失败"的（_group 的写法是对的）；
+# 出问题的是**模型**：它把 ledger 里那张完整禁令表整个背进了正文。
+
+def test_fix_prompt_forbids_listing_everything():
+    from handlers.manifest import Manifest
+    p = Manifest().fix_prompt(["你提到了「清算」，但本轮没有清算数据。"])
+    assert "只点名" in p and "相关" in p
+    assert "不要罗列所有没取到的维度" in p
+
+
+def test_fix_prompt_pushes_the_model_to_fetch_instead_of_excusing():
+    """"没去调"和"取不到"是两回事。前者应该现在去调，不是写一句"缺"就完事。"""
+    from handlers.manifest import Manifest
+    p = Manifest().fix_prompt(["x"])
+    assert "现在就去调" in p
+
+
+def test_header_only_lists_dimensions_that_were_actually_tried():
+    """没调用 ≠ 缺失。问一个窄问题不该在头部列出一堆无关维度。"""
+    import inspect
+    from handlers.manifest import Manifest
+    src = inspect.getsource(Manifest._group)
+    assert "self._called(k) and not self._got(k)" in src

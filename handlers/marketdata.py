@@ -680,7 +680,23 @@ async def liquidation_analysis(symbol):
         from handlers.okx import build_liq_text
         txt = await build_liq_text(sym)
     except Exception as e:
-        return (f"⚠️ {sym} 清算数据暂不可用（OKX 源取数失败：{str(e)[:60]}）。"
+        # **区分"源挂了"和"这个币 OKX 没上"。**
+        # 真机现场：群友问 BTR 有多少空头被清算，回了一句
+        # 「OKX 聚合源返回 400 Bad Request」——技术上没错，但那是内部异常，
+        # 用户读完只会觉得机器人坏了。实测 BTC-USDT 好好的、BTR-USDT 回
+        # `51000 Parameter instFamily error`，意思是**OKX 根本没有这个币**。
+        # 这两件事该说完全不同的话，而且后者要给替代方案。
+        msg = str(e)
+        not_listed = ("51000" in msg or "instFamily" in msg
+                      or "400" in msg or "Bad Request" in msg)
+        if not_listed:
+            return (f"⚠️ 拿不到 {sym} 的清算数据：**逐笔清算只有 OKX 提供，"
+                    f"而 {sym} 没有在 OKX 上市**（币安/Bybit 都不公开这个）。"
+                    f"这不是故障，也不代表 {sym} 没有发生清算。\n"
+                    f"替代办法：`/liqmap {sym}` 的清算地图是按持仓量推算的**估算**，"
+                    f"不依赖 OKX，能看出各价位大概堆了多少待爆仓位。"
+                    f"本轮**不可**给出具体清算笔数或金额。")
+        return (f"⚠️ {sym} 清算数据暂不可用（OKX 源取数失败：{msg[:60]}）。"
                 f"这不代表该币没有清算，只是这次取不到 —— "
                 f"**不可**据此谈挤压空间，止盈位请改用前高前低/结构位判断。")
     return txt + "\n(来源: OKX 聚合，仅作挤压空间参考，不可单独作为开仓依据)"

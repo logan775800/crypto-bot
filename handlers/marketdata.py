@@ -690,11 +690,14 @@ async def liquidation_analysis(symbol):
         not_listed = ("51000" in msg or "instFamily" in msg
                       or "400" in msg or "Bad Request" in msg)
         if not_listed:
+            # 「替代办法：」那一行会被 chat._catch_fallback 原样摘出来贴给用户，
+            # 所以它必须**自成一行、且只写给用户看的话**——
+            # 给模型的禁令另起一行，不然会被一起贴出去。
             return (f"⚠️ 拿不到 {sym} 的清算数据：**逐笔清算只有 OKX 提供，"
                     f"而 {sym} 没有在 OKX 上市**（币安/Bybit 都不公开这个）。"
                     f"这不是故障，也不代表 {sym} 没有发生清算。\n"
-                    f"替代办法：`/liqmap {sym}` 的清算地图是按持仓量推算的**估算**，"
-                    f"不依赖 OKX，能看出各价位大概堆了多少待爆仓位。"
+                    f"替代办法：发 `/liqmap {sym}` 看清算地图——它按持仓量推算，"
+                    f"不依赖 OKX，能看出各价位大概堆了多少待爆仓位（是估算不是实际成交）。\n"
                     f"本轮**不可**给出具体清算笔数或金额。")
         return (f"⚠️ {sym} 清算数据暂不可用（OKX 源取数失败：{msg[:60]}）。"
                 f"这不代表该币没有清算，只是这次取不到 —— "

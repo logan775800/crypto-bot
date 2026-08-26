@@ -698,6 +698,26 @@ def _ai_quota_ok(context, uid):
     return True, q["count"]
 
 
+_FALLBACK_MARK = "替代办法："
+
+
+def _catch_fallback(mf, res):
+    """工具取不到数据时给出的**替代办法**，单独收起来，最后由我们自己贴上去。
+
+    为什么不交给模型转达：真机实测（2026-08-26）问「BTR 有多少空头被清算」，
+    工具输出里明明写了「替代办法：/liqmap BTR ……」，模型转述时**把它丢了**——
+    而那恰恰是整条回答里唯一能让人继续往下走的一句。
+    模型会压缩、会改写、会挑重点，**能被丢掉的东西就不该指望它转达**。
+    """
+    if not isinstance(res, str) or _FALLBACK_MARK not in res:
+        return
+    for ln in res.splitlines():
+        if _FALLBACK_MARK in ln:
+            tip = ln.strip()
+            if tip not in mf.fallbacks:
+                mf.fallbacks.append(tip)
+
+
 def _make_exec(update, context, mf=None):
     """按调用者身份包一层：账户类工具需鉴权，其余走公开数据工具。
 
@@ -713,6 +733,7 @@ def _make_exec(update, context, mf=None):
                     sym = str((args or {}).get("symbol") or "").upper()
                     if sym:
                         mf.symbol = sym
+                _catch_fallback(mf, res)
             except Exception as e:      # 记账绝不能影响正常回答
                 log.warning(f"数据清单记账失败: {e}")
         return res
@@ -876,6 +897,11 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
             head = mf.header()
             if head:
                 reply = f"{head}\n\n{reply}"
+            # 替代办法由我们自己贴，不指望模型转达（它丢过一次）。
+            # 只在它没提过时补——模型真写了就别重复一遍。
+            tips = [t for t in mf.fallbacks if t.split("：", 1)[-1][:12] not in reply]
+            if tips:
+                reply += "\n\n💡 " + "\n💡 ".join(tips)
         except Exception as te:
             # **降级要说出来，而且不能还用"你有工具"的提示词。**
             #

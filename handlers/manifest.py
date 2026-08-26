@@ -66,6 +66,10 @@ class Manifest:
         self.identity = None         # 合约身份（symbols.for_ai 的结果）
         self.kline_ok = False        # 这一轮到底拿到过 K 线没有（与周期名无关）
         self.times = []              # 每次取数的时刻，用来算这批数据是不是同一时点的
+        # 工具在取不到数据时给出的替代办法（如「/liqmap 是估算但不依赖 OKX」）。
+        # **由我们自己贴到答案末尾，不交给模型转达**——模型会压缩会改写，
+        # 真机上它就把这句丢掉过，而那是整条回答里唯一能让人往下走的信息。
+        self.fallbacks = []
 
     # ── 记账 ────────────────────────────────────────────────
     def record(self, name, args, result):

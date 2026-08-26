@@ -146,3 +146,60 @@ def test_header_only_lists_dimensions_that_were_actually_tried():
     from handlers.manifest import Manifest
     src = inspect.getsource(Manifest._group)
     assert "self._called(k) and not self._got(k)" in src
+
+
+# ── 替代办法不能指望模型转达 ──────────────────────────────────
+# 真机 2026-08-26：工具输出里明明写了「替代办法：/liqmap BTR ……」，
+# 模型转述时**把它丢了**——而那是整条回答里唯一能让人继续往下走的一句。
+# 模型会压缩、会改写、会挑重点，**能被丢掉的东西就不该指望它转达**。
+
+def test_fallback_tips_are_captured_from_tool_output():
+    from handlers.manifest import Manifest
+    from handlers import chat as C
+    mf = Manifest()
+    C._catch_fallback(mf, "⚠️ 拿不到。\n替代办法：发 `/liqmap X` 看清算地图。\n本轮不可编数字。")
+    assert len(mf.fallbacks) == 1
+    assert "/liqmap X" in mf.fallbacks[0]
+
+
+def test_model_only_instructions_are_not_shown_to_the_user():
+    """「本轮不可给出具体笔数」是写给模型的约束，贴给用户看毫无意义。
+    所以工具输出里那两种话必须分行写。"""
+    from handlers.manifest import Manifest
+    from handlers import chat as C
+    mf = Manifest()
+    C._catch_fallback(mf, "替代办法：发 `/liqmap X`。\n本轮**不可**给出具体清算笔数。")
+    assert "不可" not in mf.fallbacks[0]
+
+
+def test_duplicate_tips_are_collapsed():
+    from handlers.manifest import Manifest
+    from handlers import chat as C
+    mf = Manifest()
+    for _ in range(3):
+        C._catch_fallback(mf, "替代办法：发 `/liqmap X`。")
+    assert len(mf.fallbacks) == 1
+
+
+def test_normal_tool_output_captures_nothing():
+    from handlers.manifest import Manifest
+    from handlers import chat as C
+    mf = Manifest()
+    C._catch_fallback(mf, "BTC 现价 78000，24h +1.2%")
+    assert mf.fallbacks == []
+
+
+def test_the_reply_appends_tips_the_model_dropped():
+    import inspect
+    from handlers import chat as C
+    src = inspect.getsource(C._reply)
+    assert "mf.fallbacks" in src, "捕到了却不贴等于白捕"
+    assert "💡" in src
+
+
+def test_tips_are_not_repeated_when_the_model_did_mention_them():
+    """模型自己转达了就别再贴一遍——重复比丢掉还让人烦。"""
+    import inspect
+    from handlers import chat as C
+    src = inspect.getsource(C._reply)
+    assert "not in reply" in src

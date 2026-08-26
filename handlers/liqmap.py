@@ -195,7 +195,10 @@ async def _fetch(symbol, win):
             f"（清算地图靠持仓量推算，只有这两家提供。"
             f"OKX/Gate 独有的币、或刚上市不久的币会取不到）")
     oi_rows, kl_rows, last, src = got
-    return oi_rows, kl_rows, last, inst
+    # src 以前在这儿被丢掉，于是标题永远写「币安永续」——而 90/180 日的数据
+    # 其实来自 Bybit。口径写错比不写更糟：一张 Bybit 的图挂着币安的抬头，
+    # 没人看得出来。
+    return oi_rows, kl_rows, last, inst, src
 
 
 # ── 推算 ────────────────────────────────────────────────────
@@ -270,6 +273,66 @@ def zones(m, side, top=3):
     return sorted(out, key=lambda z: -z["amount"])
 
 
+def totals(m, side, last):
+    """这一侧一共还有多少待爆，以及**按距离累计**是多少。
+
+    只列前三个密集区回答不了「往下扫 5% 会引爆多少」——那才是切换窗口时
+    真正会变、也真正有用的数字。密集区说的是"堆在哪儿"，累计说的是"有多少"。
+
+    返回 {"all": 总额, "d3"/"d5"/"d10": 距现价 3%/5%/10% 以内的累计,
+          "near": 最近那一档距现价几个点（没有则 None）}。
+
+    `near` 是为了解释"三个累计都是 0"：那多半不是坏了，
+    而是价格已经离开了所有密集区。不给这个数的话，一行三个 0 看着就是故障。
+    """
+    book = m["longs"] if side == "long" else m["shorts"]
+    tot = [sum(book[L][i] for L, _w, _c in LEVS) for i in range(BUCKETS)]
+    out = {"all": 0.0, "d3": 0.0, "d5": 0.0, "d10": 0.0, "near": None}
+    for i, v in enumerate(tot):
+        if v <= 0:
+            continue
+        mid = m["edges"][i] + m["width"] / 2
+        dist = abs(mid - last) / last * 100 if last else 999
+        out["all"] += v
+        if dist <= 3:
+            out["d3"] += v
+        if dist <= 5:
+            out["d5"] += v
+        if dist <= 10:
+            out["d10"] += v
+        if out["near"] is None or dist < out["near"]:
+            out["near"] = dist
+    return out
+
+
+def _near_note(t, verb):
+    """三个累计全是 0 的时候补一句「最近一档在哪」。
+
+    不补的话，「跌3%内 0　跌5%内 0　跌10%内 0」而总量却有一千多万，
+    看着就是个 bug；实际含义是**价格已经离开了所有密集区**——
+    这本身是有用的信息（近处没有燃料），但得说出来才成立。
+    """
+    if t["d10"] > 0 or t["all"] <= 0 or t["near"] is None:
+        return ""
+    return f"（近处没有，最近一档在{verb} {t['near']:.1f}%）"
+
+
+def _fuel_line(lt, st):
+    """多空两侧的对比。**哪边堆得多，价格就更容易被往哪边推**——
+    连环爆仓本身就是燃料，扫的时候是自我加速的。
+
+    差得不明显（1.5 倍以内）就不下结论，硬要解读噪音比不解读更糟。
+    """
+    a, b = lt["all"], st["all"]
+    if a <= 0 or b <= 0:
+        return ""
+    if a >= b * 1.5:
+        return f"下方是上方的 {a / b:.1f} 倍——往下扫的燃料更足"
+    if b >= a * 1.5:
+        return f"上方是下方的 {b / a:.1f} 倍——往上扫的燃料更足"
+    return "上下两边量级接近，没有明显偏向"
+
+
 def _money(x):
     if x >= 1e8:
         return f"{x / 1e8:.2f}亿"
@@ -283,7 +346,7 @@ def _px(x):
 
 
 # ── 画图 ────────────────────────────────────────────────────
-def render(m, sym, win, last):
+def render(m, sym, win, last, src="币安"):
     # 中文字体：镜像里装了 fonts-noto-cjk，但本地/旧镜像可能没有。
     # 探测复用 annotchart 那套——没字体时中文会渲染成一排豆腐块，
     # 那比退回英文难看得多，所以探到才用中文。
@@ -338,8 +401,10 @@ def render(m, sym, win, last):
                 xytext=(0, 6), textcoords="offset points",
                 ha="center", color="#E01E37", fontsize=10, fontweight="bold")
 
-    ax.set_title(T(f"{sym}/USDT 清算地图（估算）· 币安永续 · 近{win}",
-                   f"{sym}/USDT liquidation map (estimated) - Binance perp"),
+    # 图会被单独转发出去，脱离文字说明——所以来源必须画在图里，不能只写在卡片上
+    _en = "Bybit" if src == "Bybit" else "Binance"
+    ax.set_title(T(f"{sym}/USDT 清算地图（估算）· {src}永续 · 近{win}",
+                   f"{sym}/USDT liquidation map (estimated) - {_en} perp"),
                  fontsize=12, fontweight="bold", pad=22)
     # 轴上别出现 1e7 这种科学计数法——他要一眼看出是多少钱
     from matplotlib.ticker import FuncFormatter
@@ -377,10 +442,10 @@ def render(m, sym, win, last):
 
 
 # ── 文字 ────────────────────────────────────────────────────
-def caption(m, sym, win, last):
+def caption(m, sym, win, last, src="币安"):
     up = zones(m, "short")
     dn = zones(m, "long")
-    lines = [f"💣 *{sym} 清算地图*（估算）· 币安永续 · 近{win}",
+    lines = [f"💣 *{sym} 清算地图*（估算）· {src}永续 · 近{win}",
              f"现价 {_px(last)}"]
     if dn:
         lines.append("")
@@ -399,6 +464,26 @@ def caption(m, sym, win, last):
     if not up and not dn:
         lines.append("")
         lines.append("这个窗口里持仓量几乎没增长，估不出密集区。换个更长的窗口试试。")
+
+    # 合计 + 按距离累计。密集区回答「堆在哪儿」，这一段回答「一共有多少、
+    # 扫过去 5% 会引爆多少」——切换窗口时真正会变、也真正有用的就是这几个数。
+    lt = totals(m, "long", last)
+    st = totals(m, "short", last)
+    if lt["all"] > 0 or st["all"] > 0:
+        lines.append("")
+        lines.append(f"📊 *合计待爆*（现价 ±{SPAN * 100:.0f}% 以内 · 近{win}）")
+        lines.append(f"🔻 下方多头 {_money(lt['all'])} U"
+                     f"　｜跌3%内 {_money(lt['d3'])}"
+                     f"　跌5%内 {_money(lt['d5'])}"
+                     f"　跌10%内 {_money(lt['d10'])}{_near_note(lt, '跌')}")
+        lines.append(f"🔺 上方空头 {_money(st['all'])} U"
+                     f"　｜涨3%内 {_money(st['d3'])}"
+                     f"　涨5%内 {_money(st['d5'])}"
+                     f"　涨10%内 {_money(st['d10'])}{_near_note(st, '涨')}")
+        fuel = _fuel_line(lt, st)
+        if fuel:
+            lines.append(f"　{fuel}")
+
     lines.append("")
     lines.append("密集区常被当成磁吸位：价格容易被推过去扫一轮再走。")
     lines.append("止损别正好压在柱子上——那正是最容易被插针带走的位置。")
@@ -465,9 +550,9 @@ async def _get(sym, win, force=False):
     c = _cache.get(k)
     if not force and c and time.time() - c["ts"] < CACHE_TTL:
         return c["data"]
-    oi, kl, last, inst = await _fetch(sym, win)
+    oi, kl, last, inst, src = await _fetch(sym, win)
     m = build_map(oi, kl, last)
-    data = (m, last, inst)
+    data = (m, last, inst, src)
     _cache[k] = {"ts": time.time(), "data": data}
     return data
 
@@ -490,9 +575,9 @@ def kb(sym, win):
 
 
 async def _send(message, sym, win, force=False):
-    m, last, inst = await _get(sym, win, force)
-    buf = render(m, sym, win, last)
-    cap = caption(m, sym, win, last)
+    m, last, inst, src = await _get(sym, win, force)
+    buf = render(m, sym, win, last, src)
+    cap = caption(m, sym, win, last, src)
     try:
         await message.reply_photo(photo=buf, caption=cap, parse_mode="Markdown",
                                   reply_markup=kb(sym, win))
@@ -542,7 +627,7 @@ async def from_btn(query, context, action, sym, win):
         return
     if action == "i":
         try:
-            m, _last, _inst = await _get(sym, win)
+            m, _last, _inst, _src = await _get(sym, win)
         except Exception as e:
             await query.answer(f"取数失败：{str(e)[:60]}", show_alert=True)
             return

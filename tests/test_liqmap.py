@@ -426,3 +426,92 @@ def test_buttons_split_short_and_long():
     rows = L.kb("BTC", "7日").inline_keyboard
     assert [b.text.lstrip("✅") for b in rows[0]] == ["1日", "7日", "30日"]
     assert [b.text.lstrip("✅") for b in rows[1]] == ["90日", "180日"]
+
+
+# ── 合计待爆 + 按距离累计（2026-08-26 他要的）──────────────────
+# 他的原话：「我还想知道选择的时间周期不同对应还有多少空/多会被清算」。
+# 只列前三个密集区回答不了这个——密集区说的是「堆在哪儿」，
+# 合计和累计说的是「一共有多少、扫过去 5% 会引爆多少」。
+# 而且这几个数正是**切换窗口时真正会变**的东西。
+
+def _fake_map(long_at, short_at, last=100.0):
+    """造一张只有指定价位有量的图。"""
+    from handlers import liqmap as L
+    m = {"edges": [last * 0.7 + i * (last * 0.6 / L.BUCKETS) for i in range(L.BUCKETS)],
+         "width": last * 0.6 / L.BUCKETS,
+         "longs": {lv: [0.0] * L.BUCKETS for lv, _w, _c in L.LEVS},
+         "shorts": {lv: [0.0] * L.BUCKETS for lv, _w, _c in L.LEVS}}
+    lv0 = L.LEVS[0][0]
+    for px, amt in long_at:
+        i = min(L.BUCKETS - 1, max(0, int((px - m["edges"][0]) / m["width"])))
+        m["longs"][lv0][i] += amt
+    for px, amt in short_at:
+        i = min(L.BUCKETS - 1, max(0, int((px - m["edges"][0]) / m["width"])))
+        m["shorts"][lv0][i] += amt
+    return m
+
+
+def test_totals_sum_the_whole_side():
+    from handlers import liqmap as L
+    m = _fake_map([(98.0, 100), (90.0, 200)], [])
+    t = L.totals(m, "long", 100.0)
+    assert t["all"] == pytest.approx(300)
+
+
+def test_cumulative_buckets_respect_distance():
+    """跌3%内只该算进 -2% 那一档，不该把 -10% 的也算进去。"""
+    from handlers import liqmap as L
+    m = _fake_map([(98.0, 100), (90.0, 200)], [])
+    t = L.totals(m, "long", 100.0)
+    assert t["d3"] == pytest.approx(100)
+    assert t["d5"] == pytest.approx(100)
+    assert t["d10"] == pytest.approx(300)
+
+
+def test_nearest_cluster_distance_is_reported():
+    """三个累计全是 0 时要能解释为什么——不然一行三个 0 看着就是坏了。"""
+    from handlers import liqmap as L
+    m = _fake_map([(80.0, 500)], [])
+    t = L.totals(m, "long", 100.0)
+    assert t["d10"] == 0 and t["all"] > 0
+    assert 19 <= t["near"] <= 21
+    assert "最近一档" in L._near_note(t, "跌")
+
+
+def test_near_note_is_silent_when_there_is_something_close():
+    from handlers import liqmap as L
+    m = _fake_map([(98.0, 100)], [])
+    assert L._near_note(L.totals(m, "long", 100.0), "跌") == ""
+
+
+def test_fuel_line_only_speaks_when_the_gap_is_real():
+    """差得不明显就别下结论——硬解读噪音比不解读更糟。"""
+    from handlers import liqmap as L
+    close = L._fuel_line({"all": 100}, {"all": 110})
+    assert "接近" in close
+    assert "下方是上方" in L._fuel_line({"all": 300}, {"all": 100})
+    assert "上方是下方" in L._fuel_line({"all": 100}, {"all": 300})
+
+
+def test_fuel_line_needs_both_sides():
+    from handlers import liqmap as L
+    assert L._fuel_line({"all": 0}, {"all": 100}) == ""
+
+
+# ── 来源要写在脸上 ────────────────────────────────────────────
+def test_source_reaches_the_caption_and_the_chart():
+    """标题以前写死「币安永续」，而 90/180 日的数据其实来自 Bybit。
+    一张 Bybit 的图挂着币安的抬头，没人看得出来——**口径写错比不写更糟**。
+    图会被单独转发出去，所以图里也要有。"""
+    import inspect
+    from handlers import liqmap as L
+    assert "src" in inspect.signature(L.caption).parameters
+    assert "src" in inspect.signature(L.render).parameters
+    assert "币安永续" not in inspect.getsource(L.render), "标题还写死着币安"
+
+
+def test_caption_shows_the_given_source():
+    from handlers import liqmap as L
+    m = _fake_map([(98.0, 100)], [(102.0, 50)])
+    assert "Bybit永续" in L.caption(m, "BTC", "180日", 100.0, "Bybit")
+    assert "币安永续" in L.caption(m, "BTC", "7日", 100.0, "币安")

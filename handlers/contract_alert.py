@@ -234,8 +234,13 @@ async def _attach_liqmap(bot, chat_id, alerts):
         return
     try:
         from handlers import liqmap
-        m, last, _inst = await liqmap._get(top["sym"], "7日")
-        buf = liqmap.render(m, top["sym"], "7日", last)
+        # ⚠️ 别按位置解包。`liqmap._get` 的返回值加过两次字段
+        # （v1.52.1 加来源、v1.53.0 加覆盖天数），而这里写死了 3 个，
+        # 于是每次告警都 ValueError——**配图静默跳过，所以谁都没发现**，
+        # 表现就是"合约异动告警突然不带图了"。
+        got = await liqmap._get(top["sym"], "7日")
+        m, last, _inst, src = got[0], got[1], got[2], got[3]
+        buf = liqmap.render(m, top["sym"], "7日", last, src)
         # 涨和跌该盯的**不是同一侧**：砸下来要看下方还有多少多单等着被连环打掉
         # （那是继续下跌的燃料），拉上去要看上方还有多少空单会被逼空。
         # 文案一样的话，等于把最该说的那句话省掉了
@@ -261,7 +266,19 @@ async def _attach_liqmap(bot, chat_id, alerts):
                              parse_mode="Markdown",
                              reply_markup=liqmap.kb(top["sym"], "7日"))
     except Exception as e:
-        logging.info(f"合约告警配清算地图跳过 {top.get('sym')}: {e}")
+        # 对**用户**静默是对的（告警已送到，不能再刷一条"配图失败"）。
+        # 但对**我们**也静默就出事了：v1.52.1 改了 _get 的返回值，这里每次都
+        # ValueError，图整整消失了几个版本没人发现——他问「怎么不展示清算图了」
+        # 才暴露。所以：日志提到 error，并且计入任务心跳。
+        # 「取不到这个币的持仓量历史」是常态（告警是全交易所的），
+        # 那类不该惊动人；**代码错**（TypeError/ValueError/AttributeError）要报。
+        logging.error(f"合约告警配清算地图失败 {top.get('sym')}: {e}", exc_info=True)
+        if isinstance(e, (TypeError, ValueError, AttributeError, KeyError)):
+            try:
+                from handlers import monitor as _m
+                _m.beat("告警配清算图", False, 300, f"{type(e).__name__}: {e}")
+            except Exception:
+                pass
 
 
 def _drop_sub(chat_id, why):

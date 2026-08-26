@@ -316,6 +316,21 @@ SYSTEM = (
     "/vopen 虚拟合约练手、/vpos 虚拟持仓，/trade 实盘交易台(Bybit,点按钮开平仓)。"
 )
 
+# 降级用的提示词：工具链挂了的时候用它，**绝不能再用上面那个 SYSTEM**。
+# 那里面写着 12 个工具该怎么调，模型读了会以为自己有工具，
+# 结果只能回「本轮无法调用 resolve_symbol 和实时行情工具」——
+# 这种话在用户眼里就是"这机器人啥也干不了"，而不是"它现在坏了"。
+SYSTEM_NOTOOLS = (
+    "你是一个加密交易助理。**这一轮你没有任何实时行情工具可用**，"
+    "只能基于通用知识回答，不要提任何工具名，也不要说「我无法调用某某工具」。\n"
+    "规矩：\n"
+    "1) **绝不编造价格、涨跌幅、资金费率、持仓量这类实时数字**，一个都不许给；\n"
+    "2) 可以讲这个币/这类行情的一般性风险、该看哪些指标、仓位和止损该怎么想；\n"
+    "3) 需要具体数字的地方，直接告诉用户去发币名查卡片，"
+    "或用 /scan /liqmap /lsr 这些命令（它们不走 AI，不受影响）；\n"
+    "4) 简洁，中文，末尾一句「不构成投资建议」。"
+)
+
 # ── 给 AI 的数据工具（全部只读）─────────────────────────────────────
 def _docfile_tools():
     """文件查询工具。docfile 出问题也不能让整个 TOOLS 定义崩掉。"""
@@ -862,8 +877,22 @@ async def _reply(update: Update, context: ContextTypes.DEFAULT_TYPE, user_text: 
             if head:
                 reply = f"{head}\n\n{reply}"
         except Exception as te:
-            log.warning(f"工具对话失败，降级纯对话: {te}")
-            reply = await ask_ai_messages(hist, system=SYSTEM)
+            # **降级要说出来，而且不能还用"你有工具"的提示词。**
+            #
+            # 老写法两件事都错了：降级后照旧传 SYSTEM（里面写着 12 个工具怎么用），
+            # 于是模型明知有工具却一个都调不到，只能回一句
+            # 「本轮无法调用 resolve_symbol 和实时行情工具」——用户看到这种话
+            # 只会以为机器人本来就这么废，而不知道这是一次**故障降级**。
+            log.error(f"工具对话失败，降级纯对话: {te}", exc_info=True)
+            try:
+                from handlers import monitor as _m
+                _m.beat("AI工具对话", False, 0, f"{type(te).__name__}: {te}")
+            except Exception:
+                pass
+            reply = await ask_ai_messages(hist, system=SYSTEM_NOTOOLS)
+            reply += ("\n\n⚠️ 这一轮**取不到实时数据**（行情工具调用失败），"
+                      "上面只是基于常识的判断，别当成看过盘的结论。\n"
+                      "要实时数据请直接发币名，或用 /scan /liqmap 这些命令——它们不走 AI。")
     except Exception as e:
         log.error(f"群聊AI出错: {e}")
         # 出错不留脏上下文

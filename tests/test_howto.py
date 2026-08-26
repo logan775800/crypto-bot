@@ -13,10 +13,19 @@ import pytest
 from handlers import howto as H
 
 
-def test_guide_link_points_at_the_repo():
+def test_guide_link_is_no_longer_pushed_to_the_group():
+    """**判据反过来了，别当成护栏被人偷偷拆了。**
+
+    2026-08-24 这条原本锁的是「正文里必须带完整链接，群友要能直接点」。
+    2026-08-25 他明确要求去掉，理由也站得住：完整清单现在就在**群置顶**里
+    （`/pinhowto` 维护，68 个命令 + 按钮路径），再挂一个 GitHub 外链等于
+    让人跳出去看一份重复的东西，而且那是个公开仓库地址。
+
+    `docs/guide.md` 本身还留着（跟代码一起版本管理），只是不往群里甩了。
+    """
     assert H.GUIDE_URL.startswith("https://github.com/logan775800/crypto-bot")
-    assert H.GUIDE_URL.endswith("docs/guide.md")
-    assert H.GUIDE_URL in H.TEXT, "正文里要带完整链接，群友要能直接点"
+    assert H.GUIDE_URL not in H.TEXT, "他要求群里不再出现这个外链"
+    assert "置顶" in H.TEXT, "去掉链接之后，得告诉人完整清单去哪看"
 
 
 def test_text_is_short_enough_for_the_buttons_to_be_reachable():

@@ -20,7 +20,10 @@ from handlers.util import safe_reply
 
 log = logging.getLogger(__name__)
 
-# 指南跟着代码一起版本管理，改功能时顺手改它，链接不变
+# docs/guide.md 仍然跟着代码走（改功能时顺手改它），但**不再往群里甩这个链接**：
+# 2026-08-25 他要求去掉。理由也站得住——完整清单现在就在置顶里（/pinhowto 维护，
+# 68 个命令 + 按钮路径），再挂一个 GitHub 外链等于让人跳出去看一份重复的东西，
+# 而且那是个公开仓库地址。
 GUIDE_URL = "https://github.com/logan775800/crypto-bot/blob/main/docs/guide.md"
 
 TEXT = (
@@ -33,7 +36,7 @@ TEXT = (
     "💣 `/liqmap TRUMP` 　清算地图（模型估算，不是交易所数据）\n"
     "🎮 `/vtrade` 　虚拟盘练手，1 万 U 起步（**私聊我**发）\n"
     "🔗 `/oc BANK` 　查链上代币，交易所没上的币也能查\n\n"
-    f"完整指南（命令 + 按钮在哪 + 怎么用）：\n{GUIDE_URL}\n\n"
+    "完整清单看**群置顶**（68 个命令 + 按钮在哪），管理员发 /pinhowto 可刷新。\n\n"
     "群里 @我 或回复我的消息就能直接对话问问题。\n"
     "⚠️ 数据仅供参考，不构成投资建议"
 )

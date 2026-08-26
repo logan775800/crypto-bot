@@ -212,3 +212,52 @@ def test_caption_path_uses_caption_entities():
     """图片走 caption，别去读 entities（那边是 None，会漏判）。"""
     msg = _msg("@jackhui66 看图", caption=True)
     assert chat._mentions_other_user(msg, BOT_NAME, caption=True)
+
+
+# ── 工具链挂了要说出来，而且不能再用"你有工具"的提示词 ────────
+# 2026-08-25 现场：他 @机器人「分析下 ake 给个建议」，回了一段
+# 「目前本轮无法调用 resolve_symbol 和实时行情工具，因此不能确认 AKE 对应的
+# 具体合约」。resolve_symbol 是**真实存在**的工具——不是模型瞎编，是真调不到。
+#
+# 两个错叠一起：
+#   ① 工具对话失败后**静默**降级成纯对话，用户不知道这是故障；
+#   ② 降级后还传那个写着"你有 12 个工具怎么调"的 SYSTEM，
+#      模型明知有工具却一个都没有，只能回这种话——看起来像"这机器人啥也干不了"。
+
+def test_degraded_path_uses_a_prompt_without_tools():
+    """降级时必须换提示词。用带工具说明的那个，模型只会去解释自己调不到工具。"""
+    from handlers import chat as C
+    assert hasattr(C, "SYSTEM_NOTOOLS")
+    assert "没有任何实时行情工具" in C.SYSTEM_NOTOOLS
+    assert "不要提任何工具名" in C.SYSTEM_NOTOOLS
+
+
+def test_degraded_prompt_forbids_making_up_numbers():
+    """没有数据源的时候最危险的不是答不上来，是**编一个价格出来**。"""
+    from handlers import chat as C
+    assert "绝不编造" in C.SYSTEM_NOTOOLS
+    assert "不构成投资建议" in C.SYSTEM_NOTOOLS
+
+
+def test_degraded_prompt_points_at_the_non_ai_paths():
+    """行情命令不走 AI，工具链挂了它们照常能用——要告诉用户这条退路。"""
+    from handlers import chat as C
+    assert "/scan" in C.SYSTEM_NOTOOLS or "发币名" in C.SYSTEM_NOTOOLS
+
+
+def test_degradation_is_visible_to_the_user():
+    """**静默降级是这个项目最贵的一类 bug。**
+    用户必须知道这一轮的答案没有实时数据支撑。"""
+    import inspect
+    from handlers import chat as C
+    src = inspect.getsource(C._reply)
+    assert "取不到实时数据" in src, "降级了要在回复里说一句"
+    assert "SYSTEM_NOTOOLS" in src
+
+
+def test_degradation_is_recorded_in_the_heartbeat():
+    """连续降级说明工具链真的坏了，该让管理员知道，而不是每次只糊弄过去。"""
+    import inspect
+    from handlers import chat as C
+    src = inspect.getsource(C._reply)
+    assert "monitor" in src and "beat" in src

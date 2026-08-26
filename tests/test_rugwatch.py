@@ -21,10 +21,10 @@ from handlers import rugwatch as R
 def _clean():
     # 碰全局 data 的测试必须**重置**用到的键（服务器上 pytest 是随机顺序跑的）
     storage.data["rugwatch"] = {}
-    storage.data["watchpct"] = {}
+    storage.data["watchpct"] = []      # 是 list 不是 dict，见下面收集范围那一节
     yield
     storage.data["rugwatch"] = {}
-    storage.data["watchpct"] = {}
+    storage.data["watchpct"] = []      # 是 list 不是 dict，见下面收集范围那一节
 
 
 # ── 价格修正：这个模块的立身之本 ──────────────────────────────
@@ -155,25 +155,52 @@ def test_dust_pools_are_ignored():
 
 
 # ── 收集范围 ──────────────────────────────────────────────────
+# ⚠️ **这几条的 fixture 必须用真正写数据的那个函数来造。**
+#
+# 第一版我凭印象手写成 `{chat_id: [...]}` 字典，而 `watchpct` 存的是**扁平 list**
+# （每条自带 chat_id）。于是 `_onchain_watches` 里 `.items()` 在线上每 5 分钟抛一次
+# AttributeError，**而单测一路绿灯——因为测试和代码错在同一个地方**。
+# 用生产者造 fixture，形状变了两边一起红，才挡得住这类错。
+
+def _add_watch(chat_id, symbol, market="onchain", **extra):
+    """走 watchpct 真正的落盘函数，形状永远和线上一致。"""
+    from handlers import watchpct as W
+    ok, _msg = W._store(chat_id, symbol, 5, "tester", 1.0, "bsc", market,
+                        name=extra.pop("name", None), extra=extra or None)
+    assert ok
+
+
+def test_watchpct_is_a_flat_list_not_a_dict():
+    """把形状本身钉死：`_onchain_watches` 的写法完全取决于这一条。"""
+    storage.data["watchpct"] = []
+    _add_watch(1, "0xabc")
+    assert isinstance(storage.data["watchpct"], list)
+    assert storage.data["watchpct"][0]["chat_id"] == 1, "chat_id 在记录里，不是外层的键"
+
+
 def test_only_onchain_watches_are_collected():
     """交易所的币没有"池子"这回事，混进来会白白打接口。"""
-    storage.data["watchpct"] = {
-        "1": [{"symbol": "0xabc", "market": "onchain"},
-              {"symbol": "BTC", "market": "spot"}],
-    }
+    storage.data["watchpct"] = []
+    _add_watch(1, "0xabc", "onchain")
+    _add_watch(1, "BTC", "spot")
     got = R._onchain_watches()
     assert [w["symbol"] for _cid, w in got] == ["0xabc"]
 
 
 def test_same_token_watched_by_several_chats():
     """同一个币被多个会话盯着时，取一次数发多次——不能各取各的。"""
-    storage.data["watchpct"] = {
-        "1": [{"symbol": "0xabc", "market": "onchain"}],
-        "2": [{"symbol": "0xabc", "market": "onchain"}],
-    }
+    storage.data["watchpct"] = []
+    _add_watch(1, "0xabc")
+    _add_watch(2, "0xabc")
     got = R._onchain_watches()
     assert len(got) == 2
     assert {cid for cid, _w in got} == {"1", "2"}
+
+
+def test_malformed_records_do_not_break_the_scan():
+    """data.json 被手改过/旧格式残留时，别让整个任务挂掉。"""
+    storage.data["watchpct"] = ["坏数据", None, {"market": "onchain"}]
+    assert R._onchain_watches() == []
 
 
 # ── 文案 ──────────────────────────────────────────────────────
@@ -193,3 +220,34 @@ def test_alert_is_plain_text_safe():
     """合约地址带下划线时 Markdown 会把它吃掉，这条消息必须纯文本发。"""
     text = R.format_alert("A_B", "0x_abc_def", "bsc", 0.5, False, 5e4, 1e5)
     assert "0x_abc_def" in text, "地址要原样出现，抄下来才是对的"
+
+
+# ── 全库护栏：共享结构不能各猜各的 ────────────────────────────
+def test_every_reader_of_watchpct_treats_it_as_a_list():
+    """`data["watchpct"]` 是扁平 list（storage.py 的初始化那行写着）。
+
+    我在 rugwatch 里按字典写，线上每 5 分钟抛一次 AttributeError。
+    **跨模块共享的数据结构最容易各猜各的**——一个模块写、另一个模块读，
+    中间没有任何东西约束形状。这条扫一遍，谁再当字典用就红。
+    """
+    import pathlib
+    import re
+    root = pathlib.Path(__file__).resolve().parent.parent
+    bad = []
+    for f in sorted((root / "handlers").glob("*.py")):
+        src = f.read_text(encoding="utf-8")
+        for m in re.finditer(r'data(?:\.get\(|\[)["\']watchpct["\']\)?[^\n]*', src):
+            line = m.group(0)
+            if ".items()" in line or ".values()" in line or ".keys()" in line:
+                bad.append(f"{f.name}: {line.strip()}")
+    assert not bad, f"watchpct 是 list，这些地方当字典用了：{bad}"
+
+
+def test_storage_documents_the_shape():
+    """形状要在 storage 的初始化那儿写清楚——那是唯一的权威。"""
+    import pathlib
+    src = (pathlib.Path(__file__).resolve().parent.parent
+           / "storage.py").read_text(encoding="utf-8")
+    assert 'setdefault("watchpct", [])' in src
+    assert "chat_id" in src.split('setdefault("watchpct"')[1][:120], \
+        "注释里要写明每条记录自带 chat_id，否则读的人会以为外层是按 chat 分组的"

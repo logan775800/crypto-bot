@@ -87,17 +87,25 @@ def drain_pct(base_liq, base_price, price, liq):
 
 
 def _onchain_watches():
-    """从持续波动监控里挑出链上那些。
+    """从持续波动监控里挑出链上那些。返回 [(chat_id, 那条监控), ...]。
 
     **刻意复用 watchpct 的名单而不是另开一份订阅**：会盯某个链上币价格的人，
     就是会关心它跑不跑路的人。让他为同一个币再订阅一次纯属折腾，
     而且两份名单迟早会不一致。
+
+    ⚠️ `data["watchpct"]` 是**扁平的 list**，每条记录自己带 `chat_id` 字段
+    （见 `watchpct._store`，也见 storage 里它被归在 `_DICT_LISTS`）。
+    第一版我当成 `{chat_id: [...]}` 字典写了 `.items()`，线上每 5 分钟抛一次
+    `AttributeError: 'list' object has no attribute 'items'`——
+    而单测因为**我自己编了个字典形状的 fixture**，一路绿灯。
+    造 fixture 不能凭印象，要照着写数据那一侧的真实结构。
     """
     out = []
-    for chat_id, lst in (data.get("watchpct") or {}).items():
-        for w in lst or []:
-            if w.get("market") == "onchain" and w.get("symbol"):
-                out.append((str(chat_id), w))
+    for w in (data.get("watchpct") or []):
+        if not isinstance(w, dict):
+            continue
+        if w.get("market") == "onchain" and w.get("symbol") and w.get("chat_id"):
+            out.append((str(w["chat_id"]), w))
     return out
 
 

@@ -31,6 +31,29 @@ BYBIT_BASE = "https://api.bybit.com"
 #   这段时间成交了多少 = 现在的24h总额 − 上一轮的24h总额
 #   同样时长平时该成交多少 = 24h总额 × (这段时长 / 24h)
 # 两者一比，才是真正的"这阵子比平时活跃几倍"。零额外请求。
+# ── 两类告警可以分开关 ────────────────────────────────────────
+# 「新币上线」和「放量异动」以前**捆在一个订阅里**（/watchmarket），
+# 只想要放量的人被迫连新币一起收，反过来也一样。他问「放量异动开关在哪」
+# 时才发现这一点：开关是有，但粒度不对。
+# 默认两类都开——老用户的行为一点不变。
+KINDS = {"newcoin": "🆕 新币上线", "surge": "📊 放量异动"}
+
+
+def kind_on(chat_id, kind):
+    """这个会话要不要收这一类。没设过就是要（保持老行为）。"""
+    from storage import data as _d
+    rec = (_d.get("market_kinds") or {}).get(str(chat_id)) or {}
+    return rec.get(kind, True)
+
+
+def set_kind(chat_id, kind, on):
+    from storage import data as _d, save_data as _s
+    rec = _d.setdefault("market_kinds", {}).setdefault(str(chat_id), {})
+    rec[kind] = bool(on)
+    _s()
+    return rec[kind]
+
+
 SURGE_RATIO = 3            # 这段时间的量是平时同时长的几倍才算放量
 SURGE_MIN_VOL = 2_000_000  # 放量币的最小 24h 成交额（USDT）
 SURGE_MIN_DELTA = 300_000  # 这段时间至少真的成交了这么多，防小池子按比例炸出来
@@ -250,7 +273,7 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
         follows = pref.get("follows", [])
 
         # 新币告警（不受关注列表限制）
-        if new_coins:
+        if new_coins and kind_on(chat_id, "newcoin"):
             lines = ["🆕 *新币上线*\n"]
             for n in new_coins[:15]:
                 lines.append(f"• [{n['ex']}] {n['sym']}/USDT")
@@ -261,7 +284,8 @@ async def scan_market(context: ContextTypes.DEFAULT_TYPE):
                 logging.error(f"新币推送失败 {chat_id}: {e}")
 
         # 放量告警（按关注过滤）
-        vs = [v for v in volume_surges if not follows or v["sym"] in follows]
+        vs = ([v for v in volume_surges if not follows or v["sym"] in follows]
+              if kind_on(chat_id, "surge") else [])
         if vs:
             vlines = ["📊 *放量异动*（成交量突增）\n"]
             for v in vs[:10]:

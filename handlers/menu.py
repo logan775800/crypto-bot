@@ -474,6 +474,47 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
 
 
+def subs_kb(chat_id):
+    """订阅面板的键盘。**只此一份。**
+
+    以前 `cat_subs` 和 `tog_*` 各抄了一份一模一样的键盘：改了 A 忘了 B，
+    点一下总开关，新加的子开关就会从屏幕上消失——而且看起来像功能没做。
+    这类"同一段 UI 两处维护"的地方迟早分叉，抽出来是唯一的解。
+    """
+    from storage import data as _sd
+    from handlers import market_alert as _ma
+
+    def st(key):
+        v = _sd.get(key, [])
+        return "✅" if (chat_id in v or str(chat_id) in v) else "⬜"
+
+    def mk(kind):
+        return "✅" if _ma.kind_on(chat_id, kind) else "⬜"
+
+    pp = "✅" if str(chat_id) in (_sd.get("pump_watch") or {}) else "⬜"
+    _cw = _sd.get("contract_watch", [])
+    cp = "✅" if (chat_id in _cw or str(chat_id) in [str(x) for x in _cw]) else "⬜"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{pp} ⚡急涨急跌(15m,可调阈值)", callback_data="pump:panel")],
+        [InlineKeyboardButton(f"{cp} 📊合约异动(24h±20%起,可调档)", callback_data="ctr:panel")],
+        [InlineKeyboardButton(f"{st('market_watch')} 市场异动告警（总开关）",
+                              callback_data="tog_market")],
+        # 「新币上线」和「放量异动」以前捆在一个订阅里，只想要放量的人
+        # 被迫连新币一起收。拆成两个子开关，总开关关着时它们不生效。
+        [InlineKeyboardButton(f"{mk('newcoin')} 　└ 🆕新币上线", callback_data="mk:newcoin"),
+         InlineKeyboardButton(f"{mk('surge')} 　└ 📊放量异动", callback_data="mk:surge")],
+        [InlineKeyboardButton(f"{st('news_subs')} 新闻推送", callback_data="tog_news")],
+        [InlineKeyboardButton(f"{st('unlock_subs')} 解锁提醒", callback_data="tog_unlock")],
+        [InlineKeyboardButton(f"{st('summary_subs')} 每日总结", callback_data="tog_summary")],
+        [InlineKeyboardButton(f"{st('broadcast_chats')} 每日行情播报",
+                              callback_data="tog_broadcast")],
+        [InlineKeyboardButton(f"{st('analysis_subs')} 每日技术分析",
+                              callback_data="tog_analysis")],
+        [InlineKeyboardButton("⚙️ 我的个性化设置", callback_data="my_settings")],
+        [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
+    ])
+
+
 async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     # 回调 query 的有效期很短。PTB 默认**串行**处理更新，前一个慢操作（链上搜索、
@@ -513,6 +554,29 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("bo:"):
         from handlers import breakout as _bo
         await _bo.on_button(query, context)
+
+    # ---- 市场异动的两个子类分别开关（新币 / 放量）----
+    elif d.startswith("mk:"):
+        from handlers import market_alert as _ma
+        kind = d.split(":", 1)[1]
+        if kind in _ma.KINDS:
+            cid = query.message.chat_id
+            now_on = _ma.set_kind(cid, kind, not _ma.kind_on(cid, kind))
+            # 总开关关着时子开关不生效，这一点必须说——否则他打开了却收不到，
+            # 又会以为坏了
+            from storage import data as _sd2
+            master = cid in (_sd2.get("market_watch") or []) or \
+                str(cid) in [str(x) for x in (_sd2.get("market_watch") or [])]
+            tip = f"{_ma.KINDS[kind]} {'已开启' if now_on else '已关闭'}"
+            if now_on and not master:
+                tip += "\n⚠️ 但「市场异动告警」总开关是关的，先把它打开才会收到"
+            try:
+                await query.answer(tip, show_alert=True)
+            except Exception:
+                pass
+            await safe_edit(query,
+                            "🔔 *订阅推送*\n✅已订阅 ⬜未订阅，点击切换：",
+                            reply_markup=subs_kb(cid), parse_mode="Markdown")
 
     elif d.startswith("mc:"):
         from handlers import microcap as _mc
@@ -787,6 +851,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _cw = _sd.get("contract_watch") or []
         _cp = "✅" if (_cid in _cw or str(_cid) in [str(s) for s in _cw]) else "⬜"
         _p3 = "✅" if str(_cid) in (_sd.get("pump3") or {}) else "⬜"
+        # 箱体破位：开关一直存在（/breakout on|off），但只挂在破位结果卡自己的
+        # 键盘上——没人会为了关一个告警先去跑一次扫描。放到这一层来。
+        from handlers import breakout as _bo
+        _bk = "✅" if _bo.is_on(_cid) else "⬜"
         await safe_edit(query,
             "🔔 *提醒与订阅*\n\n"
             "**提醒**是你盯某个条件（到价、波动、指标）；\n"
@@ -799,6 +867,8 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                       callback_data="ctr:panel")],
                 [InlineKeyboardButton(f"{_p3} 🚨极端拉升(15m暴拉+多日已涨)",
                                       callback_data="p3:panel")],
+                [InlineKeyboardButton(f"{_bk} 🚀箱体破位(5m,均线顺势)",
+                                      callback_data=f"bo:{'off' if _bo.is_on(_cid) else 'on'}")],
                 [InlineKeyboardButton("🔔 价格/条件提醒", callback_data="cat_alert")],
                 [InlineKeyboardButton("📬 定期订阅推送", callback_data="cat_subs")],
                 _back()]), parse_mode="Markdown")
@@ -1319,34 +1389,7 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ============ 订阅推送（按钮+状态）============
     elif d == "cat_subs":
-        from storage import data as _sd
-        chat_id = query.message.chat_id
-        # 各订阅状态检查
-        def status(key, is_dict=False):
-            v = _sd.get(key, {} if is_dict else [])
-            # 兼容历史数据里 chat_id 存成 int 或 str 两种情况
-            return "✅" if (chat_id in v or str(chat_id) in v) else "⬜"
-        m = status("market_watch")
-        nw = status("news_subs")
-        ul = status("unlock_subs")
-        sm = status("summary_subs")
-        bc = status("broadcast_chats")
-        an = status("analysis_subs")
-        pp = "✅" if str(chat_id) in (_sd.get("pump_watch") or {}) else "⬜"
-        _cw = _sd.get("contract_watch", [])
-        cp = "✅" if (chat_id in _cw or str(chat_id) in [str(s) for s in _cw]) else "⬜"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"{pp} ⚡急涨急跌(15m,可调阈值)", callback_data="pump:panel")],
-            [InlineKeyboardButton(f"{cp} 📊合约异动(24h±20%起,可调档)", callback_data="ctr:panel")],
-            [InlineKeyboardButton(f"{m} 市场异动告警", callback_data="tog_market")],
-            [InlineKeyboardButton(f"{nw} 新闻推送", callback_data="tog_news")],
-            [InlineKeyboardButton(f"{ul} 解锁提醒", callback_data="tog_unlock")],
-            [InlineKeyboardButton(f"{sm} 每日总结", callback_data="tog_summary")],
-            [InlineKeyboardButton(f"{bc} 每日行情播报", callback_data="tog_broadcast")],
-            [InlineKeyboardButton(f"{an} 每日技术分析", callback_data="tog_analysis")],
-            [InlineKeyboardButton("⚙️ 我的个性化设置", callback_data="my_settings")],
-            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
-        ])
+        kb = subs_kb(query.message.chat_id)
         await safe_edit(query, 
             "🔔 *订阅推送*\n✅已订阅 ⬜未订阅，点击切换：",
             reply_markup=kb, parse_mode="Markdown")
@@ -1374,20 +1417,10 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 _sd[key].append(chat_id)
             _ss()
-        # 重新渲染订阅菜单（刷新状态）
-        def status(key):
-            v = _sd.get(key, [])
-            return "✅" if (chat_id in v or str(chat_id) in v) else "⬜"
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton(f"{status('market_watch')} 市场异动告警", callback_data="tog_market")],
-            [InlineKeyboardButton(f"{status('news_subs')} 新闻推送", callback_data="tog_news")],
-            [InlineKeyboardButton(f"{status('unlock_subs')} 解锁提醒", callback_data="tog_unlock")],
-            [InlineKeyboardButton(f"{status('summary_subs')} 每日总结", callback_data="tog_summary")],
-            [InlineKeyboardButton(f"{status('broadcast_chats')} 每日行情播报", callback_data="tog_broadcast")],
-            [InlineKeyboardButton(f"{status('analysis_subs')} 每日技术分析", callback_data="tog_analysis")],
-            [InlineKeyboardButton("⚙️ 我的个性化设置", callback_data="my_settings")],
-            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
-        ])
+        # 重新渲染订阅菜单（刷新状态）——**用同一个构造函数**。
+        # 以前这里抄了一份一模一样的键盘，改了 cat_subs 忘了这儿，
+        # 点一下总开关新加的子开关就会从屏幕上消失。
+        kb = subs_kb(chat_id)
         await safe_edit(query, 
             "🔔 *订阅推送*\n✅已订阅 ⬜未订阅，点击切换：",
             reply_markup=kb, parse_mode="Markdown")

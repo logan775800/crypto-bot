@@ -148,13 +148,46 @@ def test_alert_entries_show_whether_you_are_subscribed():
     assert "✅" in seg and "⬜" in seg
 
 
-@pytest.mark.parametrize("cb,where", [
-    ("pump:panel", "cat_subs"),
-    ("ctr:panel", "cat_subs"),
-    ("p3:panel", "cat_alert"),
-])
-def test_hoisting_did_not_remove_the_original_entries(cb, where):
-    """提级不是搬家。他否决过「藏起来」，原来的位置得照样点得到。"""
+@pytest.mark.parametrize("cb", ["pump:panel", "ctr:panel"])
+def test_subscription_panel_still_has_the_alert_entries(cb):
+    """提级不是搬家。他否决过「藏起来」，原来的位置得照样点得到。
+
+    **这条原来是扫 `_dispatch` 的源码段**。订阅面板的键盘后来抽成了
+    `subs_kb()`（因为 cat_subs 和 tog_* 各抄了一份，改一处会分叉），
+    行为一点没变，这条却红了——又一次证明源码字符串锁的是实现细节。
+    改成**构造真实键盘**来验。
+    """
+    cbs = [b.callback_data for row in menu.subs_kb(-100).inline_keyboard for b in row]
+    assert cb in cbs, f"{cb} 从订阅面板里消失了——这是搬家不是提级"
+
+
+def test_p3_entry_stays_in_the_alert_panel():
+    """极端拉升那条仍然是在 _dispatch 里手写的，还没抽出来。"""
     src = inspect.getsource(menu._dispatch)
-    seg = src.split(f'elif d == "{where}":')[1].split("elif d ==")[0]
-    assert f'"{cb}"' in seg, f"{cb} 从 {where} 里消失了——这是搬家不是提级"
+    seg = src.split('elif d == "cat_alert":')[1].split("elif d ==")[0]
+    assert '"p3:panel"' in seg
+
+
+def test_market_alert_kinds_can_be_toggled_separately():
+    """「新币上线」和「放量异动」以前捆在一个订阅里，只想要放量的人
+    被迫连新币一起收。他问「放量异动开关在哪」时才发现粒度不对。"""
+    cbs = [b.callback_data for row in menu.subs_kb(-100).inline_keyboard for b in row]
+    assert "mk:newcoin" in cbs and "mk:surge" in cbs
+    assert "tog_market" in cbs, "总开关也要留着"
+
+
+def test_breakout_toggle_is_reachable_from_the_alert_panel():
+    """`/breakout on|off` 一直存在，但开关只挂在破位结果卡自己的键盘上——
+    没人会为了关一个告警先去跑一次扫描。"""
+    src = inspect.getsource(menu._dispatch)
+    seg = src.split('elif d == "cat_notify":')[1].split("elif d ==")[0]
+    assert "bo:" in seg, "箱体破位的开关还是找不到"
+
+
+def test_subscription_keyboard_has_exactly_one_definition():
+    """cat_subs 和 tog_* 以前各抄了一份一模一样的键盘：
+    改了 A 忘了 B，点一下总开关新加的按钮就会从屏幕上消失。
+    这类"同一段 UI 两处维护"的地方迟早分叉。"""
+    src = inspect.getsource(menu._dispatch)
+    assert src.count("InlineKeyboardButton(f\"{status(") == 0, \
+        "订阅键盘又被抄了一份，用 subs_kb()"

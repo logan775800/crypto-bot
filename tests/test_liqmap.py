@@ -573,3 +573,109 @@ def test_caption_shows_the_given_source():
     m = _fake_map([(98.0, 100)], [(102.0, 50)])
     assert "Bybit永续" in L.caption(m, "BTC", "180日", 100.0, "Bybit")
     assert "币安永续" in L.caption(m, "BTC", "7日", 100.0, "币安")
+
+
+# ── 按杠杆分档的未触发清算簇（2026-08-27 他给的口径）──────────
+# 「按 5x/10x/20x 分档，反推多空两侧仍未被触发的清算价位与金额，
+#   仅列出 ≥10 万美元的清算簇」。
+
+def test_tier_levels_match_the_requested_spec():
+    from handlers import liqmap as L
+    assert [lv for lv, _w, _c in L.TIER_LEVS] == [5, 10, 20]
+    assert sum(w for _lv, w, _c in L.TIER_LEVS) == pytest.approx(1.0)
+    assert L.TIER_FLOOR == 100_000
+
+
+def test_chart_tiers_are_left_alone():
+    """**刻意不改 LEVS**：图上是 5/10/25/50，改它等于让所有人
+    已经在看的那张图整个变形。两套并存，同一批 ΔOI 重新分配。"""
+    from handlers import liqmap as L
+    assert [lv for lv, _w, _c in L.LEVS] == [5, 10, 25, 50]
+
+
+def test_build_map_accepts_custom_tiers():
+    from handlers import liqmap as L
+    m = L.build_map(_oi([0, 1_000_000]), _kl([100.0, 100.0]), 100.0,
+                    levs=L.TIER_LEVS)
+    assert set(m["longs"]) == {5, 10, 20}
+    assert m["levs"] == L.TIER_LEVS
+
+
+def test_clusters_only_return_untriggered_side():
+    """现价越过的一侧 build_map 已经抹零了，所以非零的就是还没被扫到的。"""
+    from handlers import liqmap as L
+    m = L.build_map(_oi([0, 1_000_000]), _kl([100.0, 100.0]), 100.0,
+                    levs=L.TIER_LEVS)
+    for z in L.clusters(m, "long", 20, floor=0):
+        assert z["hi"] <= 100.0 * 1.001, "多头爆仓位不可能在现价上方"
+    for z in L.clusters(m, "short", 20, floor=0):
+        assert z["lo"] >= 100.0 * 0.999, "空头爆仓位不可能在现价下方"
+
+
+def test_adjacent_buckets_merge_into_one_cluster():
+    """不合并的话，一个宽区间会被切成几十根小柱，每根都不到 10 万门槛，
+    于是**明明有一大堆待爆仓位却一条都列不出来**。"""
+    from handlers import liqmap as L
+    m = L.build_map(_oi([0, 5e6, 1e7]), _kl([100.0, 100.5, 101.0]), 100.0,
+                    levs=L.TIER_LEVS)
+    zs = L.clusters(m, "long", 20, floor=0)
+    assert zs and zs[0]["hi"] > zs[0]["lo"]
+
+
+def test_low_density_buckets_do_not_glue_everything_together():
+    """**第一版就栽在这**：按"非零就合并"写，7 日 168 根数据下几乎每个桶
+    都有值，相邻非零全连成一条横跨整个价格区间的假「簇」。
+    以峰值的一定比例为界，簇才切得开。"""
+    from handlers import liqmap as L
+    assert 0 < L.DENSITY_FRAC < 1
+    import inspect
+    assert "peak * DENSITY_FRAC" in inspect.getsource(L.clusters)
+
+
+def test_floor_filters_small_clusters():
+    from handlers import liqmap as L
+    m = L.build_map(_oi([0, 1_000]), _kl([100.0, 100.0]), 100.0, levs=L.TIER_LEVS)
+    assert L.clusters(m, "long", 20, floor=100_000) == []
+
+
+def test_report_lists_every_tier_and_both_sides():
+    from handlers import liqmap as L
+    m = L.build_map(_oi([0, 5e8, 1e9]), _kl([100.0, 100.5, 101.0]), 100.0,
+                    levs=L.TIER_LEVS)
+    txt = L.tier_report(m, "BTC", "7日", 100.0)
+    for lev in ("5x", "10x", "20x"):
+        assert lev in txt
+    assert "多头爆仓" in txt and "空头爆仓" in txt
+    assert "距现价" in txt
+
+
+def test_report_says_why_when_nothing_qualifies():
+    """一条都没有时要说清是哪种没有——门槛太高还是这个币本来就没量。"""
+    from handlers import liqmap as L
+    m = L.build_map(_oi([0, 100]), _kl([100.0, 100.0]), 100.0, levs=L.TIER_LEVS)
+    txt = L.tier_report(m, "TINY", "7日", 100.0)
+    assert "没有任何一侧的簇达到" in txt
+    assert "换 30日" in txt
+
+
+def test_report_keeps_the_estimate_disclaimer():
+    """这张明细看起来比图更"精确"，估算两个字更不能丢。"""
+    from handlers import liqmap as L
+    m = L.build_map(_oi([0, 1e9]), _kl([100.0, 100.0]), 100.0, levs=L.TIER_LEVS)
+    txt = L.tier_report(m, "BTC", "7日", 100.0)
+    assert "模型估算" in txt and "假设" in txt
+
+
+def test_tier_button_exists():
+    from handlers import liqmap as L
+    cbs = [b.callback_data for row in L.kb("BTC", "7日").inline_keyboard for b in row]
+    assert "lq:t:BTC:7日" in cbs
+
+
+def test_tier_view_does_not_reuse_the_chart_cache():
+    """缓存里那份是按图上的 5/10/25/50 算的，档位不同整份数据都不同。"""
+    import inspect
+    from handlers import liqmap as L
+    src = inspect.getsource(L.from_btn)
+    seg = src.split('if action == "t":')[1].split("uid =")[0]
+    assert "_fetch(" in seg and "_get(" not in seg

@@ -255,7 +255,7 @@ async def _fetch(symbol, win):
 
 
 # ── 推算 ────────────────────────────────────────────────────
-def build_map(oi_rows, kl_rows, last):
+def build_map(oi_rows, kl_rows, last, levs=None):
     """→ {"lo","hi","edges","longs","shorts","added","bucket"}。
 
     longs/shorts: 每个杠杆档位一条 list，长度 = BUCKETS，值是估算的名义金额。
@@ -264,8 +264,12 @@ def build_map(oi_rows, kl_rows, last):
     kmap = {int(k[0]): k for k in kl_rows}
     lo, hi = last * (1 - SPAN), last * (1 + SPAN)
     width = (hi - lo) / BUCKETS
-    longs = {L: [0.0] * BUCKETS for L, _w, _c in LEVS}
-    shorts = {L: [0.0] * BUCKETS for L, _w, _c in LEVS}
+    # levs 可以传别的档位（比如「按 5x/10x/20x 分档」那份明细），
+    # 传 None 就用图上那套 5/10/25/50——**不要为了出明细去改 LEVS**，
+    # 那会让所有人已经在看的那张图整个变形。
+    levs = levs or LEVS
+    longs = {L: [0.0] * BUCKETS for L, _w, _c in levs}
+    shorts = {L: [0.0] * BUCKETS for L, _w, _c in levs}
     added_total = 0.0
 
     def put(book, price, amount):
@@ -291,7 +295,7 @@ def build_map(oi_rows, kl_rows, last):
                     p = None
                 if p and p > 0:
                     added_total += delta
-                    for L, w, _c in LEVS:
+                    for L, w, _c in levs:
                         amt = delta * w
                         # 永续里每份持仓同时是一多一空，所以两侧都要放
                         put(longs[L], p * (1 - 1 / L), amt)
@@ -300,7 +304,7 @@ def build_map(oi_rows, kl_rows, last):
 
     # 已经被价格越过的一侧要抹掉：那些仓早就被强平或平掉了，留着是假的
     cur_b = int((last - lo) / width)
-    for L, _w, _c in LEVS:
+    for L, _w, _c in levs:
         for i in range(BUCKETS):
             if i >= cur_b:
                 longs[L][i] = 0.0      # 多头爆仓位只可能在现价下方
@@ -309,13 +313,99 @@ def build_map(oi_rows, kl_rows, last):
     edges = [lo + width * i for i in range(BUCKETS)]
     return {"lo": lo, "hi": hi, "edges": edges, "width": width,
             "longs": longs, "shorts": shorts, "added": added_total,
-            "cur_bucket": cur_b}
+            "cur_bucket": cur_b, "levs": levs}
+
+
+# ── 按杠杆分档的明细 ────────────────────────────────────────
+# 他要的口径（2026-08-27）：「按 5x/10x/20x 分档，反推多空两侧仍未被触发的
+# 清算价位与金额，仅列出 ≥10 万美元的清算簇」。
+#
+# **刻意不改上面那套 LEVS**：图上是 5/10/25/50，改它等于让所有人已经在看的
+# 那张图整个变形。这里用同一批 ΔOI 数据、按他的档位单独算一份，两者并存。
+TIER_LEVS = ((5, 0.20, "#2E9BE6"), (10, 0.35, "#22C3B6"), (20, 0.45, "#F0642B"))
+TIER_FLOOR = 100_000           # 小于这个数的簇不列——噪音，列出来只会淹掉真的
+# 一个桶要达到该档峰值的多少才算进簇。低于它的当背景，
+# 否则相邻非零会全连成一条横跨整个价格区间的假"簇"。
+DENSITY_FRAC = 0.30
+
+
+def clusters(m, side, lev, floor=TIER_FLOOR):
+    """某个杠杆档位、某一侧，**仍未被触发**的清算簇。
+
+    「簇」= 相邻价格桶合并成一段。不合并的话，一个宽区间会被切成几十根
+    小柱子，每根都不到门槛，于是**明明有一大堆待爆仓位却一条都列不出来**。
+
+    未被触发这件事 `build_map` 已经处理了：现价越过的一侧整段抹零
+    （那些仓早被平了）。所以这里非零的就是还没被扫到的。
+    """
+    book = (m["longs"] if side == "long" else m["shorts"]).get(lev)
+    if not book:
+        return []
+    # **只把"够密"的桶算进簇。** 按「非零就合并」写的第一版，在 7 日 168 根
+    # 数据下几乎每个桶都有值，相邻非零全连成一条横跨 8000 点的"簇"——
+    # 那不是密集区，那是整个价格区间。
+    # 以峰值的 DENSITY_FRAC 为界，低于它的当背景噪音，簇才切得开。
+    peak = max(book) if book else 0
+    cut = peak * DENSITY_FRAC
+    out, run = [], None
+    for i, v in enumerate(book):
+        if v > cut:
+            if run is None:
+                run = {"lo": m["edges"][i], "hi": m["edges"][i] + m["width"],
+                       "amount": 0.0}
+            run["hi"] = m["edges"][i] + m["width"]
+            run["amount"] += v
+        elif run is not None:
+            out.append(run)
+            run = None
+    if run is not None:
+        out.append(run)
+    return sorted([z for z in out if z["amount"] >= floor],
+                  key=lambda z: -z["amount"])
+
+
+def tier_report(m, sym, win, last, floor=TIER_FLOOR):
+    """按杠杆分档列出两侧未触发的清算簇。返回 Markdown 文本。"""
+    lines = [f"🧮 *{sym} 未触发清算簇 · 按杠杆分档*",
+             f"近{win}｜现价 {_px(last)}｜只列 ≥ ${floor / 1e4:.0f} 万的簇", ""]
+    any_hit = False
+    for lev, w, _c in (m.get("levs") or TIER_LEVS):
+        head = f"*{lev}x*（假设占新增仓位的 {w * 100:.0f}%）"
+        blocks = []
+        for side, arrow, word in (("long", "🔻", "多头爆仓"),
+                                  ("short", "🔺", "空头爆仓")):
+            zs = clusters(m, side, lev, floor)
+            if not zs:
+                continue
+            any_hit = True
+            blocks.append(f"　{arrow} {word}")
+            for z in zs[:4]:
+                mid = (z["lo"] + z["hi"]) / 2
+                blocks.append(
+                    f"　　{_px(z['lo'])}–{_px(z['hi'])}"
+                    f"　{_money(z['amount'])} U"
+                    f"　距现价 {(mid / last - 1) * 100:+.1f}%")
+            if len(zs) > 4:
+                rest = sum(z["amount"] for z in zs[4:])
+                blocks.append(f"　　（还有 {len(zs) - 4} 簇，合计 {_money(rest)} U）")
+        if blocks:
+            lines.append(head)
+            lines.extend(blocks)
+            lines.append("")
+    if not any_hit:
+        # **"一条都没有"要说清是哪种没有**：门槛太高、还是这个币本来就没量
+        lines.append(f"这个窗口里没有任何一侧的簇达到 ${floor / 1e4:.0f} 万。")
+        lines.append("要么这个币盘子小、要么窗口太短——换 30日/180日 再看。")
+    lines.append("⚠️ 模型估算，不是交易所数据。杠杆分布是假设（交易所不公布"
+                 "谁开了几倍），没算维持保证金率，所以位置比真实爆仓价略远。")
+    return "\n".join(lines)
 
 
 def zones(m, side, top=3):
     """密度最高的几个价位区间。图是给人看的，这个是给人用的。"""
     book = m["longs"] if side == "long" else m["shorts"]
-    tot = [sum(book[L][i] for L, _w, _c in LEVS) for i in range(BUCKETS)]
+    _lv = m.get("levs") or LEVS
+    tot = [sum(book[L][i] for L, _w, _c in _lv) for i in range(BUCKETS)]
     idx = sorted(range(BUCKETS), key=lambda i: -tot[i])[:top]
     out = []
     for i in idx:
@@ -339,7 +429,8 @@ def totals(m, side, last):
     而是价格已经离开了所有密集区。不给这个数的话，一行三个 0 看着就是故障。
     """
     book = m["longs"] if side == "long" else m["shorts"]
-    tot = [sum(book[L][i] for L, _w, _c in LEVS) for i in range(BUCKETS)]
+    _lv = m.get("levs") or LEVS
+    tot = [sum(book[L][i] for L, _w, _c in _lv) for i in range(BUCKETS)]
     out = {"all": 0.0, "d3": 0.0, "d5": 0.0, "d10": 0.0, "near": None}
     for i, v in enumerate(tot):
         if v <= 0:
@@ -630,6 +721,7 @@ def kb(sym, win):
     return InlineKeyboardMarkup([
         short,
         long_,
+        [InlineKeyboardButton("🧮 按杠杆分档", callback_data=f"lq:t:{sym}:{win}")],
         [InlineKeyboardButton("ℹ️ 口径", callback_data=f"lq:i:{sym}:{win}"),
          InlineKeyboardButton("🔄 重算", callback_data=f"lq:r:{sym}:{win}"),
          InlineKeyboardButton("🪙 换币", callback_data="lq:pick:-:-")],
@@ -695,6 +787,19 @@ async def from_btn(query, context, action, sym, win):
             return
         await query.answer()
         await safe_reply(query.message, detail(m, sym, win), parse_mode="Markdown")
+        return
+    if action == "t":
+        # 按杠杆分档的明细。**不能复用 _get 的缓存**：那份是按图上的
+        # 5/10/25/50 算的，这里要的是 5/10/20——档位不同，整份数据都不同。
+        try:
+            oi, kl, last, _inst, _src, _days = await _fetch(sym, win)
+        except Exception as e:
+            await query.answer(f"取数失败：{str(e)[:60]}", show_alert=True)
+            return
+        await query.answer()
+        tm = build_map(oi, kl, last, levs=TIER_LEVS)
+        await safe_reply(query.message, tier_report(tm, sym, win, last),
+                         parse_mode="Markdown")
         return
     uid = query.from_user.id
     async with busy.guard(uid, "liqmap") as ok:

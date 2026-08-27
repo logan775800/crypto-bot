@@ -75,6 +75,12 @@ MOVED = {
 def test_every_moved_entry_is_still_reachable(gone, where):
     """合并 ≠ 藏起来。他否决过折叠，这条线不能越。"""
     assert gone not in HOME
+    if where == "cat_notify":
+        # 这一层的键盘抽成了 notify_kb（原来在 _dispatch 里手写），验真实按钮
+        cbs = [b.callback_data for row in menu.notify_kb(-100).inline_keyboard
+               for b in row]
+        assert gone in cbs, f"{gone} 在提醒与订阅面板里找不到了"
+        return
     src = inspect.getsource(menu._dispatch)
     # 合并面板是在 _dispatch 里手写的，验它确实把原入口列了出来
     seg = src.split(f'elif d == "{where}":')[1].split("elif d ==")[0]
@@ -114,9 +120,12 @@ def test_no_more_bucket_button():
 def test_merged_panels_all_have_a_way_back():
     """新面板忘了返回键的话，人就困在里面了。"""
     src = inspect.getsource(menu._dispatch)
-    for key in ("cat_market", "cat_venues", "cat_notify"):
+    for key in ("cat_market", "cat_venues"):
         seg = src.split(f'elif d == "{key}":')[1].split("elif d ==")[0]
         assert "_back()" in seg, f"{key} 面板没有返回键"
+    # cat_notify 的键盘抽成了 notify_kb，直接验真实按钮
+    cbs = [b.callback_data for row in menu.notify_kb(-100).inline_keyboard for b in row]
+    assert "menu_main" in cbs, "提醒与订阅面板没有返回键"
 
 
 # ── 告警入口不许再沉到第三层 ──────────────────────────────────
@@ -136,16 +145,15 @@ ALERT_ENTRIES = {
 def test_alert_entries_are_two_clicks_from_home(cb, name):
     """/menu → 🔔 提醒与订阅 → 它本身，两下点得到。"""
     assert "cat_notify" in HOME, "提醒与订阅不在首页了，下面这条就无从谈起"
-    src = inspect.getsource(menu._dispatch)
-    seg = src.split('elif d == "cat_notify":')[1].split("elif d ==")[0]
-    assert f'"{cb}"' in seg, f"{name} 又沉回第三层了（cat_notify 面板里没有它）"
+    cbs = [b.callback_data for row in menu.notify_kb(-100).inline_keyboard for b in row]
+    assert cb in cbs, f"{name} 又沉回第三层了（提醒与订阅面板里没有它）"
 
 
 def test_alert_entries_show_whether_you_are_subscribed():
     """设了看不见等于没设——这一层也要有 ✅/⬜，不能只在下级面板里有。"""
-    src = inspect.getsource(menu._dispatch)
-    seg = src.split('elif d == "cat_notify":')[1].split("elif d ==")[0]
-    assert "✅" in seg and "⬜" in seg
+    texts = "".join(b.text for row in menu.notify_kb(-100).inline_keyboard
+                    for b in row)
+    assert "✅" in texts or "⬜" in texts
 
 
 @pytest.mark.parametrize("cb", ["pump:panel", "ctr:panel"])
@@ -179,9 +187,8 @@ def test_market_alert_kinds_can_be_toggled_separately():
 def test_breakout_toggle_is_reachable_from_the_alert_panel():
     """`/breakout on|off` 一直存在，但开关只挂在破位结果卡自己的键盘上——
     没人会为了关一个告警先去跑一次扫描。"""
-    src = inspect.getsource(menu._dispatch)
-    seg = src.split('elif d == "cat_notify":')[1].split("elif d ==")[0]
-    assert "bo:" in seg, "箱体破位的开关还是找不到"
+    cbs = [b.callback_data for row in menu.notify_kb(-100).inline_keyboard for b in row]
+    assert any(c.startswith("bo:") for c in cbs), "箱体破位的开关还是找不到"
 
 
 def test_subscription_keyboard_has_exactly_one_definition():

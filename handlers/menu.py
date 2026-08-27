@@ -474,6 +474,44 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             raise
 
 
+NOTIFY_TEXT = (
+    "🔔 *提醒与订阅*\n\n"
+    "**提醒**是你盯某个条件（到价、波动、指标）；\n"
+    "**订阅**是我定期推给你（早报、新闻、异动）。\n"
+    "下面几个是最常用的，✅已订阅 ⬜未订阅："
+)
+
+
+def notify_kb(chat_id):
+    """提醒与订阅面板的键盘。**只此一份**（同 subs_kb 的理由）。
+
+    这些告警原来分别埋在「价格/条件提醒」和「定期订阅推送」里面，
+    从 /menu 数下去要点三下——规矩是超过两层就当成 bug 去修入口。
+    原来的位置一个都没删，这里只是把最常用的提上来。
+    """
+    from storage import data as _sd
+    from handlers import breakout as _bo, newtoken as _nt
+
+    pp = "✅" if str(chat_id) in (_sd.get("pump_watch") or {}) else "⬜"
+    _cw = _sd.get("contract_watch") or []
+    cp = "✅" if (chat_id in _cw or str(chat_id) in [str(x) for x in _cw]) else "⬜"
+    p3 = "✅" if str(chat_id) in (_sd.get("pump3") or {}) else "⬜"
+    bk_on = _bo.is_on(chat_id)
+    bk = "✅" if bk_on else "⬜"
+    nc = "✅" if _nt.is_on(chat_id) else "⬜"
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{pp} ⚡急涨急跌(15m,可调阈值)", callback_data="pump:panel")],
+        [InlineKeyboardButton(f"{cp} 📊合约异动(24h±20%起,带清算地图)",
+                              callback_data="ctr:panel")],
+        [InlineKeyboardButton(f"{p3} 🚨极端拉升(15m暴拉+多日已涨)", callback_data="p3:panel")],
+        [InlineKeyboardButton(f"{bk} 🚀箱体破位(5m,均线顺势)",
+                              callback_data=f"bo:{'off' if bk_on else 'on'}")],
+        [InlineKeyboardButton(f"{nc} 🌱链上新币(筛过安全检查)", callback_data="nt:toggle")],
+        [InlineKeyboardButton("🔔 价格/条件提醒", callback_data="cat_alert")],
+        [InlineKeyboardButton("📬 定期订阅推送", callback_data="cat_subs")],
+        _back()])
+
+
 def subs_kb(chat_id):
     """订阅面板的键盘。**只此一份。**
 
@@ -554,6 +592,25 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif d.startswith("bo:"):
         from handlers import breakout as _bo
         await _bo.on_button(query, context)
+
+    # ---- 链上新币上线告警 ----
+    elif d == "nt:toggle":
+        from handlers import newtoken as _nt
+        cid = query.message.chat_id
+        now_on = _nt.toggle(cid, not _nt.is_on(cid))
+        ml, mt = _nt.thresholds()
+        if now_on:
+            tip = (f"🌱 已订阅链上新币告警\n"
+                   f"门槛：流动性≥${ml:,}、1h成交≥{mt}笔\n"
+                   f"⚠️ 光 BSC 一小时就有 60 个新池，门槛低了会刷屏")
+        else:
+            tip = "🔕 已关闭链上新币告警"
+        try:
+            await query.answer(tip, show_alert=True)
+        except Exception:
+            pass
+        await safe_edit(query, NOTIFY_TEXT, reply_markup=notify_kb(cid),
+                        parse_mode="Markdown")
 
     # ---- 市场异动的两个子类分别开关（新币 / 放量）----
     elif d.startswith("mk:"):
@@ -841,37 +898,9 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 _back()]), parse_mode="Markdown")
 
     elif d == "cat_notify":
-        # 三个告警直接摆在这一层。它们原来分别埋在「价格/条件提醒」和
-        # 「定期订阅推送」里面，从 /menu 数下去要点**三下**——而规矩是
-        # 超过两层就当成 bug 去修入口，别在说明里绕。
-        # 原来的位置一个都没删（那两个面板里照样点得到），这里只是把最常用的提上来。
-        from storage import data as _sd
-        _cid = query.message.chat_id
-        _pp = "✅" if str(_cid) in (_sd.get("pump_watch") or {}) else "⬜"
-        _cw = _sd.get("contract_watch") or []
-        _cp = "✅" if (_cid in _cw or str(_cid) in [str(s) for s in _cw]) else "⬜"
-        _p3 = "✅" if str(_cid) in (_sd.get("pump3") or {}) else "⬜"
-        # 箱体破位：开关一直存在（/breakout on|off），但只挂在破位结果卡自己的
-        # 键盘上——没人会为了关一个告警先去跑一次扫描。放到这一层来。
-        from handlers import breakout as _bo
-        _bk = "✅" if _bo.is_on(_cid) else "⬜"
-        await safe_edit(query,
-            "🔔 *提醒与订阅*\n\n"
-            "**提醒**是你盯某个条件（到价、波动、指标）；\n"
-            "**订阅**是我定期推给你（早报、新闻、异动）。\n"
-            "下面三个是最常用的，✅已订阅 ⬜未订阅：",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton(f"{_pp} ⚡急涨急跌(15m,可调阈值)",
-                                      callback_data="pump:panel")],
-                [InlineKeyboardButton(f"{_cp} 📊合约异动(24h±20%起,带清算地图)",
-                                      callback_data="ctr:panel")],
-                [InlineKeyboardButton(f"{_p3} 🚨极端拉升(15m暴拉+多日已涨)",
-                                      callback_data="p3:panel")],
-                [InlineKeyboardButton(f"{_bk} 🚀箱体破位(5m,均线顺势)",
-                                      callback_data=f"bo:{'off' if _bo.is_on(_cid) else 'on'}")],
-                [InlineKeyboardButton("🔔 价格/条件提醒", callback_data="cat_alert")],
-                [InlineKeyboardButton("📬 定期订阅推送", callback_data="cat_subs")],
-                _back()]), parse_mode="Markdown")
+        await safe_edit(query, NOTIFY_TEXT,
+                        reply_markup=notify_kb(query.message.chat_id),
+                        parse_mode="Markdown")
 
     elif d == "cat_price":
         kb = InlineKeyboardMarkup([

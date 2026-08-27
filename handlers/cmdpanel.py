@@ -96,6 +96,7 @@ MODULE_CN = {
     "handlers.deploy": "🩺 诊断与维护",
     "handlers.menu": "🧭 菜单与帮助",
     "handlers.welcome": "🧭 菜单与帮助",
+    "handlers.newtoken": "🔔 预警与监控",   # /newtoken 链上新币上线
     "handlers.howto": "🧭 菜单与帮助",   # /howto 使用指南
     "handlers.checklist": "🧭 菜单与帮助",
     "handlers.chat": "💬 AI 助手",

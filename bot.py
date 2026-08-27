@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch, newtoken
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -450,6 +450,8 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     # 使用指南：群里发一下大家都看得到（/help 是全部命令清单，这条是怎么上手）
     app.add_handler(CommandHandler("howto", howto.howto))
+    app.add_handler(CommandHandler("newtoken", newtoken.newtoken_cmd))
+    app.add_handler(CommandHandler("newcoin", newtoken.newtoken_cmd))  # 好记的别名
     app.add_handler(CommandHandler("pinhowto", howto.pin_cmd))   # 管理员在群里刷新置顶
     # 频道搬运（管理员）：把订阅的频道新帖转到群里
     app.add_handler(CommandHandler("relay", relay.relay_cmd))
@@ -722,6 +724,10 @@ def main():
     # LP 撤出告警：跑路是几分钟内发生的事，但 DexScreener 的流动性本身几分钟才更新一次，
     # 5 分钟一轮既跟得上又不至于把接口打爆。
     jq.run_repeating(monitor.tracked(rugwatch.check_rugs, "LP撤出告警", 300), interval=300, first=90)   # LP撤出告警，每5分钟
+    # 链上新币：10 分钟一轮。更勤没意义——过闸要求 1h 成交量，
+    # 而且每轮要为过了前两层的池子各打一次安全检查，太勤会被限频。
+    jq.run_repeating(monitor.tracked(newtoken.scan, "链上新币", 600),
+                     interval=600, first=200)  # 链上新币上线告警
     jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
     jq.run_repeating(monitor.tracked(rtrade.check_liq_alerts, "实盘爆仓预警", 60), interval=60, first=55)  # 实盘爆仓临近预警，每60秒
     jq.run_repeating(monitor.tracked(riskguard.check_risk, "风险守护", 60), interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒

@@ -241,16 +241,38 @@ def format_alert(a, chain_cn, warn):
 
 
 async def scan(context: ContextTypes.DEFAULT_TYPE):
-    """后台任务：扫各链新池，过闸的推给订阅者。"""
+    """后台任务：扫各链新池，过闸的推给订阅者。
+
+    两套订阅并行：
+      · 普通（`on`）——高门槛，主流新币
+      · 热点（`hot`）——中文梗币，门槛低得多，见 `is_hot_name` 那段的实测
+    """
     chats = subs()
-    if not chats:
+    hot_chats = [c for c in _cfg().get("hot") or []]
+    if not chats and not hot_chats:
         return
     import httpx
     min_liq, min_txns = thresholds()
-    hits = []
+    hits, hot_hits = [], []
     async with httpx.AsyncClient(timeout=20) as c:
         for net, (cn, sec_key) in CHAINS.items():
-            for a in await fetch_new_pools(net, client=c):
+            pools = await fetch_new_pools(net, client=c)
+            # 热点模式：中文名 + 低门槛。**先挑再查安全**——
+            # 安全检查一次一个接口调用，对着 60 个池子挨个查会被限频。
+            if hot_chats:
+                for a in pools:
+                    addr = a.get("pool_address") or ""
+                    if not addr or not _fresh(addr) or not is_hot_name(a):
+                        continue
+                    ok, _w = passes(a, HOT_MIN_LIQ, HOT_MIN_TXNS)
+                    if not ok:
+                        continue
+                    good, warn = await safety(sec_key, base_token_address(a))
+                    _mark(addr)
+                    if good:
+                        n_same, rank = rank_same_name(pools, a)
+                        hot_hits.append((a, cn, warn, n_same, rank))
+            for a in (pools if chats else []):
                 addr = a.get("pool_address") or ""
                 if not addr or not _fresh(addr):
                     continue
@@ -261,15 +283,33 @@ async def scan(context: ContextTypes.DEFAULT_TYPE):
                 _mark(addr)          # 查过就记账，免得下轮又花一次安全检查
                 if good:
                     hits.append((a, cn, warn))
-    if hits:
+    if hits or hot_hits:
         save_data()
-    for a, cn, warn in hits[:5]:     # 一轮最多 5 条，再多就是刷屏
-        text = format_alert(a, cn, warn)
-        for cid in chats:
+
+    async def _push(targets, text):
+        for cid in targets:
             try:
                 await context.bot.send_message(int(cid), text, parse_mode="Markdown")
             except Exception as e:
                 log.warning(f"[newtoken] 推送失败 {cid}: {e}")
+
+    for a, cn, warn in hits[:5]:     # 一轮最多 5 条，再多就是刷屏
+        await _push(chats, format_alert(a, cn, warn))
+    # 热点这一路更容易扎堆（同一个梗好几个合约），封得更紧一点。
+    # 同名的只推流动性最大的那个——其余是跟风盘，推出来只会稀释注意力。
+    # 同名扎堆时按「有几个在抄」排序：抄的人越多说明这个梗越热，先推那个。
+    seen_names = set()
+    sent = 0
+    for a, cn, warn, n_same, rank in sorted(hot_hits, key=lambda x: -x[3]):
+        nm = base_name(a)
+        if nm in seen_names or rank != 1:
+            continue
+        seen_names.add(nm)
+        await _push([str(x) for x in hot_chats],
+                    format_hot(a, cn, warn, n_same, rank))
+        sent += 1
+        if sent >= 4:
+            break
 
 
 # ── 命令 ────────────────────────────────────────────────────
@@ -292,7 +332,27 @@ async def newtoken_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     if args and args[0] in ("off", "关", "退订"):
         toggle(chat_id, False)
-        await safe_reply(update.message, "🔕 已关闭链上新币告警")
+        toggle_hot(chat_id, False)
+        await safe_reply(update.message, "🔕 已关闭链上新币告警（含热点模式）")
+        return
+    if args and args[0] in ("hot", "热点", "梗币"):
+        on = not hot_enabled(chat_id)
+        toggle_hot(chat_id, on)
+        if not on:
+            await safe_reply(update.message, "🔕 已关闭中文热点新币")
+            return
+        await safe_reply(update.message,
+            f"🔥 已开启**中文热点新币**\n\n"
+            f"抓的是「我的女友景甜」「牛来」这一类——名字带中文的梗币。\n"
+            f"实测 BSC 新池里这类占 **20%**，而它们的流动性通常只有 "
+            f"**几千到两万美元**，所以普通模式（门槛 5 万）会把它们全筛掉。\n\n"
+            f"这一路的门槛：流动性 ≥ ${HOT_MIN_LIQ:,}、1h 成交 ≥ {HOT_MIN_TXNS} 笔、"
+            f"过安全检查。\n"
+            f"同名合约只推**流动性最大的那个**，并告诉你一共有几个在抄。\n\n"
+            f"⚠️ 门槛压这么低意味着盘子极浅、随时归零。"
+            f"而且我**不判断有没有潜力**——那不是数据能给的，"
+            f"这里给的是「有人在真交易、且不是蜜罐」。",
+            parse_mode="Markdown")
         return
     if len(args) >= 2 and args[0] in ("liq", "流动性"):
         try:
@@ -338,3 +398,107 @@ async def newtoken_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"`/newtoken on` 开　`/newtoken off` 关\n"
         f"`/newtoken liq 20000` 调流动性门槛　`/newtoken txns 50` 调笔数门槛",
         parse_mode="Markdown")
+
+
+# ── 热点模式：中文梗币这一类 ──────────────────────────────────
+# 他要的是「我的女友景甜」「牛来」这种——**默认门槛会把它们全筛掉**。
+# 实测（2026-08-27，BSC 100 个新池）：
+#   · 名字带中文的 20 个（20%）——他举的两个例子都在里面
+#   · 这类的流动性在 **$3k~$20k**，远低于默认的 5 万
+#   · 「我的女友景甜」同一时刻有 **4 个不同合约**，税率从 0.25% 到 4.82% 不等
+#   · 其中两个**流动性只有 $12 却有 60 笔成交** —— 典型假盘
+#
+# 所以热点模式换一套判据：门槛压到几千，但要求
+#   ① 名字带中文（这一类的共同特征）
+#   ② 有人在真交易
+#   ③ 过安全检查（这条不放松，越是热点越多人抄）
+#   ④ **报出同名撞车数**——同一个梗有几个合约在跑本身就是热度指标，
+#      同时也提醒他大部分是跟风盘
+import re as _re
+
+CJK = _re.compile(r"[\u4e00-\u9fff]")
+HOT_MIN_LIQ = 3_000     # 再低就是那种「$12 流动性 60 笔成交」的假盘
+HOT_MIN_TXNS = 20
+
+
+def is_hot_name(a):
+    """名字带中文 = 中文社区的梗币。他要的就是这一类。
+
+    **刻意用「带中文」而不是「像 meme」**：后者没法用数据判，
+    前者是这批币真实、稳定的共同特征，而且他自己举的两个例子都命中。
+    """
+    return bool(CJK.search(str(a.get("name") or "")))
+
+
+def base_name(a):
+    """`我的女友景甜 / USDT 0.25%` → `我的女友景甜`。同名撞车靠它归组。"""
+    return str(a.get("name") or "").split("/")[0].strip()
+
+
+def hot_enabled(chat_id):
+    c = _cfg()
+    return str(chat_id) in [str(x) for x in (c.get("hot") or [])]
+
+
+def toggle_hot(chat_id, on):
+    c = _cfg()
+    lst = [str(x) for x in (c.get("hot") or [])]
+    key = str(chat_id)
+    if on and key not in lst:
+        lst.append(key)
+    if not on:
+        lst = [x for x in lst if x != key]
+    c["hot"] = lst
+    save_data()
+    return on
+
+
+def rank_same_name(pools, a):
+    """这个梗一共几个合约在跑，以及**这个是不是流动性最大的那个**。
+
+    同名多个 = 梗正在热（有人在抄），但也意味着大部分是跟风盘。
+    只报数量不说排名等于把最关键的那句省掉——他需要知道
+    自己看到的是"原盘"还是"第 3 个抄的"。
+    """
+    name = base_name(a)
+    same = [p for p in pools if base_name(p) == name]
+    def _liq(p):
+        try:
+            return float(p.get("reserve_in_usd") or 0)
+        except (TypeError, ValueError):
+            return 0.0
+    ordered = sorted(same, key=_liq, reverse=True)
+    rank = 1
+    for i, p in enumerate(ordered, 1):
+        if p.get("pool_address") == a.get("pool_address"):
+            rank = i
+            break
+    return len(same), rank
+
+
+def format_hot(a, chain_cn, warn, n_same, rank):
+    liq = float(a.get("reserve_in_usd") or 0)
+    age = _age_hours(a) or 0
+    n = _txns_1h(a)
+    t = (a.get("transactions") or {}).get("h1") or {}
+    addr = base_token_address(a)
+    lines = [f"🔥 *中文热点新币* · {chain_cn}",
+             f"*{base_name(a)}*", ""]
+    if n_same > 1:
+        who = "**流动性最大的那个**" if rank == 1 else f"流动性排第 {rank}"
+        lines.append(f"⚡ 同名合约有 **{n_same} 个**在跑——这个梗正在热。"
+                     f"这条是{who}")
+        lines.append("　（同名多个 = 有人在抄，大部分是跟风盘，认准合约地址）")
+    lines += [
+        f"池子建了 {age * 60:.0f} 分钟　流动性 ${liq:,.0f}",
+        f"1h 成交 {n} 笔（买 {t.get('buys', 0)} / 卖 {t.get('sells', 0)}）",
+    ]
+    if warn:
+        lines.append(f"⚠️ {warn}")
+    if addr:
+        lines += ["", f"合约 `{addr}`", f"查它：`/oc {addr}`"]
+    lines += ["",
+              "⚠️ 这类币是**彩票**：门槛压到几千美元流动性才抓得到，"
+              "意味着盘子极浅、随时归零。只筛掉了蜜罐和假盘，"
+              "**没有任何「有潜力」的判断**——那不是数据能给的。"]
+    return "\n".join(lines)

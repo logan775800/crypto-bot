@@ -259,13 +259,19 @@ async def scan(context: ContextTypes.DEFAULT_TYPE):
             pools = await fetch_new_pools(net, client=c)
             # 热点模式：中文名 + 低门槛。**先挑再查安全**——
             # 安全检查一次一个接口调用，对着 60 个池子挨个查会被限频。
-            if hot_chats:
+            if hot_chats and hot_quota_left() > 0:
+                _lv, _liq, _tx, _same = hot_level()
                 for a in pools:
                     addr = a.get("pool_address") or ""
                     if not addr or not _fresh(addr) or not is_hot_name(a):
                         continue
-                    ok, _w = passes(a, HOT_MIN_LIQ, HOT_MIN_TXNS)
+                    ok, _w = passes(a, _liq, _tx)
                     if not ok:
+                        continue
+                    # 同名下限：抄袭要花钱建池子，有人愿意抄说明梗真在被讨论。
+                    # 这一条比流动性更接近"有热度"，也是他嫌吵之后最有效的那道闸。
+                    n_same_pre, _rk = rank_same_name(pools, a)
+                    if n_same_pre < _same:
                         continue
                     good, warn = await safety(sec_key, base_token_address(a))
                     _mark(addr)
@@ -299,17 +305,16 @@ async def scan(context: ContextTypes.DEFAULT_TYPE):
     # 同名的只推流动性最大的那个——其余是跟风盘，推出来只会稀释注意力。
     # 同名扎堆时按「有几个在抄」排序：抄的人越多说明这个梗越热，先推那个。
     seen_names = set()
-    sent = 0
     for a, cn, warn, n_same, rank in sorted(hot_hits, key=lambda x: -x[3]):
+        if hot_quota_left() <= 0:
+            break                    # 这一小时的配额用完了，剩下的下小时再说
         nm = base_name(a)
         if nm in seen_names or rank != 1:
             continue
         seen_names.add(nm)
         await _push([str(x) for x in hot_chats],
                     format_hot(a, cn, warn, n_same, rank))
-        sent += 1
-        if sent >= 4:
-            break
+        _hot_used(1)
 
 
 # ── 命令 ────────────────────────────────────────────────────
@@ -336,51 +341,42 @@ async def newtoken_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_reply(update.message, "🔕 已关闭链上新币告警（含热点模式）")
         return
     if args and args[0] in ("hot", "热点", "梗币"):
+        # /newtoken hot 宽|标准|严 —— 直接换档；不带参数才是开关
+        if len(args) >= 2:
+            got = set_hot_level(context.args[1].strip())
+            if not got:
+                await safe_reply(update.message,
+                                 "档位只有：" + "、".join(HOT_LEVELS) + "\n"
+                                 "例：`/newtoken hot 严`", parse_mode="Markdown")
+                return
+            lv, liq, tx, same = got
+            same_txt = f"　且**同名至少 {same} 个**在跑" if same > 1 else ""
+            await safe_reply(update.message,
+                f"🔥 已切到**{lv}**档\n"
+                f"流动性 ≥ ${liq:,}　1h 成交 ≥ {tx} 笔{same_txt}\n"
+                f"实测频率：宽 6 条/小时、标准 3 条/小时、严 1 条/小时\n"
+                f"另有兜底闸：每小时最多 {HOT_PER_HOUR} 条",
+                parse_mode="Markdown")
+            return
         on = not hot_enabled(chat_id)
         toggle_hot(chat_id, on)
         if not on:
             await safe_reply(update.message, "🔕 已关闭中文热点新币")
             return
+        lv, liq, tx, same = hot_level()
+        same_txt = f"、**同名至少 {same} 个在跑**" if same > 1 else ""
         await safe_reply(update.message,
-            f"🔥 已开启**中文热点新币**\n\n"
+            f"🔥 已开启**中文热点新币**（{lv}档）\n\n"
             f"抓的是「我的女友景甜」「牛来」这一类——名字带中文的梗币。\n"
-            f"实测 BSC 新池里这类占 **20%**，而它们的流动性通常只有 "
-            f"**几千到两万美元**，所以普通模式（门槛 5 万）会把它们全筛掉。\n\n"
-            f"这一路的门槛：流动性 ≥ ${HOT_MIN_LIQ:,}、1h 成交 ≥ {HOT_MIN_TXNS} 笔、"
-            f"过安全检查。\n"
-            f"同名合约只推**流动性最大的那个**，并告诉你一共有几个在抄。\n\n"
-            f"⚠️ 门槛压这么低意味着盘子极浅、随时归零。"
-            f"而且我**不判断有没有潜力**——那不是数据能给的，"
-            f"这里给的是「有人在真交易、且不是蜜罐」。",
+            f"这类的流动性通常只有几千到两万美元，普通模式（门槛 5 万）会全筛掉。\n\n"
+            f"当前门槛：流动性 ≥ ${liq:,}、1h 成交 ≥ {tx} 笔{same_txt}、过安全检查\n"
+            f"每小时最多 {HOT_PER_HOUR} 条。\n\n"
+            f"嫌吵：`/newtoken hot 严`（约 1 条/小时）\n"
+            f"嫌少：`/newtoken hot 宽`（约 6 条/小时）\n"
+            f"关掉：`/newtoken off`\n\n"
+            f"⚠️ 我**不判断有没有潜力**——那不是数据能给的。"
+            f"这里给的是「有人在真交易、有人在抄这个梗、且不是蜜罐」。",
             parse_mode="Markdown")
-        return
-    if len(args) >= 2 and args[0] in ("liq", "流动性"):
-        try:
-            v = int(float(args[1]))
-        except ValueError:
-            await safe_reply(update.message, "要个数字，例：`/newtoken liq 20000`",
-                             parse_mode="Markdown")
-            return
-        if not is_admin(update.effective_user.id):
-            await safe_reply(update.message, "只有管理员能改门槛")
-            return
-        a, b = set_threshold(min_liq=max(1000, v))
-        await safe_reply(update.message,
-                         f"门槛已改：流动性 ≥ ${a:,}　1h 成交 ≥ {b} 笔")
-        return
-    if len(args) >= 2 and args[0] in ("txns", "笔数"):
-        if not is_admin(update.effective_user.id):
-            await safe_reply(update.message, "只有管理员能改门槛")
-            return
-        try:
-            v = int(args[1])
-        except ValueError:
-            await safe_reply(update.message, "要个数字，例：`/newtoken txns 50`",
-                             parse_mode="Markdown")
-            return
-        a, b = set_threshold(min_txns=max(0, v))
-        await safe_reply(update.message,
-                         f"门槛已改：流动性 ≥ ${a:,}　1h 成交 ≥ {b} 笔")
         return
 
     state = "✅ 已订阅" if is_on(chat_id) else "⬜ 未订阅"
@@ -417,8 +413,64 @@ async def newtoken_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 import re as _re
 
 CJK = _re.compile(r"[\u4e00-\u9fff]")
-HOT_MIN_LIQ = 3_000     # 再低就是那种「$12 流动性 60 笔成交」的假盘
-HOT_MIN_TXNS = 20
+# ── 松紧三档（2026-08-27 他反馈「链上告警多了」之后加的）──────
+# 实测一小时 120 个新池、26 个中文名，各档去重后剩多少：
+#     宽    3千/20笔          → 6 条/小时   ← 原来的默认，他嫌吵
+#     标准  8千/40笔+同名≥2   → 3 条/小时   ← 新默认
+#     严    1.5万/40笔+同名≥2 → 1 条/小时
+#
+# **第三个参数（同名≥N）是这里最有价值的闸**：抄袭要花钱建池子，
+# 有人愿意抄这个名字，说明梗真的在被讨论——比流动性更接近"有热度"。
+# 而且它和流动性正交：一个 5 千流动性但被抄了 4 次的梗，
+# 比一个 3 万流动性、没人理的币更值得看一眼。
+HOT_LEVELS = {
+    "宽": (3_000, 20, 1),
+    "标准": (8_000, 40, 2),
+    "严": (15_000, 40, 2),
+}
+HOT_DEFAULT_LEVEL = "标准"
+HOT_PER_HOUR = 4        # 每小时最多推几条。**兜底闸**：判据再准也不能刷屏
+HOT_MIN_LIQ, HOT_MIN_TXNS, HOT_MIN_SAME = HOT_LEVELS[HOT_DEFAULT_LEVEL]
+
+
+def hot_level():
+    """当前松紧档。返回 (档名, 流动性, 笔数, 同名下限)。"""
+    name = _cfg().get("hot_level") or HOT_DEFAULT_LEVEL
+    if name not in HOT_LEVELS:
+        name = HOT_DEFAULT_LEVEL
+    return (name,) + HOT_LEVELS[name]
+
+
+def set_hot_level(name):
+    if name not in HOT_LEVELS:
+        return None
+    _cfg()["hot_level"] = name
+    save_data()
+    return hot_level()
+
+
+def _roll_hour():
+    """跨小时就把计数清零。**记数和查配额都要先走这一步**——
+    只在查配额时清零的话，先记数再查会把刚记的那笔一起抹掉
+    （测试当场抓到的：_hot_used 之后 quota 又变回满格）。"""
+    c = _cfg()
+    bucket = int(time.time() // 3600)
+    if c.get("hot_hour") != bucket:
+        c["hot_hour"] = bucket
+        c["hot_sent"] = 0
+    return c
+
+
+def hot_quota_left():
+    """这一小时还能推几条。**兜底闸**：阈值调错、或某个梗突然被抄十几次时，
+    不至于把群刷爆。"""
+    c = _roll_hour()
+    return max(0, HOT_PER_HOUR - int(c.get("hot_sent") or 0))
+
+
+def _hot_used(n=1):
+    c = _roll_hour()
+    c["hot_sent"] = int(c.get("hot_sent") or 0) + n
 
 
 def is_hot_name(a):

@@ -216,10 +216,52 @@ def test_chinese_names_are_the_signal():
 
 def test_hot_threshold_is_far_below_the_normal_one():
     """**这就是他问这个问题的原因。**
-    实测这类币流动性只有 $3k~$20k，默认门槛 5 万会把它们全筛掉。"""
-    assert N.HOT_MIN_LIQ < N.MIN_LIQ / 5
-    assert N.passes(_hot(liq=5000), N.HOT_MIN_LIQ, N.HOT_MIN_TXNS)[0] is True
-    assert N.passes(_hot(liq=5000), N.MIN_LIQ, N.MIN_TXNS)[0] is False
+    实测这类币流动性只有 $3k~$20k，普通门槛 5 万会把它们全筛掉。"""
+    for lv, (liq, _tx, _same) in N.HOT_LEVELS.items():
+        assert liq < N.MIN_LIQ, f"{lv} 档门槛不该比普通模式还高"
+    liq, tx, _same = N.HOT_LEVELS["宽"]
+    assert N.passes(_hot(liq=5000, buys=30, sells=20), liq, tx)[0] is True
+    assert N.passes(_hot(liq=5000, buys=30, sells=20), N.MIN_LIQ, N.MIN_TXNS)[0] is False
+
+
+def test_three_levels_are_monotonic():
+    """宽→标准→严，门槛必须一路收紧。写反了他调档会得到相反的效果。"""
+    order = ["宽", "标准", "严"]
+    liqs = [N.HOT_LEVELS[k][0] for k in order]
+    assert liqs == sorted(liqs), "流动性门槛没有递增"
+    sames = [N.HOT_LEVELS[k][2] for k in order]
+    assert sames == sorted(sames), "同名下限没有递增"
+
+
+def test_default_level_is_not_the_loudest():
+    """他反馈「链上告警多了」之后，默认从最宽那档挪走了。"""
+    assert N.HOT_DEFAULT_LEVEL != "宽"
+    assert N.hot_level()[0] == N.HOT_DEFAULT_LEVEL
+
+
+def test_same_name_gate_is_the_real_filter():
+    """**抄袭要花钱建池子**，有人愿意抄说明梗真在被讨论——
+    这条比流动性更接近"有热度"，也是他嫌吵之后最有效的那道闸。"""
+    import inspect
+    src = inspect.getsource(N.scan)
+    assert "n_same_pre < _same" in src, "同名下限没接进扫描，调档不会生效"
+
+
+def test_hourly_quota_caps_the_worst_case():
+    """兜底闸：阈值调错、或某个梗突然被抄十几次时，不至于把群刷爆。"""
+    assert N.hot_quota_left() == N.HOT_PER_HOUR
+    N._hot_used(N.HOT_PER_HOUR)
+    assert N.hot_quota_left() == 0
+    import inspect
+    assert "hot_quota_left() <= 0" in inspect.getsource(N.scan)
+
+
+def test_quota_resets_each_hour():
+    import storage
+    N._hot_used(N.HOT_PER_HOUR)
+    assert N.hot_quota_left() == 0
+    storage.data["newtoken"]["hot_hour"] = 0      # 假装到了下一小时
+    assert N.hot_quota_left() == N.HOT_PER_HOUR
 
 
 def test_fake_pools_are_still_filtered():

@@ -283,10 +283,15 @@ def test_command_is_registered():
 
 # ── 口径文案 ────────────────────────────────────────────────
 def test_detail_states_coverage_and_the_measured_basis():
-    """口径写脸上：门槛哪来的、哪家有哪家没有。
-    不写的话，下一个人（包括我）会以为 10% 是拍脑袋定的。"""
+    """口径写脸上：门槛哪来的、哪家有哪家没有、退回备用源时缺什么。
+
+    这条原来断言的是「大户持仓比只有币安有」。接了 Gate 之后那句话
+    不再成立，测试当场红了——**它锁的是一句会过期的事实声明，这次
+    它红得对**：口径页里留着一句已经不对的话，比没写还糟。
+    """
     t = P.detail_text("BTC")
-    assert "只有币安" in t
+    assert "Gate" in t and "币安" in t
+    assert "退回币安" in t, "没写清退回备用源时缺哪两样"
     assert "10%" in t
     assert "基线" in t
 

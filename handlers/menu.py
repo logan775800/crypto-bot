@@ -1952,10 +1952,17 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                            force=(bits[1] == "r"), detail=(bits[1] == "i"))
 
     elif d.startswith("pf:"):
-        # 持仓结构：pf:<r|i>:<币>　r=拉一次 i=看口径
+        # 持仓结构：pf:<r|i|h小时数>:<币>　r=拉一次 i=看口径 h13=换成 13 小时窗口
         from handlers import posflow as _pf
         bits = d.split(":")
-        await _pf.from_btn(query, context, bits[2], detail=(bits[1] == "i"))
+        act = bits[1]
+        hrs = _pf.DEFAULT_HOURS
+        if act.startswith("h"):
+            try:
+                hrs = int(act[1:])
+            except ValueError:
+                pass
+        await _pf.from_btn(query, context, bits[2], detail=(act == "i"), hours=hrs)
 
     elif d.startswith("dr:"):
         # 多日涨跌榜：dr:<w|r|i>:<天数>:<交易所>:<市场>:<hot|full>

@@ -75,6 +75,101 @@ from handlers.precheck import funding_apr, FUNDING_COSTLY_APR      # noqa: E402
 
 DEFAULT_HOURS = 24
 
+# ── Gate contract_stats：一个接口给六样，而且比币安覆盖广 ──────
+#
+# 发现经过：他贴了一份 BTR 的 13 小时分析（爆仓量、账户数原值、大户比稳定性），
+# 我照着去核数，发现每个数字都能在 Gate 的 `contract_stats` 里对上
+# —— `lsr_account` 0.3151、`top_lsr_size` 1.3225，和截图一字不差。
+#
+# 实测对比（2026-08-28）：
+#
+#                     Gate            币安
+#     USDT 永续       942（独占 300）  703（独占 61）
+#     爆仓金额分多空   ✅ 逐小时        ❌ allForceOrders 已 404
+#     账户数**原值**   ✅ 837→680      ❌ 只给占比，比值反推不出人数
+#     大户持仓比       ✅              ✅
+#     历史深度         1h × 2000 根    30 天
+#
+# 所以 Gate 有就走 Gate，没有才退回币安。**这不是"换个源"，是多了两类数据**：
+# 爆仓量和账户数原值——而"轧空引擎已经熄火"这种结论只能从爆仓量的
+# 两段对比里得出，任何单点快照都给不出来。
+GATE = "https://api.gateio.ws/api/v4"
+GATE_MAX_BARS = 2000       # 1h 粒度能拉 83 天
+
+# OI 在窗口里的振幅低于这个数，且涨跌次数接近对半 → 判"横盘，没有一方在净建仓"。
+# 10% 这条来自之前量过的基线：平静的大盘币 24 小时 |ΔOI| 中位数 6.6%、75 分位 9.4%。
+FLAT_AMP = 10.0
+
+
+async def _gate_stats(client, sym, bars):
+    """Gate 的逐小时合约统计。→ list（旧→新）或 []。"""
+    r = await client.get(f"{GATE}/futures/usdt/contract_stats",
+                         params={"contract": f"{sym}_USDT", "interval": "1h",
+                                 "limit": min(bars, GATE_MAX_BARS)})
+    if r.status_code != 200:
+        return []
+    d = r.json()
+    return d if isinstance(d, list) else []
+
+
+def _f(x, d=0.0):
+    try:
+        return float(x)
+    except (TypeError, ValueError):
+        return d
+
+
+def seg_stats(rows):
+    """一段时间里的持仓结构。rows 是连续的逐小时统计（旧→新）。
+
+    **爆仓量是"这段时间里实际被打掉了多少"，和持仓量是两回事**：
+    持仓量说的是现在还剩多少仓位，爆仓量说的是过程中烧掉了多少燃料。
+    两段爆仓量一比，才看得出"轧空引擎还着着没有"。
+    """
+    if not rows or len(rows) < 2:
+        return None
+    oi = [_f(x.get("open_interest")) for x in rows]
+    oi = [v for v in oi if v > 0]
+    if len(oi) < 2:
+        return None
+    up = sum(1 for a, b in zip(oi, oi[1:]) if b > a)
+    dn = sum(1 for a, b in zip(oi, oi[1:]) if b < a)
+    return {
+        "bars": len(rows),
+        "oi_first": oi[0], "oi_last": oi[-1],
+        "oi_pct": (oi[-1] - oi[0]) / oi[0] * 100,
+        "oi_usd": _f(rows[-1].get("open_interest_usd")),
+        "amp": (max(oi) / min(oi) - 1) * 100,
+        "up": up, "dn": dn,
+        "long_liq": sum(_f(x.get("long_liq_usd")) for x in rows),
+        "short_liq": sum(_f(x.get("short_liq_usd")) for x in rows),
+        "retail_first": _f(rows[0].get("lsr_account")),
+        "retail_last": _f(rows[-1].get("lsr_account")),
+        "top_first": _f(rows[0].get("top_lsr_size")),
+        "top_last": _f(rows[-1].get("top_lsr_size")),
+        "long_users_first": int(_f(rows[0].get("long_users"))),
+        "long_users_last": int(_f(rows[-1].get("long_users"))),
+        "short_users_first": int(_f(rows[0].get("short_users"))),
+        "short_users_last": int(_f(rows[-1].get("short_users"))),
+        "funding": _f(rows[-1].get("last_funding_rate")) * 100,
+    }
+
+
+def is_flat(s):
+    """这段是横盘还是趋势。
+
+    **只看首尾差会把横盘读成"没动"，把来回震荡读成"平静"**——
+    真正区分的是：振幅小 *且* 上升下降次数接近对半（= 没有一方在净建仓）。
+    他贴的那份分析第一条就是这个：13 小时 OI 振幅 5.7%、上升 6 次下降 7 次，
+    价格却振了 8.6% —— 价格在动而仓位没净变化，那就是横盘不是趋势。
+    """
+    if not s or s["bars"] < 4:
+        return False
+    n = s["up"] + s["dn"]
+    if n == 0:
+        return True
+    return s["amp"] < FLAT_AMP and abs(s["up"] - s["dn"]) <= max(1, n // 4)
+
 
 # ── 取数 ────────────────────────────────────────────────────
 async def _bn_series(client, ep, inst, limit):
@@ -347,6 +442,121 @@ def block(f, price_chg=None, compact=False):
            + "\n".join(ls)
 
 
+# ── 两段对比：这一段 vs 上一段同样长的时间 ────────────────────
+async def fetch_segments(symbol, hours=DEFAULT_HOURS, prev_mult=None):
+    """→ {"now": seg, "prev": seg, "hours":…, "prev_hours":…} 或 None。
+
+    **对比段默认取"到目前为止的整段行情"，不是等长**：他那份分析里
+    13 小时横盘的前面是 47 小时单边扩张，两段长度不一样但都是完整的一段。
+    等长对比会把 47 小时的单边硬切成 13 小时，"OI +450%"这个量级就没了。
+    prev_mult 给几就往前取几倍长度（默认 3 倍，够覆盖上一段行情）。
+    """
+    import httpx
+    sym = symbol.upper().replace("USDT", "")
+    hours = max(2, int(hours))
+    mult = prev_mult if prev_mult is not None else 3
+    want = hours * (1 + mult) + 1
+    async with httpx.AsyncClient(timeout=15) as c:
+        try:
+            rows = await _gate_stats(c, sym, want)
+        except Exception as e:
+            log.info(f"[posflow] {sym} Gate 统计取数失败: {e}")
+            return None
+    if len(rows) < hours + 2:
+        return None
+    cur = rows[-hours:]
+    prev = rows[:-hours][-hours * mult:]
+    return {"sym": sym, "hours": hours,
+            "prev_hours": len(prev),
+            "now": seg_stats(cur), "prev": seg_stats(prev),
+            "src": "Gate"}
+
+
+def squeeze_verdict(now, prev):
+    """轧空引擎还着着没有。**这条只能从两段爆仓量的对比里得出**。
+
+    他那份分析里最有分量的一句就是这个：13 小时总爆仓 多 $11.2k / 空 $12.0k，
+    而前 47 小时是 多 $264k / 空 $1.17M（爆空占 82%）—— 塌了两个数量级。
+    上方那批贴身的空头燃料昨天就烧完了，现在两边都没有可点的东西。
+
+    单看当前那一段是**看不出来的**：$12k 的爆空量本身既不高也不低，
+    只有和上一段一比才知道是"熄火"还是"从来就没着过"。
+    """
+    if not now or not prev:
+        return None
+    a = now["long_liq"] + now["short_liq"]
+    b = prev["long_liq"] + prev["short_liq"]
+    # 换算成每小时，两段长度不一样时才可比
+    ra = a / max(now["bars"], 1)
+    rb = b / max(prev["bars"], 1)
+    if rb <= 0:
+        return None
+    if b < 1000:
+        return None                    # 上一段本来就没什么爆仓，没有可比性
+    drop = ra / rb
+    if drop >= 0.5:
+        return None
+    # 上一段是靠爆空推的还是爆多砸的，决定了熄火意味着什么
+    side = ""
+    share = prev["short_liq"] / b * 100
+    if share >= 70:
+        side = f"（上一段 {share:.0f}% 是爆空，那波是轧空推上去的）"
+    elif share <= 30:
+        side = f"（上一段 {100 - share:.0f}% 是爆多，那波是多杀多砸下来的）"
+    # 这一段一笔爆仓都没有是**很常见的**（冷门币、纯横盘），而不是异常。
+    # 第一版直接算 1/drop，除零当场崩——测试抓到的。
+    how = "**一笔都没有了**" if a <= 0 else f"塌了 {1 / drop:.0f} 倍"
+    return (f"**爆仓引擎熄火了**{side}：这一段每小时爆仓 ${ra:,.0f}，"
+            f"上一段 ${rb:,.0f}，{how}。"
+            f"贴身的那批燃料已经烧完，现在两边都没有可点的东西")
+
+
+def who_left(s):
+    """账户数原值告诉你**是谁在离场**，比值告诉不了。
+
+    比值从 0.37 掉到 0.32 可能是多头跑了，也可能是空头进得更多——
+    两个原值一摆出来就没有歧义了。这是 Gate 有而币安没有的那一栏
+    （币安只给占比，反推不出人数）。
+    """
+    if not s:
+        return None
+    dl = s["long_users_last"] - s["long_users_first"]
+    ds = s["short_users_last"] - s["short_users_first"]
+    if abs(dl) < 5 and abs(ds) < 5:
+        return None
+    txt = (f"多头账户 {s['long_users_first']}→{s['long_users_last']}（{dl:+d}）　"
+           f"空头账户 {s['short_users_first']}→{s['short_users_last']}（{ds:+d}）")
+    if dl < 0 and ds < 0:
+        faster = "多头" if abs(dl) > abs(ds) else "空头"
+        txt += f"\n　└ 两边同时离场，{faster}跑得更快"
+    elif dl > 0 and ds < 0:
+        txt += "\n　└ 多头在进、空头在退"
+    elif dl < 0 and ds > 0:
+        txt += "\n　└ 多头在退、空头在进"
+    return txt
+
+
+def big_vs_small(s):
+    """大户比稳、散户比乱动 = 大钱没走，走的是小账户。
+
+    这是那份分析第 4 条的落点：账户多空比从 0.3705 掉到 0.3151（散户在跑），
+    但大户持仓量多空比稳在 1.32~1.38 没动 —— 结论是"大户资金没走"。
+    两个口径不同（金额 vs 人头），所以它们**可以同时成立且不矛盾**。
+    """
+    if not s or s["top_first"] <= 0 or s["retail_first"] <= 0:
+        return None
+    dt = abs(s["top_last"] - s["top_first"]) / s["top_first"] * 100
+    dr = abs(s["retail_last"] - s["retail_first"]) / s["retail_first"] * 100
+    if dt < 5 and dr >= MOVE:
+        return (f"大户持仓比稳在 {min(s['top_first'], s['top_last']):.2f}~"
+                f"{max(s['top_first'], s['top_last']):.2f} 没动，散户比却挪了 "
+                f"{dr:.0f}% → **大户资金没走，动的是小账户**")
+    if dt >= MOVE and dr < 5:
+        return (f"散户没怎么动，大户比挪了 {dt:.0f}% → 大钱在调仓，"
+                f"这一栏通常比散户那栏先动")
+    return None
+
+
 _cache = {}          # sym -> (ts, block)
 CACHE_TTL = 120
 
@@ -383,8 +593,16 @@ async def attach(symbol, price_chg, hours=DEFAULT_HOURS, compact=True):
 
 
 # ── 入口 ────────────────────────────────────────────────────
-def kb(sym):
+# 窗口必须能改。**固定 24 小时会把两段行情糊成一段**：他那份 BTR 分析里
+# 13 小时横盘的前面是 47 小时单边扩张，按 24 小时切的话两段各切一半，
+# 得出的是一个哪一段都不像的平均数。
+WINDOWS = (6, 13, 24, 48)
+
+
+def kb(sym, hours=DEFAULT_HOURS):
     return InlineKeyboardMarkup([
+        [InlineKeyboardButton(f"{'✅' if h == hours else ''}{h}h",
+                              callback_data=f"pf:h{h}:{sym}") for h in WINDOWS],
         [InlineKeyboardButton("💣 清算地图", callback_data=f"lq:w:{sym}:7日"),
          InlineKeyboardButton("🔄 刷新", callback_data=f"pf:r:{sym}")],
         [InlineKeyboardButton("ℹ️ 口径", callback_data=f"pf:i:{sym}"),
@@ -392,20 +610,101 @@ def kb(sym):
     ])
 
 
+def _liq_pair(s):
+    return f"多 ${s['long_liq']:,.0f} / 空 ${s['short_liq']:,.0f}"
+
+
+def gate_lines(g, chg=None):
+    """Gate 那套的正文。**结论在最上面，数字在下面**——
+    他定过的列表版式：结论一行，细节收在后面。"""
+    now, prev = g["now"], g["prev"]
+    h, ph = g["hours"], g["prev_hours"]
+    out = []
+
+    # ① 横盘还是趋势。这条要排第一：后面所有解读都建立在它上面
+    flat = is_flat(now)
+    if flat:
+        out.append(f"→ **这 {h} 小时是横盘，不是趋势**：持仓振幅只有 "
+                   f"{now['amp']:.1f}%，{h} 小时里上升 {now['up']} 次、"
+                   f"下降 {now['dn']} 次，几乎对半——**没有一方在净建仓**")
+        if prev and abs(prev["oi_pct"]) > 50:
+            out.append(f"　└ 而前 {ph} 小时持仓 {prev['oi_pct']:+.0f}%，"
+                       f"是完全不同的状态（那一段有人在单边扩张）")
+    else:
+        for v in verdict(chg, now["oi_pct"],
+                         _delta(now["top_first"], now["top_last"]),
+                         _delta(now["retail_first"], now["retail_last"])):
+            out.append(f"→ {v}")
+
+    # ② 爆仓引擎还着着没有。**只能靠两段对比**，单看这一段看不出来
+    sq = squeeze_verdict(now, prev)
+    if sq:
+        out.append(f"→ {sq}")
+
+    # ③ 大户 vs 散户：两个口径可以同时成立且不矛盾
+    bs = big_vs_small(now)
+    if bs:
+        out.append(f"→ {bs}")
+
+    out.append("")
+    out.append(f"持仓量 {_money(now['oi_usd'])} U（{h}h {now['oi_pct']:+.1f}%，"
+               f"振幅 {now['amp']:.1f}%，升 {now['up']} 次/降 {now['dn']} 次）")
+    out.append(f"爆仓　{_liq_pair(now)}")
+    if prev:
+        out.append(f"　└ 前 {ph} 小时是 {_liq_pair(prev)}")
+    out.append(f"大户持仓比 {now['top_last']:.2f}"
+               f"（{now['top_first']:.2f} → {now['top_last']:.2f}）")
+    out.append(f"人数多空比 {now['retail_last']:.4f}"
+               f"（{now['retail_first']:.4f} → {now['retail_last']:.4f}）")
+    wl = who_left(now)
+    if wl:
+        out.append(f"　{wl}")
+    if abs(now["funding"]) > 0.0001:
+        out.append(f"资金费率 {now['funding']:+.4f}%")
+    return out
+
+
+def _money(x):
+    from handlers.liqmap import _money as m
+    return m(x)
+
+
 async def build_text(sym, hours=DEFAULT_HOURS):
+    """Gate 有就走 Gate（多了爆仓量、账户数原值、两段对比三样），
+    没有才退回币安那套。"""
+    chg = None
+    try:
+        g = await fetch_segments(sym, hours)
+    except Exception as e:
+        log.info(f"[posflow] {sym} Gate 分段取数失败: {e}")
+        g = None
+    if g and g.get("now"):
+        try:
+            f = await fetch(sym, hours)
+            chg = (f or {}).get("chg")
+        except Exception as e:
+            log.info(f"[posflow] {sym} 涨跌幅取数失败: {e}")
+        head = f"📊 *{escape_md(sym)} 持仓结构*　近 {hours} 小时"
+        if chg is not None:
+            head += f"　价格 {chg:+.1f}%"
+        tail = (f"\n数据源 Gate（爆仓量和账户数只有它给逐小时的）"
+                f"｜对比段取前 {g['prev_hours']} 小时"
+                f"｜⚠️ 结构分析不构成投资建议")
+        return head + "\n\n" + "\n".join(gate_lines(g, chg)) + "\n" + tail
+
     f = await fetch(sym, hours)
     if not f:
         return (f"📊 *{escape_md(sym)} 持仓结构*\n\n"
-                f"币安和 Bybit 都没有 {escape_md(sym)} 的永续合约数据。\n"
-                f"大户持仓比**只有币安做**（Bybit / OKX 都不提供），"
-                f"所以币安没上的币这一段拿不到——不是出错。")
+                f"Gate、币安、Bybit 都没有 {escape_md(sym)} 的永续合约数据。\n"
+                f"三家的覆盖不一样（Gate 942 个、币安 703 个，各有独占），"
+                f"都没有就是真没有——不是出错。")
     chg = f.get("chg")
     head = f"📊 *{escape_md(sym)} 持仓结构*　近 {hours} 小时"
     if chg is not None:
         head += f"　价格 {chg:+.1f}%"
     body = lines(f, chg)
-    tail = ("\n变化门槛 10%（基线组日常就飘 6~7%，低于这个数是噪音）"
-            "｜大户比仅币安有｜⚠️ 结构分析不构成投资建议")
+    tail = ("\n数据源币安（Gate 没有这个币，所以**没有爆仓量和账户数原值**）"
+            "｜变化门槛 10%｜⚠️ 结构分析不构成投资建议")
     return head + "\n\n" + "\n".join(body) + "\n" + tail
 
 
@@ -456,53 +755,91 @@ def detail_text(sym):
         "占比最高，下方全是自己人的清算位，没有空头当垫背——",
         "一旦有人获利了结，接不住就变成多杀多。",
         "",
+        "*两段对比：为什么非有不可*",
+        "「爆仓引擎熄火了」这种结论**单看当前那一段是看不出来的**：",
+        "$12k 的爆空量本身既不高也不低，只有和上一段一比才知道是「熄火」",
+        "还是「从来就没着过」。所以每张卡都会把上一段行情摆出来。",
+        "",
+        "对比段**刻意不等长**（默认取前面 3 倍长度）：13 小时横盘的前面",
+        "可能是 47 小时单边扩张，等长切的话那 47 小时被砍成 13 小时，",
+        "「持仓 +450%」这个量级就没了。",
+        "",
+        "窗口用 `/pos BTR 13` 指定，或点卡片上的 6h/13h/24h/48h。",
+        "**固定 24 小时会把两段行情糊成一段**，得出一个哪段都不像的平均数。",
+        "",
+        "*横盘怎么判*",
+        "只看首尾差会把来回震荡读成「没动」。真正的判据是",
+        "**振幅小 且 涨跌次数接近对半**（= 没有一方在净建仓）。",
+        f"振幅门槛 {FLAT_AMP:g}%，来自实测基线：平静的大盘币 24 小时",
+        "|ΔOI| 中位数 6.6%、75 分位 9.4%。",
+        "",
         "*覆盖范围*",
-        "大户持仓比**只有币安提供**，Bybit / OKX 都没有这个接口。",
-        "人数比币安和 Bybit 都有，但两家统计的是各自的用户，数字对不上，",
-        "所以是二选一不是合并（同 /lsr 那条）。币安没有的币优先走 Bybit，",
+        "主源是 **Gate**（942 个 USDT 永续，比币安的 703 个多，各有独占）。",
+        "选它是因为它一个接口给六样，其中两样别家没有：",
+        "　· **爆仓金额分多空、逐小时** —— 币安的 allForceOrders 已经 404",
+        "　· **账户数原值**（837→680）—— 币安只给占比，反推不出人数",
+        "Gate 没有的币退回币安，那时**没有爆仓量和账户数**，卡片底部会写明。",
         "两家都没有就整段不出现——不编数据。",
         "",
         "⚠️ 结构分析不构成投资建议",
     ])
 
 
+def parse_hours(args):
+    """`/pos BTR 13` 的第二个参数。看不懂就退回默认，别报错。"""
+    for a in (args or [])[1:]:
+        try:
+            v = int(str(a).lower().rstrip("h小时"))
+        except (TypeError, ValueError):
+            continue
+        if 2 <= v <= 720:
+            return v
+    return DEFAULT_HOURS
+
+
 async def pos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/pos <币> —— 这波是谁推的：大户加仓还是散户接盘。"""
+    """/pos <币> [小时] —— 这波是谁推的：大户加仓还是散户接盘。"""
     if not context.args:
         await safe_reply(update.message,
-                         "用法：`/pos BTC`\n\n看这个币近 24 小时里大户仓位、"
-                         "散户人数比、持仓量各挪了多少，判「新资金进场」还是"
-                         "「轧空推的」。", parse_mode="Markdown")
+                         "用法：`/pos BTC`　或 `/pos BTR 13`（自己指定几小时）\n\n"
+                         "看这一段里持仓量、爆仓量、大户仓位、散户人数各挪了多少，"
+                         "判「新资金进场」「轧空推的」还是「横盘没人建仓」。\n"
+                         "**并且拿上一段行情做对比**——「爆仓引擎熄火了」这种话"
+                         "只能从两段一比里看出来。", parse_mode="Markdown")
         return
     sym = str(context.args[0]).upper().replace("USDT", "")
-    msg = await safe_reply(update.message, f"📊 拉 {sym} 的持仓结构…")
+    hours = parse_hours(context.args)
+    msg = await safe_reply(update.message, f"📊 拉 {sym} 近 {hours} 小时的持仓结构…")
     try:
-        text = await build_text(sym)
+        text = await build_text(sym, hours)
     except Exception as e:
         log.error(f"/pos {sym} 出错: {e}", exc_info=True)
         await safe_reply(update.message, f"取数失败，稍后再试：{str(e)[:80]}")
         return
     if msg:
         try:
-            await msg.edit_text(text, parse_mode="Markdown", reply_markup=kb(sym))
+            await msg.edit_text(text, parse_mode="Markdown",
+                                reply_markup=kb(sym, hours))
             return
         except Exception:
             pass
     await safe_reply(update.message, text, parse_mode="Markdown",
-                     reply_markup=kb(sym))
+                     reply_markup=kb(sym, hours))
 
 
-async def from_btn(query, context, sym, detail=False):
+async def from_btn(query, context, sym, detail=False, hours=DEFAULT_HOURS):
     if detail:
         await safe_edit(query, detail_text(sym), parse_mode="Markdown",
                         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
                             "⬅️ 回结构卡", callback_data=f"pf:r:{sym}")]]))
         return
-    await safe_edit(query, f"📊 拉 {sym} 的持仓结构…")
+    await safe_edit(query, f"📊 拉 {sym} 近 {hours} 小时的持仓结构…")
     try:
-        text = await build_text(sym)
+        text = await build_text(sym, hours)
     except Exception as e:
         log.error(f"持仓结构按钮出错 {sym}: {e}", exc_info=True)
-        await safe_edit(query, f"取数失败：{str(e)[:80]}", reply_markup=kb(sym))
+        await safe_edit(query, f"取数失败：{str(e)[:80]}",
+                        reply_markup=kb(sym, hours))
         return
-    await safe_edit(query, text, parse_mode="Markdown", reply_markup=kb(sym))
+    await safe_edit(query, text, parse_mode="Markdown",
+                    reply_markup=kb(sym, hours))

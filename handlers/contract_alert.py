@@ -200,10 +200,26 @@ async def push_to_subscribers(bot, alerts):
 # 所以规矩是：**一条告警只自动配一张图**（幅度最大那个），其余的给按钮。
 LIQMAP_MIN_MOVE = 25       # 幅度不到这个数就只给按钮，不值得为它画图
 LIQMAP_BUTTONS = 4         # 按钮最多给几个，多了一排挤不下
+# 图片说明的硬上限是 1024 字（正文是 4096，别记混）。超一个字整张图就发不出去，
+# 而配图失败是静默跳过的 → 表现成"告警突然不带图了"，正是上次那个坑。
+CAPTION_MAX = 1024
+
+
+def _fit_caption(cap):
+    """超长就砍，别让整张图发不出去。砍的时候留个记号，
+    免得看的人以为句子本来就是断的。"""
+    if len(cap) <= CAPTION_MAX:
+        return cap
+    return cap[:CAPTION_MAX - 12].rstrip() + "\n…（详见按钮）"
 
 
 def _liq_kb(alerts):
-    """给告警消息挂「看清算地图」按钮，币名直接带进去。"""
+    """给告警消息挂「看清算地图」按钮，币名直接带进去。
+
+    第二排是「谁推的」（持仓结构）。**自动配的那张图只给幅度最大的一个币**，
+    一轮报十个币时其余九个只能靠按钮——所以这两类按钮要成对给，
+    不然就变成"榜首有完整分析、其他币什么都没有"。
+    """
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
     top = sorted(alerts, key=lambda a: -abs(a["change"]))[:LIQMAP_BUTTONS]
     if not top:
@@ -215,6 +231,12 @@ def _liq_kb(alerts):
         if len(cur) == 2:
             rows.append(cur)
             cur = []
+    if cur:
+        rows.append(cur)
+    cur = []
+    for a in top[:2]:
+        cur.append(InlineKeyboardButton(f"📊 {a['sym']} 谁推的",
+                                        callback_data=f"pf:r:{a['sym']}"))
     if cur:
         rows.append(cur)
     return InlineKeyboardMarkup(rows)
@@ -233,7 +255,7 @@ async def _attach_liqmap(bot, chat_id, alerts):
     if abs(top["change"]) < LIQMAP_MIN_MOVE:
         return
     try:
-        from handlers import liqmap
+        from handlers import liqmap, posflow
         # ⚠️ 别按位置解包。`liqmap._get` 的返回值加过两次字段
         # （v1.52.1 加来源、v1.53.0 加覆盖天数），而这里写死了 3 个，
         # 于是每次告警都 ValueError——**配图静默跳过，所以谁都没发现**，
@@ -262,6 +284,12 @@ async def _attach_liqmap(bot, chat_id, alerts):
         cap = (f"💣 *{escape_md(top['sym'])} 清算地图*（估算）　刚刚 "
                f"{top['change']:+.1f}%\n{side}{near}\n"
                f"止损别正好压在柱子上。⚠️ 模型估算不是交易所数据")
+        # 清算地图回答"上下堆着多少爆仓单"，但**没回答"这波是谁推的"**——
+        # 而那两句合起来才是完整的判断：上方燃料清空 + 持仓不降 = 多头在等新空
+        # 进场（蓄力），上方燃料清空 + 持仓开始降 = 多头在派发（见顶）。
+        # 少了持仓这一半，同一张图能讲出两个相反的故事。
+        cap += await posflow.attach(top["sym"], top["change"])
+        cap = _fit_caption(cap)
         await bot.send_photo(chat_id=chat_id, photo=buf, caption=cap,
                              parse_mode="Markdown",
                              reply_markup=liqmap.kb(top["sym"], "7日"))

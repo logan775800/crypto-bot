@@ -46,6 +46,7 @@ from telegram.ext import ContextTypes
 
 from storage import data, save_data
 from handlers.util import safe_reply, safe_edit, escape_md
+from handlers import posflow
 
 log = logging.getLogger(__name__)
 
@@ -163,14 +164,33 @@ async def check(context, changes):
             seen.pop(s, None)
             dirty = True
         if hits:
+            # 「涨了多少」和「这波是谁推的」得放一起才有用：同样 15m +40%，
+            # 新资金进场和空头平仓推的（轧空）是两件事，后者烧完就没了。
+            # 这个告警一个月才响几次（见文件头那份实测），给幅度最大的那个
+            # 多打三次接口完全不心疼——真正贵的告警是天天响的那种。
+            top = max(hits, key=lambda h: h[1])
+            extra = await posflow.attach(top[0], top[1])
             try:
                 await context.bot.send_message(
-                    chat_id=int(chat_id), text=_msg(hits, cfg),
-                    parse_mode="Markdown")
+                    chat_id=int(chat_id), text=_msg(hits, cfg) + extra,
+                    parse_mode="Markdown", reply_markup=_hit_kb(hits))
             except Exception as e:
                 log.error(f"极端拉升推送失败 {chat_id}: {e}")
     if dirty:
         save_data()
+
+
+def _hit_kb(hits):
+    """告警正文只给幅度最大那个附了结构分析，其余的靠按钮点。"""
+    rows, cur = [], []
+    for sym, *_ in sorted(hits, key=lambda h: -h[1])[:4]:
+        cur.append(InlineKeyboardButton(f"📊 {sym}", callback_data=f"pf:r:{sym}"))
+        if len(cur) == 2:
+            rows.append(cur)
+            cur = []
+    if cur:
+        rows.append(cur)
+    return InlineKeyboardMarkup(rows) if rows else None
 
 
 def _msg(hits, cfg):

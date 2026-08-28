@@ -721,7 +721,12 @@ def kb(sym, win):
     return InlineKeyboardMarkup([
         short,
         long_,
-        [InlineKeyboardButton("🧮 按杠杆分档", callback_data=f"lq:t:{sym}:{win}")],
+        # 清算地图说的是「上下堆着多少爆仓单」，持仓结构说的是「这波是谁推的」。
+        # **这两句要连起来才能下判断**：上方燃料清空 + 持仓不降 = 多头在等新空
+        # 进场（蓄力），上方燃料清空 + 持仓开始降 = 多头在派发（见顶）。
+        # 只看图会把这两种完全相反的情形读成同一种。
+        [InlineKeyboardButton("🧮 按杠杆分档", callback_data=f"lq:t:{sym}:{win}"),
+         InlineKeyboardButton("📊 这波是谁推的", callback_data=f"pf:r:{sym}")],
         [InlineKeyboardButton("ℹ️ 口径", callback_data=f"lq:i:{sym}:{win}"),
          InlineKeyboardButton("🔄 重算", callback_data=f"lq:r:{sym}:{win}"),
          InlineKeyboardButton("🪙 换币", callback_data="lq:pick:-:-")],

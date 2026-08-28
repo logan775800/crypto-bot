@@ -94,7 +94,10 @@ def followup_kb(symbol=None, back=None):
          InlineKeyboardButton("🩺 数据体检", callback_data=f"fu:check:{s}")],
         # 清算地图接进闭环：分析完最该回答的下一个问题就是"止损放哪儿"，
         # 而那张图直接告诉你哪些价位是插针磁吸区。少这个按钮就还得自己去打 /liqmap
-        [InlineKeyboardButton("💣 清算地图", callback_data=f"lq:w:{s}:7日")],
+        # 「清算地图」回答止损放哪儿，「谁推的」回答这波还有没有人接力——
+        # 同一个币的两个问题，并排放，不该有一个要去翻命令
+        [InlineKeyboardButton("💣 清算地图", callback_data=f"lq:w:{s}:7日"),
+         InlineKeyboardButton("📊 这波是谁推的", callback_data=f"pf:r:{s}")],
         # 闭环的最后一环：前面几步都在"算"，真要下单还得自己去翻 /trade。
         # 少这一个按钮，分析和实盘之间就还隔着一次手工搬运。
         [InlineKeyboardButton("🎛 进交易台", callback_data="tpanel")],
@@ -1922,6 +1925,12 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bits = d.split(":")
         await _ls.from_btn(query, context, bits[2],
                            force=(bits[1] == "r"), detail=(bits[1] == "i"))
+
+    elif d.startswith("pf:"):
+        # 持仓结构：pf:<r|i>:<币>　r=拉一次 i=看口径
+        from handlers import posflow as _pf
+        bits = d.split(":")
+        await _pf.from_btn(query, context, bits[2], detail=(bits[1] == "i"))
 
     elif d.startswith("dr:"):
         # 多日涨跌榜：dr:<w|r|i>:<天数>:<交易所>:<市场>:<hot|full>

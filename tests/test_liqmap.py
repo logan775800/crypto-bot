@@ -268,8 +268,14 @@ def test_alert_buttons_are_capped_and_sorted_by_size():
                "direction": "down", "price": 1} for i in range(10)]
     kb = CA._liq_kb(alerts)
     cbs = [b.callback_data for r in kb.inline_keyboard for b in r]
-    assert len(cbs) == CA.LIQMAP_BUTTONS
+    # 现在这排键盘有两类按钮（💣 清算地图 / 📊 谁推的），各自单独限量。
+    # 原来这条断言的是总数 == LIQMAP_BUTTONS，加第二类按钮时就红了——
+    # 锁总数锁的是"现在只有一类按钮"这个实现细节，不是"别挤爆屏幕"这个意图。
+    assert len([c for c in cbs if c.startswith("lq:")]) == CA.LIQMAP_BUTTONS
+    assert len([c for c in cbs if c.startswith("pf:")]) <= 2
+    assert len(kb.inline_keyboard) <= 3, "按钮排数多了会把正文挤出屏幕"
     assert "lq:w:C9:7日" in cbs, "幅度最大的那个必须在"
+    assert "pf:r:C9" in cbs, "幅度最大的那个要能直接看「谁推的」"
 
 
 def test_only_one_map_is_auto_attached_per_alert():

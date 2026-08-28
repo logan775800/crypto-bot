@@ -729,8 +729,11 @@ def main():
     jq.run_repeating(monitor.tracked(rugwatch.check_rugs, "LP撤出告警", 300), interval=300, first=90)   # LP撤出告警，每5分钟
     # 链上新币：10 分钟一轮。更勤没意义——过闸要求 1h 成交量，
     # 而且每轮要为过了前两层的池子各打一次安全检查，太勤会被限频。
-    jq.run_repeating(monitor.tracked(newtoken.scan, "链上新币", 600),
-                     interval=600, first=200)  # 链上新币上线告警
+    # 5 分钟一轮，不是 10 分钟。实测 Solana 每 10 分钟出 102 个新池、BSC 79 个，
+    # 而每轮每链只翻 80 个 —— 10 分钟一轮的话最忙的链有四成新池从来没被看见。
+    # 顺带把告警延迟砍一半（"第一时间"本来就是这个功能的全部意义）。
+    jq.run_repeating(monitor.tracked(newtoken.scan, "链上新币", 300),
+                     interval=300, first=200)  # 链上新币上线告警
     jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
     jq.run_repeating(monitor.tracked(rtrade.check_liq_alerts, "实盘爆仓预警", 60), interval=60, first=55)  # 实盘爆仓临近预警，每60秒
     jq.run_repeating(monitor.tracked(riskguard.check_risk, "风险守护", 60), interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒

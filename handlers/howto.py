@@ -137,6 +137,7 @@ def pinned_text():
         "📊 /watchcontract 合约异动 —— 24h破台阶(20%起)，自带清算地图+持仓结构\n"
         "🚨 /pump3 极端拉升 —— 15m暴拉且多日已涨，一个月响几次\n"
         "📈 /watchmarket 市场异动 —— 新币上线 + 放量\n"
+        "🀄 /newtoken burst 梗爆发 —— 同一个名字 30 分钟内被抄几次（看热度不看池子）\n"
         "💧 链上防跑路 —— /watchpct 合约地址 5，建完自动带 LP 撤出告警\n"
         "📰 /subnews 新闻　/subscribe 早报　/unlock 解锁提醒\n"
         "/follow BTC ETH 只看关注的币　/quiet 23:00 8:00 免打扰\n\n"

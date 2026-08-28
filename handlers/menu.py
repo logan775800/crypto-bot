@@ -502,6 +502,7 @@ def notify_kb(chat_id):
     bk_on = _bo.is_on(chat_id)
     bk = "✅" if bk_on else "⬜"
     nc = "✅" if _nt.is_on(chat_id) else "⬜"
+    bs = "✅" if _nt.burst_enabled(chat_id) else "⬜"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{pp} ⚡急涨急跌(15m,可调阈值)", callback_data="pump:panel")],
         [InlineKeyboardButton(f"{cp} 📊合约异动(24h±20%起,带清算地图)",
@@ -510,6 +511,9 @@ def notify_kb(chat_id):
         [InlineKeyboardButton(f"{bk} 🚀箱体破位(5m,均线顺势)",
                               callback_data=f"bo:{'off' if bk_on else 'on'}")],
         [InlineKeyboardButton(f"{nc} 🌱链上新币(筛过安全检查)", callback_data="nt:toggle")],
+        # 梗爆发和上面那条判据完全不同：它看的是「同一个名字 30 分钟内被抄几次」，
+        # 不是「哪个池子够大」。两个是正交的信号，所以是两个开关不是一个档位。
+        [InlineKeyboardButton(f"{bs} 🀄梗爆发(同名被抄的速度)", callback_data="nt:burst")],
         [InlineKeyboardButton("🔔 价格/条件提醒", callback_data="cat_alert")],
         [InlineKeyboardButton("📬 定期订阅推送", callback_data="cat_subs")],
         _back()])
@@ -608,6 +612,27 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
                    f"⚠️ 光 BSC 一小时就有 60 个新池，门槛低了会刷屏")
         else:
             tip = "🔕 已关闭链上新币告警"
+        try:
+            await query.answer(tip, show_alert=True)
+        except Exception:
+            pass
+        await safe_edit(query, NOTIFY_TEXT, reply_markup=notify_kb(cid),
+                        parse_mode="Markdown")
+
+    elif d == "nt:burst":
+        from handlers import newtoken as _nt
+        cid = query.message.chat_id
+        on = _nt.toggle_burst(cid, not _nt.burst_enabled(cid))
+        lv, need = _nt.burst_level()
+        if on:
+            tip = (f"🀄 已开启梗爆发（{lv}档）\n"
+                   f"判据：30 分钟内同名新池 ≥{need} 个"
+                   f"（英文名 ≥{need * _nt.BURST_EN_FACTOR}）\n"
+                   f"看的是「抄的速度」不是「池子大小」\n"
+                   f"每小时最多 {_nt.BURST_PER_HOUR} 条\n"
+                   f"现在窗口里有什么：/newtoken burst now")
+        else:
+            tip = "🔕 已关闭梗爆发告警"
         try:
             await query.answer(tip, show_alert=True)
         except Exception:

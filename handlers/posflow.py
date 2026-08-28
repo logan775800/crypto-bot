@@ -529,6 +529,11 @@ def who_left(s):
     if dl < 0 and ds < 0:
         faster = "多头" if abs(dl) > abs(ds) else "空头"
         txt += f"\n　└ 两边同时离场，{faster}跑得更快"
+    elif dl > 0 and ds > 0:
+        # 真机漏掉的分支：龙虾那波多头 +230、空头 +737，两边都在进场，
+        # 结果这一行整个消失了。**四种组合要凑齐**，不然看的人以为没数据
+        faster = "多头" if dl > ds else "空头"
+        txt += f"\n　└ 两边都在进场（新人在涌入），{faster}进得更猛"
     elif dl > 0 and ds < 0:
         txt += "\n　└ 多头在进、空头在退"
     elif dl < 0 and ds > 0:
@@ -555,6 +560,143 @@ def big_vs_small(s):
         return (f"散户没怎么动，大户比挪了 {dt:.0f}% → 大钱在调仓，"
                 f"这一栏通常比散户那栏先动")
     return None
+
+
+# ── 跨所持仓分歧：实测里区分度最强的一个 ─────────────────────
+#
+# 他问「关键数据还够不够详细」，我把六个候选维度全量过一遍
+# （tools\\probe_gaps.py / probe_gaps2.py，异动组 vs 成交额基线组）：
+#
+#     跨所持仓分歧      20.3pt  vs   6.2pt  →  3.27x  ✅ 加
+#     爆仓量30天分位    92.7%   vs  72.5%   →  1.28x  ⚠️ 当参照系用，不当判据
+#     大单占比(相对)    28.7%   vs  49.7%   →  0.58x  ❌
+#     主动买卖盘失衡     7.0    vs   9.2    →  0.76x  ❌
+#     合约/现货倍数      5.6    vs   7.3    →  0.77x  ❌
+#     现货主动买入占比   48.9%  vs  49.3%   →  0.99x  ❌
+#
+# **六个里四个是噪音**，包括本来最看好的主动买卖盘——它自己就贴着 1.0，
+# ±80% 的币也只在 0.80~1.01 之间晃。加进去只会挤走真信号。
+#
+# 分歧这一条为什么强，看明细就懂：
+#     龙虾  +81.7%   币安 +117.5%   Gate  +2.5%                  一家独走
+#     BICO -14.2%   币安 -10.2%   Bybit +7.0%   Gate -28.3%     三家反向
+# 龙虾那波涨 82%，**全是币安一家的杠杆在推**，Gate 那边根本没跟。
+# 这和三家一起加仓是完全不同的东西：前者是单边杠杆事件，后者才是共识。
+VENUE_SPREAD_HIGH = 20.0    # 极差超过这个数算"分歧显著"（基线中位数 6.2pt）
+VENUE_SOLO = 50.0           # 超过这个数算"一家独走"
+VENUE_CN = {"bn": "币安", "by": "Bybit", "gate": "Gate"}
+
+
+async def venue_oi(symbol, hours=DEFAULT_HOURS):
+    """三家各自的持仓变化率。→ {"bn":…, "by":…, "gate":…}，取不到的不放。
+
+    **三家的持仓量单位和口径都不一样，所以只能比变化率不能比绝对值**
+    （币安给美元名义值、Bybit 给张数、Gate 给张数）。
+    """
+    import httpx
+    sym = symbol.upper().replace("USDT", "")
+    inst = f"{sym}USDT"
+    n = max(3, int(hours) + 1)
+    out = {}
+    async with httpx.AsyncClient(timeout=12) as c:
+        async def _bn():
+            d = await _bn_series(c, "openInterestHist", inst, n)
+            if len(d) >= 3:
+                a, b = _f(d[0]["sumOpenInterestValue"]), _f(d[-1]["sumOpenInterestValue"])
+                if a > 0:
+                    out["bn"] = (b - a) / a * 100
+
+        async def _by():
+            r = await c.get(f"{BYBIT}/v5/market/open-interest",
+                            params={"category": "linear", "symbol": inst,
+                                    "intervalTime": "1h", "limit": n})
+            lst = ((r.json() or {}).get("result") or {}).get("list") or []
+            if len(lst) >= 3:
+                # Bybit 是**倒序**（最新在前）——和别家反着，别照抄索引
+                b, a = _f(lst[0]["openInterest"]), _f(lst[-1]["openInterest"])
+                if a > 0:
+                    out["by"] = (b - a) / a * 100
+
+        async def _gate():
+            d = await _gate_stats(c, sym, n)
+            if len(d) >= 3:
+                a, b = _f(d[0]["open_interest"]), _f(d[-1]["open_interest"])
+                if a > 0:
+                    out["gate"] = (b - a) / a * 100
+
+        await asyncio.gather(_bn(), _by(), _gate(), return_exceptions=True)
+    return out
+
+
+def venue_verdict(ch, hours=DEFAULT_HOURS):
+    """三家在不在做同一件事。→ (一句话, 明细行) 或 (None, None)。
+
+    少于两家就闭嘴：一家的数据谈不上"分歧"。
+    """
+    if not ch or len(ch) < 2:
+        return None, None
+    detail = "　".join(f"{VENUE_CN.get(k, k)} {v:+.0f}%"
+                       for k, v in sorted(ch.items(), key=lambda x: -x[1]))
+    hi_k = max(ch, key=ch.get)
+    lo_k = min(ch, key=ch.get)
+    spread = ch[hi_k] - ch[lo_k]
+    if spread < VENUE_SPREAD_HIGH:
+        return (f"三家持仓变化一致（极差 {spread:.0f} 个点）→ "
+                f"不是某一家的局部行情"), detail
+    ups = [k for k, v in ch.items() if v > 5]
+    dns = [k for k, v in ch.items() if v < -5]
+    if ups and dns:
+        return (f"**三家方向都不一致**：{VENUE_CN.get(hi_k, hi_k)}在加仓、"
+                f"{VENUE_CN.get(lo_k, lo_k)}在减仓（差 {spread:.0f} 个点）→ "
+                f"不是同一批人在做同一件事，这种行情的持续性通常很差"), detail
+    if spread >= VENUE_SOLO:
+        other = "、".join(VENUE_CN.get(k, k) for k in ch if k != hi_k)
+        return (f"**这波基本是 {VENUE_CN.get(hi_k, hi_k)} 一家的杠杆在推**"
+                f"（{ch[hi_k]:+.0f}% vs {other} 最低 {ch[lo_k]:+.0f}%）→ "
+                f"单边杠杆事件，比三家一起动脆得多"), detail
+    return (f"{VENUE_CN.get(hi_k, hi_k)}那边动得明显更多"
+            f"（差 {spread:.0f} 个点）→ 加仓主要发生在一家"), detail
+
+
+async def liq_percentile(symbol, hours=DEFAULT_HOURS, days=30):
+    """这一段的每小时爆仓量，在这个币过去 30 天里排第几分位。
+
+    **「这段爆了 $11k」本身读不出多少**——对 BTC 是零头，对小币是天量。
+    只有跟这个币自己的历史比才有意义。
+    实测这一项区分度只有 1.28x，所以**它是参照系不是判据**：
+    用来把一个没法读的美元数字翻译成"高/低"，不用来下结论。
+    """
+    import httpx
+    sym = symbol.upper().replace("USDT", "")
+    async with httpx.AsyncClient(timeout=15) as c:
+        rows = await _gate_stats(c, sym, min(days * 24, GATE_MAX_BARS))
+    h = max(2, int(hours))
+    if len(rows) < h + 48:
+        return None
+    liq = [_f(x.get("long_liq_usd")) + _f(x.get("short_liq_usd")) for x in rows]
+    recent = sum(liq[-h:]) / h
+    hist = sorted(liq[:-h])
+    if not hist:
+        return None
+    return {"pct": sum(1 for v in hist if v < recent) / len(hist) * 100,
+            "rate": recent, "days": len(rows) / 24}
+
+
+def liq_words(p):
+    if not p:
+        return None
+    v = p["pct"]
+    if v >= 95:
+        w = "**过去一个月里最高的那 5%**——现在正在大规模强平"
+    elif v >= 80:
+        w = "明显高于这个币的日常水平"
+    elif v <= 20:
+        w = "低于日常水平，两边都没什么仓位在被打掉"
+    elif v <= 5:
+        w = "**几乎停了**，这个币最近一个月里最安静的 5%"
+    else:
+        w = "跟这个币的日常水平差不多"
+    return (f"爆仓强度在自己 {p['days']:.0f} 天历史里排 **{v:.0f} 分位**（{w}）")
 
 
 _cache = {}          # sym -> (ts, block)
@@ -614,16 +756,32 @@ def _liq_pair(s):
     return f"多 ${s['long_liq']:,.0f} / 空 ${s['short_liq']:,.0f}"
 
 
-def gate_lines(g, chg=None):
+def gate_lines(g, chg=None, venues=None, liqp=None):
     """Gate 那套的正文。**结论在最上面，数字在下面**——
     他定过的列表版式：结论一行，细节收在后面。"""
     now, prev = g["now"], g["prev"]
     h, ph = g["hours"], g["prev_hours"]
     out = []
 
-    # ① 横盘还是趋势。这条要排第一：后面所有解读都建立在它上面
-    flat = is_flat(now)
-    if flat:
+    # ① 横盘还是趋势。这条要排第一：后面所有解读都建立在它上面。
+    #
+    # ⚠️ **横盘不能只看主源那一家**。真机撞到的：龙虾涨了 79%，Gate 那边持仓
+    # 只动了 2.3%，于是卡片印出「横盘，没有一方在净建仓」——而同一时间
+    # 币安持仓 +120%。仓位确实在净增，只是增在另一家。
+    # 一家的横盘 + 另一家的暴增 = 那波行情根本不在这家发生，这比"横盘"
+    # 有信息量得多，也是接了跨所数据之后才看得见的。
+    other = None
+    if venues:
+        big = {k: v for k, v in venues.items() if abs(v) >= VENUE_SPREAD_HIGH}
+        if big:
+            k = max(big, key=lambda x: abs(big[x]))
+            other = (VENUE_CN.get(k, k), big[k])
+    flat = is_flat(now) and not other
+    if is_flat(now) and other:
+        out.append(f"→ **Gate 这边是横盘（振幅 {now['amp']:.1f}%），"
+                   f"但 {other[0]} 那边持仓 {other[1]:+.0f}%** → "
+                   f"这波不在 Gate 发生，仓位是在另一家净增的")
+    elif flat:
         out.append(f"→ **这 {h} 小时是横盘，不是趋势**：持仓振幅只有 "
                    f"{now['amp']:.1f}%，{h} 小时里上升 {now['up']} 次、"
                    f"下降 {now['dn']} 次，几乎对半——**没有一方在净建仓**")
@@ -641,7 +799,13 @@ def gate_lines(g, chg=None):
     if sq:
         out.append(f"→ {sq}")
 
-    # ③ 大户 vs 散户：两个口径可以同时成立且不矛盾
+    # ③ 跨所分歧。实测区分度 3.27x，是量过的候选里最强的一个，
+    #    而且和持仓量本身正交——三家一起加仓 vs 一家独走是两种行情
+    vv, vdetail = venue_verdict(venues, h)
+    if vv:
+        out.append(f"→ {vv}")
+
+    # ④ 大户 vs 散户：两个口径可以同时成立且不矛盾
     bs = big_vs_small(now)
     if bs:
         out.append(f"→ {bs}")
@@ -649,9 +813,14 @@ def gate_lines(g, chg=None):
     out.append("")
     out.append(f"持仓量 {_money(now['oi_usd'])} U（{h}h {now['oi_pct']:+.1f}%，"
                f"振幅 {now['amp']:.1f}%，升 {now['up']} 次/降 {now['dn']} 次）")
+    if vdetail:
+        out.append(f"　三家各自：{vdetail}")
     out.append(f"爆仓　{_liq_pair(now)}")
     if prev:
         out.append(f"　└ 前 {ph} 小时是 {_liq_pair(prev)}")
+    lw = liq_words(liqp)
+    if lw:
+        out.append(f"　└ {lw}")
     out.append(f"大户持仓比 {now['top_last']:.2f}"
                f"（{now['top_first']:.2f} → {now['top_last']:.2f}）")
     out.append(f"人数多空比 {now['retail_last']:.4f}"
@@ -679,18 +848,25 @@ async def build_text(sym, hours=DEFAULT_HOURS):
         log.info(f"[posflow] {sym} Gate 分段取数失败: {e}")
         g = None
     if g and g.get("now"):
-        try:
-            f = await fetch(sym, hours)
-            chg = (f or {}).get("chg")
-        except Exception as e:
-            log.info(f"[posflow] {sym} 涨跌幅取数失败: {e}")
+        # 三件事互不依赖，一起打。任何一件失败都只是少一行，不影响其余
+        f, venues, liqp = await asyncio.gather(
+            fetch(sym, hours), venue_oi(sym, hours), liq_percentile(sym, hours),
+            return_exceptions=True)
+        chg = (f or {}).get("chg") if isinstance(f, dict) else None
+        if isinstance(venues, Exception):
+            log.info(f"[posflow] {sym} 跨所持仓取数失败: {venues}")
+            venues = None
+        if isinstance(liqp, Exception):
+            log.info(f"[posflow] {sym} 爆仓分位取数失败: {liqp}")
+            liqp = None
         head = f"📊 *{escape_md(sym)} 持仓结构*　近 {hours} 小时"
         if chg is not None:
             head += f"　价格 {chg:+.1f}%"
         tail = (f"\n数据源 Gate（爆仓量和账户数只有它给逐小时的）"
                 f"｜对比段取前 {g['prev_hours']} 小时"
                 f"｜⚠️ 结构分析不构成投资建议")
-        return head + "\n\n" + "\n".join(gate_lines(g, chg)) + "\n" + tail
+        return (head + "\n\n"
+                + "\n".join(gate_lines(g, chg, venues, liqp)) + "\n" + tail)
 
     f = await fetch(sym, hours)
     if not f:
@@ -772,6 +948,32 @@ def detail_text(sym):
         "**振幅小 且 涨跌次数接近对半**（= 没有一方在净建仓）。",
         f"振幅门槛 {FLAT_AMP:g}%，来自实测基线：平静的大盘币 24 小时",
         "|ΔOI| 中位数 6.6%、75 分位 9.4%。",
+        "",
+        "*跨所分歧：量过的候选里最强的一个*",
+        "三家的持仓变化率一起看。实测异动组极差 20.3 个点、平静基线 6.2 个点",
+        "（3.27 倍），而且和持仓量本身**正交**——三家一起加仓和一家独走",
+        "是两种完全不同的行情：",
+        "　龙虾 +81.7%　币安持仓 +117.5%　Gate +2.5%　→ 单边杠杆事件",
+        "　BICO -14.2%　币安 -10.2%　Bybit +7.0%　Gate -28.3%　→ 三家反向",
+        "只能比**变化率**不能比绝对值：三家的持仓单位不一样",
+        "（币安给美元名义值，Bybit 和 Gate 给张数）。",
+        "",
+        "*刻意没加的四样*",
+        "同一套判据量下来，这四个在异动组和基线组之间分不开，加了只会",
+        "挤走真信号：",
+        "```",
+        "  主动买卖盘失衡     7.0  vs  9.2   0.76x",
+        "  合约/现货倍数      5.6  vs  7.3   0.77x",
+        "  现货主动买入占比  48.9% vs 49.3%  0.99x",
+        "  大单占比(相对口径)28.7% vs 49.7%  0.58x",
+        "```",
+        "最意外的是主动买卖盘——它自己就贴着 1.0，涨跌 ±80% 的币也只在",
+        "0.80~1.01 之间晃，因为每一笔成交都同时有主动买和主动卖。",
+        "",
+        "*爆仓量分位是参照系，不是判据*",
+        "「这段爆了 $11k」本身读不出多少——对 BTC 是零头，对小币是天量。",
+        "所以换算成「在这个币自己 30 天历史里排第几分位」。",
+        "但它区分度只有 1.28 倍，所以只用来翻译数字，不用来下结论。",
         "",
         "*覆盖范围*",
         "主源是 **Gate**（942 个 USDT 永续，比币安的 703 个多，各有独占）。",

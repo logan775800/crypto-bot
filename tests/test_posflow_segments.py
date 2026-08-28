@@ -258,3 +258,79 @@ def test_zero_liquidations_this_segment_does_not_crash():
     prev = P.seg_stats([bar(1e6, ll=4000, sl=17000) for _ in range(39)])
     v = P.squeeze_verdict(now, prev)
     assert v and "一笔都没有了" in v
+
+
+# ── 跨所分歧 ────────────────────────────────────────────────
+# 实测区分度 3.27x（异动组极差 20.3pt vs 基线 6.2pt），是量过的六个候选里
+# 最强的一个，而且和持仓量本身正交。另外四个（主动买卖盘、合约/现货倍数、
+# 现货主动买入占比、大单占比）实测 0.58~0.99x，全是噪音，**刻意没加**。
+def test_all_venues_agreeing_says_so():
+    v, d = P.venue_verdict({"bn": 12.0, "by": 10.0, "gate": 9.0})
+    assert v and "一致" in v
+    assert "币安" in d and "Bybit" in d and "Gate" in d
+
+
+def test_one_venue_carrying_the_whole_move():
+    """真机：龙虾 +81.7%，币安持仓 +117.5% 而 Gate 只有 +2.5%。
+    这波全是币安一家的杠杆在推——和三家一起加仓是完全不同的东西。"""
+    v, _d = P.venue_verdict({"bn": 117.5, "gate": 2.5})
+    assert v and "一家的杠杆在推" in v and "脆" in v
+
+
+def test_venues_disagreeing_on_direction():
+    """真机 BICO：币安 -10.2%、Bybit +7.0%、Gate -28.3%。
+    一边加一边减 = 不是同一批人在做同一件事。"""
+    v, _d = P.venue_verdict({"bn": -10.2, "by": 7.0, "gate": -28.3})
+    assert v and "方向都不一致" in v
+
+
+def test_one_venue_is_not_a_divergence():
+    """只有一家数据谈不上"分歧"，闭嘴比编一个结论强。"""
+    assert P.venue_verdict({"bn": 50.0}) == (None, None)
+    assert P.venue_verdict({}) == (None, None)
+    assert P.venue_verdict(None) == (None, None)
+
+
+def test_flat_verdict_defers_to_another_venue_exploding():
+    """**横盘不能只看主源那一家**。真机：龙虾涨 79%，Gate 持仓只动 2.3%，
+    卡片印出「横盘，没有一方在净建仓」——而同一时间币安持仓 +120%。
+    仓位确实在净增，只是增在另一家。"""
+    g = _fake_g(flat_rows(24), [bar(1e6) for _ in range(72)], hours=24)
+    txt = "\n".join(P.gate_lines(g, chg=79.3, venues={"bn": 120.0, "gate": 2.3}))
+    assert "没有一方在净建仓" not in txt, "一家横盘就下了全局结论"
+    assert "不在 Gate 发生" in txt
+
+
+def test_flat_verdict_stands_when_no_venue_moved():
+    g = _fake_g(flat_rows(24), [bar(1e6) for _ in range(72)], hours=24)
+    txt = "\n".join(P.gate_lines(g, chg=0.5, venues={"bn": 1.0, "gate": -2.0}))
+    assert "没有一方在净建仓" in txt
+
+
+# ── 爆仓量分位：参照系，不是判据 ────────────────────────────
+def test_liq_percentile_translates_an_unreadable_number():
+    """「这段爆了 $11k」本身读不出多少——对 BTC 是零头，对小币是天量。
+    实测区分度只有 1.28x，所以它是**参照系不是判据**：
+    只把数字翻译成高/低，不用来下结论。"""
+    assert "94 分位" in P.liq_words({"pct": 94.0, "rate": 1727, "days": 30})
+    assert "最高的那 5%" in P.liq_words({"pct": 97.0, "rate": 9, "days": 30})
+    assert "低于日常" in P.liq_words({"pct": 12.0, "rate": 9, "days": 30})
+    assert P.liq_words(None) is None
+
+
+# ── 账户数四种组合要凑齐 ────────────────────────────────────
+def test_both_sides_piling_in_is_not_a_missing_line():
+    """真机漏掉的分支：龙虾多头 +230、空头 +737，两边都在进场，
+    结果这一行整个消失了——看的人会以为没数据。"""
+    s = P.seg_stats([bar(1e6, lu=296, su=280), bar(1e6, lu=526, su=1017)])
+    txt = P.who_left(s)
+    assert txt and "两边都在进场" in txt and "空头进得更猛" in txt
+
+
+def test_venue_change_uses_rates_not_absolutes():
+    """三家的持仓单位不一样（币安给美元名义值、Bybit 和 Gate 给张数），
+    只能比变化率。这条锁的是"别哪天顺手改成比绝对值"。"""
+    import inspect
+    src = inspect.getsource(P.venue_oi)
+    assert "只能比变化率不能比绝对值" in src
+    assert "倒序" in src, "Bybit 是最新在前，索引反了会算出相反的变化"

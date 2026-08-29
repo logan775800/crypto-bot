@@ -34,6 +34,7 @@ CoinGlass 那张「清算地图」也不是原始数据——**没有任何交�
 真实爆仓价还要算维持保证金率（`leverageBracket` 要 API key，401），
 这里没算，所以估出来的位置比真实爆仓价**略远一点**。
 """
+import asyncio
 import io
 import logging
 import time
@@ -75,6 +76,9 @@ WINDOWS = {                    # 标签 -> (openInterestHist 的 period, 取几�
     "180日": ("1d", 180),
     "1年": ("1d", 365),
 }
+# 窗口标签 -> 它到底是多少天。**不能拿 WINDOWS 里那个数当天数**：
+# 那是 K 线根数，7日=168 根、1日=96 根，两者只有日线窗口才碰巧相等。
+WIN_DAYS = {"1日": 1, "7日": 7, "30日": 30, "90日": 90, "180日": 180, "1年": 365}
 # 这些窗口只有 Bybit 有数据，且颗粒粗到一根一天——结论要打折看，见 _long_caveat()
 LONG_WINDOWS = {"90日", "180日", "1年"}
 BYBIT_PAGE = 200               # Bybit 单次返回上限，超过要分段拉
@@ -213,6 +217,184 @@ async def _fetch_bybit(c, inst, period, limit):
     return out, kl_rows, last, "Bybit"
 
 
+# ── 跨所聚合：一家的持仓量不是全网的持仓量 ────────────────────
+#
+# 起因是他拿另一份 BTR 分析来对：那份只够到 KuCoin + MEXC（浏览器 IP 被
+# 币安 451 / Bybit 403 挡了），于是拿**全网 21% 的持仓量**下了全网的结论。
+# 实测同一时刻 BTR 五家的分布：
+#
+#     币安 275.2M(54.4%)  Bybit 91.7M(18.1%)  KuCoin 71.7M(14.2%)
+#     MEXC 36.5M(7.2%)    Gate 31.1M(6.1%)      合计 506.1M BTR ≈ $85.3M
+#
+# 那份分析报的「全网 745.7M ≈ $160M」高了约 47%，而且它算出的持仓方向
+# （+1.1%）和加上币安+Bybit 之后（−7.7%）是反的。
+#
+# **合约乘数各家不同，不能直接相加**：币安/Bybit 的 openInterest 就是币数，
+# Gate/KuCoin/MEXC 是**张**（乘数各自不同，别写死 10）。
+# 好在做图只要美元口径：币安 `sumOpenInterestValue` 和 Gate `open_interest_usd`
+# 都直接给美元，Bybit 用同期 K 线收盘价换算——绕开了乘数这一层。
+AGG_VENUES = ("币安", "Bybit", "Gate")
+
+
+async def _gate_oi_rows(c, base, period, limit):
+    """Gate 的逐根持仓量（美元）。`open_interest_usd` 直接给美元，
+    不用碰 quanto_multiplier。"""
+    iv = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}.get(period)
+    if not iv:
+        return {}
+    r = await c.get("https://api.gateio.ws/api/v4/futures/usdt/contract_stats",
+                    params={"contract": f"{base}_USDT", "interval": iv,
+                            "limit": min(limit, 2000)})
+    if r.status_code != 200:
+        return {}
+    out = {}
+    for x in (r.json() or []):
+        try:
+            out[int(x["time"]) * 1000] = float(x["open_interest_usd"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+def _rows_to_map(rows):
+    out = {}
+    for r in rows or []:
+        try:
+            out[int(r["timestamp"])] = float(r["sumOpenInterestValue"])
+        except (KeyError, TypeError, ValueError):
+            continue
+    return out
+
+
+async def _aggregate(c, inst, base, period, limit, primary_rows, primary_src):
+    """把别家的持仓量并进主源那条序列。→ (合成后的 rows, 参与的家数列表)。
+
+    **只在时间戳对得上的那些根上相加**：某一家缺一根就跳过那一家，
+    不做插值。插出来的值会在图上变成一段凭空的"新增持仓"，
+    而新增持仓正是清算簇金额的来源——等于凭空造出一堆爆仓单。
+    """
+    base_map = _rows_to_map(primary_rows)
+    if not base_map:
+        return primary_rows, [primary_src]
+    others = {}
+    if primary_src != "Gate":
+        try:
+            g = await _gate_oi_rows(c, base, period, limit)
+            if len(g) >= 3:
+                others["Gate"] = g
+        except Exception as e:
+            log.debug(f"清算地图取 Gate 持仓失败 {base}: {e}")
+    if primary_src != "Bybit":
+        try:
+            iv = BYBIT_IV.get(period)
+            if iv:
+                rows = await _bybit_paged(c, "oi", inst, iv[0], limit, period)
+                kl = await _bybit_paged(c, "kl", inst, iv[1], limit, period)
+                closes = {int(k[0]): float(k[4]) for k in kl}
+                b = {}
+                for x in rows:
+                    try:
+                        ts = int(x["timestamp"])
+                        b[ts] = float(x["openInterest"]) * (closes.get(ts) or 0)
+                    except (KeyError, TypeError, ValueError):
+                        continue
+                b = {k: v for k, v in b.items() if v > 0}
+                if len(b) >= 3:
+                    others["Bybit"] = b
+        except Exception as e:
+            log.debug(f"清算地图取 Bybit 持仓失败 {inst}: {e}")
+    if not others:
+        return primary_rows, [primary_src]
+    merged = []
+    for ts in sorted(base_map):
+        v = base_map[ts]
+        for _name, m in others.items():
+            v += m.get(ts) or 0.0        # 缺这一根就不加，绝不插值
+        merged.append({"timestamp": ts, "sumOpenInterestValue": str(v)})
+    return merged, [primary_src] + list(others)
+
+
+async def venue_share(symbol):
+    """五家当前持仓量占比。**乘数从各家的合约规格现取，不写死**——
+    写死的话哪天某个币换了乘数，图会安静地算错一个数量级。
+    → ({名字: 美元持仓}, 现价) 或 (None, None)。
+    """
+    base = symbol.upper().replace("USDT", "")
+    inst = f"{base}USDT"
+    out = {}
+    async with httpx.AsyncClient(timeout=12) as c:
+        async def g(u, p=None):
+            try:
+                r = await c.get(u, params=p, timeout=12)
+                return r.json() if r.status_code == 200 else None
+            except Exception:
+                return None
+        tk = await g(f"{BN}/fapi/v1/ticker/price", {"symbol": inst})
+        last = float(tk["price"]) if isinstance(tk, dict) and "price" in tk else None
+
+        async def _bn():
+            d = await g(f"{BN}/fapi/v1/openInterest", {"symbol": inst})
+            if d and last and "openInterest" in d:
+                out["币安"] = float(d["openInterest"]) * last
+
+        async def _by():
+            d = await g(f"{BYBIT}/v5/market/open-interest",
+                        {"category": "linear", "symbol": inst,
+                         "intervalTime": "5min", "limit": 1})
+            lst = ((d or {}).get("result") or {}).get("list") or []
+            if lst and last:
+                out["Bybit"] = float(lst[0]["openInterest"]) * last
+
+        async def _gt():
+            d = await g("https://api.gateio.ws/api/v4/futures/usdt/contract_stats",
+                        {"contract": f"{base}_USDT", "interval": "5m", "limit": 1})
+            if d:
+                out["Gate"] = float(d[0]["open_interest_usd"])
+
+        async def _kc():
+            # KuCoin 把比特币叫 XBT。不转的话 BTC 上它整家取不到，
+            # 而**取不到的那家会从分母里消失** → 覆盖率被算高。
+            # 真机撞到过：BTC 报"覆盖 79%"，其实 KuCoin 那一份根本没进分母。
+            kb_ = "XBT" if base == "BTC" else base
+            d = await g(f"https://api-futures.kucoin.com/api/v1/contracts/{kb_}USDTM")
+            d = (d or {}).get("data")
+            if d and last:
+                out["KuCoin"] = (float(d["openInterest"])
+                                 * float(d.get("multiplier") or 1) * last)
+
+        async def _mx():
+            spec = await g("https://contract.mexc.com/api/v1/contract/detail",
+                           {"symbol": f"{base}_USDT"})
+            tick = await g("https://contract.mexc.com/api/v1/contract/ticker",
+                           {"symbol": f"{base}_USDT"})
+            sd, td = (spec or {}).get("data"), (tick or {}).get("data")
+            if sd and td and last:
+                out["MEXC"] = (float(td["holdVol"])
+                               * float(sd.get("contractSize") or 1) * last)
+
+        await asyncio.gather(_bn(), _by(), _gt(), _kc(), _mx(),
+                             return_exceptions=True)
+    return ({k: v for k, v in out.items() if v > 0} or None), last
+
+
+def coverage_line(share, used):
+    """图上那句「这张图覆盖了全网多少」。**必须印出来**：
+    覆盖 21% 和覆盖 79% 画出来的图长得一模一样，不写没人分得清。"""
+    if not share:
+        return ""
+    tot = sum(share.values())
+    if tot <= 0:
+        return ""
+    got = sum(v for k, v in share.items() if k in (used or []))
+    miss = sorted(((k, v) for k, v in share.items() if k not in (used or [])),
+                  key=lambda x: -x[1])
+    txt = f"覆盖全网持仓的 {got / tot * 100:.0f}%（{'+'.join(used or [])}）"
+    if miss:
+        txt += "　未计入：" + "、".join(
+            f"{k} {v / tot * 100:.0f}%" for k, v in miss[:3])
+    return txt
+
+
 async def _fetch(symbol, win):
     """先币安后 Bybit。两家都没有才报错，且要说清是哪一步没有。
 
@@ -242,6 +424,15 @@ async def _fetch(symbol, win):
             f"（清算地图靠持仓量推算，只有这两家提供。"
             f"OKX/Gate 独有的币、或刚上市不久的币会取不到）")
     oi_rows, kl_rows, last, src = got
+    # 一家的持仓量不是全网的持仓量。把能对上时间戳的另外两家并进来——
+    # BTR 上币安只占 54%，只看一家等于漏掉近一半的仓位。
+    used = [src]
+    try:
+        async with httpx.AsyncClient(timeout=25) as c:
+            oi_rows, used = await _aggregate(c, inst, symbol.upper().replace("USDT", ""),
+                                             period, limit, oi_rows, src)
+    except Exception as e:
+        log.info(f"清算地图跨所聚合失败，退回单家 {inst}: {e}")
     # src 以前在这儿被丢掉，于是标题永远写「币安永续」——而 90/180 日的数据
     # 其实来自 Bybit。口径写错比不写更糟：一张 Bybit 的图挂着币安的抬头，
     # 没人看得出来。
@@ -251,7 +442,7 @@ async def _fetch(symbol, win):
         days = (max(ts) - min(ts)) / 86_400_000
     except Exception:
         pass
-    return oi_rows, kl_rows, last, inst, src, days
+    return oi_rows, kl_rows, last, inst, "+".join(used), days
 
 
 # ── 推算 ────────────────────────────────────────────────────
@@ -546,7 +737,9 @@ def render(m, sym, win, last, src="币安"):
                 ha="center", color="#E01E37", fontsize=10, fontweight="bold")
 
     # 图会被单独转发出去，脱离文字说明——所以来源必须画在图里，不能只写在卡片上
-    _en = "Bybit" if src == "Bybit" else "Binance"
+    # src 现在可能是"币安+Gate+Bybit"这种组合，英文回退要跟着走，
+    # 不能再写死一家（无中文字体时标题会骗人说数据只来自 Binance）
+    _en = "+".join({"币安": "Binance"}.get(x, x) for x in (src or "").split("+"))
     ax.set_title(T(f"{sym}/USDT 清算地图（估算）· {src}永续 · 近{win}",
                    f"{sym}/USDT liquidation map (estimated) - {_en} perp"),
                  fontsize=12, fontweight="bold", pad=22)
@@ -586,20 +779,31 @@ def render(m, sym, win, last, src="币安"):
 
 
 # ── 文字 ────────────────────────────────────────────────────
-def caption(m, sym, win, last, src="币安", days=None):
+def caption(m, sym, win, last, src="币安", days=None, share=None):
     """days = 实际覆盖了多少天。**够不够要写出来**：新上市的币点「1年」
     只能拿到它上市以来那几个月，标题却写着 1 年——不说的话没人看得出来
     （AKE 实测只有 333 天，BTR 363 天）。"""
     up = zones(m, "short")
     dn = zones(m, "long")
     cover = ""
-    want = WINDOWS[win][1]
+    # ⚠️ 这里以前拿 `WINDOWS[win][1]` 当天数比——那是**K 线根数**不是天数。
+    # 7日窗口是 168 根 1 小时线，于是 `7 < 168*0.95` 永远成立，
+    # **每一张 7 日图都在说"这个币上市时间不够"**，连 BTC 都不放过。
+    # 只有 90/180/1年 那三个日线窗口碰巧根数==天数，才看着是对的。
+    # 提示写错比不写更糟：它会让人以为数据缺了一大截。
+    want = WIN_DAYS.get(win)
     # 0.95：AKE 实测 333/365=91%，用 0.9 会漏掉——差一个月对"近1年"这个标题
     # 已经足够误导了
     if days is not None and want and days < want * 0.95:
         cover = f"，实际只有 {days:.0f} 天：这个币上市时间不够"
     lines = [f"💣 *{sym} 清算地图*（估算）· {src}永续 · 近{win}{cover}",
              f"现价 {_px(last)}"]
+    # 覆盖率必须写脸上：覆盖 21% 和覆盖 79% 画出来的图长得一模一样。
+    # 他拿来对的那份分析就是只够到 KuCoin+MEXC（全网 21%），
+    # 却报了个全网口径的结论，数字差了近一半。
+    cl = coverage_line(share, (src or "").split("+"))
+    if cl:
+        lines.append(cl)
     if dn:
         lines.append("")
         lines.append("🔻 *下方多头爆仓密集区*（跌下去会连环平多）")
@@ -652,8 +856,19 @@ def detail(m, sym, win):
         "没有任何交易所公布「某个价位挂着多少待爆仓的仓位」——那是每个账户的",
         "私有信息。CoinGlass 那张图也是推算的。**这是模型估算，不是数据。**",
         "",
+        "*数据来自几家？*",
+        "**一家的持仓量不是全网的持仓量。** 现在把币安 / Bybit / Gate 三家",
+        "时间戳能对上的持仓量加起来一起算，卡片上会写覆盖了全网的百分之多少、",
+        "还漏了谁。实测 BTR 五家的分布：",
+        "　币安 54%　Bybit 18%　KuCoin 14%　MEXC 7%　Gate 6%",
+        "只看币安一家 = 漏掉近一半的仓位；只看 KuCoin+MEXC = 只看到 21%，",
+        "拿它下全网结论会差出近一半（这是真拿别人的分析对出来的）。",
+        "KuCoin / MEXC 不提供逐根的历史持仓量，所以**只进分母不进图**。",
+        "各家合约乘数不同（有的按张、有的按币），这里一律走各家的美元口径，",
+        "绕开乘数——写死乘数的话哪天某个币改了规格，图会安静地错一个数量级。",
+        "",
         "*怎么算的*",
-        "1. 拿币安的持仓量历史，看每根 K 线期间持仓量**新增**了多少（减仓不算，",
+        "1. 拿合并后的持仓量历史，看每根 K 线期间持仓量**新增**了多少（减仓不算，",
         "　 那是平仓，不产生新的爆仓位）",
         "2. 把这些新增的仓当成建在那根 K 线的典型价上",
         "3. 永续里每份持仓同时是一多一空，所以同一份仓在两侧都留下爆仓位：",
@@ -733,10 +948,31 @@ def kb(sym, win):
     ])
 
 
+_share_cache = {}          # sym -> (ts, share)
+
+
+async def cached_share(sym):
+    """五家占比。**单独缓存、失败就返回 None**——它只是给卡片加一行覆盖率，
+    不能因为某一家的接口抽风就把整张图拖没。
+    `_get` 的返回值不动：那个元组的长度改过两次，每次都在别处安静地炸
+    （合约告警的配图就这么消失了几个版本）。"""
+    hit = _share_cache.get(sym)
+    if hit and time.time() - hit[0] < CACHE_TTL:
+        return hit[1]
+    try:
+        share, _last = await venue_share(sym)
+    except Exception as e:
+        log.info(f"清算地图取各所占比失败 {sym}: {e}")
+        share = None
+    _share_cache[sym] = (time.time(), share)
+    return share
+
+
 async def _send(message, sym, win, force=False):
     m, last, inst, src, days = await _get(sym, win, force)
+    share = await cached_share(sym)
     buf = render(m, sym, win, last, src)
-    cap = caption(m, sym, win, last, src, days)
+    cap = caption(m, sym, win, last, src, days, share)
     try:
         await message.reply_photo(photo=buf, caption=cap, parse_mode="Markdown",
                                   reply_markup=kb(sym, win))

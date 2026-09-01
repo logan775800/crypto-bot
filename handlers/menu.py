@@ -493,7 +493,7 @@ def notify_kb(chat_id):
     原来的位置一个都没删，这里只是把最常用的提上来。
     """
     from storage import data as _sd
-    from handlers import breakout as _bo, newtoken as _nt
+    from handlers import breakout as _bo, newtoken as _nt, liqflip as _lf
 
     pp = "✅" if str(chat_id) in (_sd.get("pump_watch") or {}) else "⬜"
     _cw = _sd.get("contract_watch") or []
@@ -503,6 +503,7 @@ def notify_kb(chat_id):
     bk = "✅" if bk_on else "⬜"
     nc = "✅" if _nt.is_on(chat_id) else "⬜"
     bs = "✅" if _nt.burst_enabled(chat_id) else "⬜"
+    lf = "✅" if _lf.is_on(chat_id) else "⬜"
     return InlineKeyboardMarkup([
         [InlineKeyboardButton(f"{pp} ⚡急涨急跌(15m,可调阈值)", callback_data="pump:panel")],
         [InlineKeyboardButton(f"{cp} 📊合约异动(24h±20%起,带清算地图)",
@@ -514,6 +515,9 @@ def notify_kb(chat_id):
         # 梗爆发和上面那条判据完全不同：它看的是「同一个名字 30 分钟内被抄几次」，
         # 不是「哪个池子够大」。两个是正交的信号，所以是两个开关不是一个档位。
         [InlineKeyboardButton(f"{bs} 🀄梗爆发(同名被抄的速度)", callback_data="nt:burst")],
+        # 判据是回测出来的（26币7天5万个窗口），不是"看着像"——
+        # 所以它配得上一个一级开关，而不是塞进某个面板的第三层
+        [InlineKeyboardButton(f"{lf} 🩸爆仓一边倒(摸顶抄底)", callback_data="lf:panel")],
         [InlineKeyboardButton("🔔 价格/条件提醒", callback_data="cat_alert")],
         [InlineKeyboardButton("📬 定期订阅推送", callback_data="cat_subs")],
         _back()])
@@ -618,6 +622,16 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await safe_edit(query, NOTIFY_TEXT, reply_markup=notify_kb(cid),
                         parse_mode="Markdown")
+
+    elif d.startswith("lf:"):
+        # 爆仓一边倒：lf:panel 设置面板 / lf:toggle 开关 / lf:lv:档 / lf:test 自检
+        from handlers import liqflip as _lf
+        if d == "lf:panel":
+            await safe_edit(query, _lf.panel_text(query.message.chat_id),
+                            parse_mode="Markdown",
+                            reply_markup=_lf.panel_kb(query.message.chat_id))
+        else:
+            await _lf.on_button(query, context)
 
     elif d == "nt:burst":
         from handlers import newtoken as _nt

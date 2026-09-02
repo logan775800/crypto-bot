@@ -134,8 +134,28 @@ def seg_stats(rows):
         return None
     up = sum(1 for a, b in zip(oi, oi[1:]) if b > a)
     dn = sum(1 for a, b in zip(oi, oi[1:]) if b < a)
+    # 这段时间**一共平掉了多少名义金额**（只累计减少的那些根）。
+    #
+    # ⚠️ 必须**逐根按当时的价格**折算，不能拿总张数变化乘期末价。
+    # 真机撞到的：BTR 那段价格跌了 52%，用期末价折算的话，早先在高位
+    # 平掉的仓被严重低估 → 分母偏小 → "强平占比"被算成 76%（虚高）。
+    #
+    # 也**不能直接拿 open_interest_usd 的首尾差**：那个数同时包含
+    # "有人平仓"和"价格跌了"两件事——价格腰斩而没人动手时它也会腰斩。
+    closed = 0.0
+    for a, b in zip(rows, rows[1:]):
+        da = _f(a.get("open_interest")) - _f(b.get("open_interest"))
+        if da <= 0:
+            continue
+        px = _f(b.get("mark_price"))
+        oa, ua = _f(a.get("open_interest")), _f(a.get("open_interest_usd"))
+        # 优先用这根自己的张→美元换算率，取不到再退回标记价
+        rate = (ua / oa) if (oa > 0 and ua > 0) else px
+        if rate > 0:
+            closed += da * rate
     return {
         "bars": len(rows),
+        "closed_usd": closed,
         "oi_first": oi[0], "oi_last": oi[-1],
         "oi_pct": (oi[-1] - oi[0]) / oi[0] * 100,
         "oi_usd": _f(rows[-1].get("open_interest_usd")),
@@ -511,6 +531,71 @@ def squeeze_verdict(now, prev):
             f"贴身的那批燃料已经烧完，现在两边都没有可点的东西")
 
 
+# ── 持仓掉的那部分：自己跑的，还是被打爆的 ────────────────────
+#
+# 起因是另一份 BTR 分析里那句「24h 全网爆仓只有 $52 万，爆仓量很小，
+# 说明大部分是主动平仓，不是被强平」。这个除法本身是对的——
+# |ΔOI| 是"少了多少仓位"，爆仓额是"其中被强制平掉的"，同口径（都是名义金额）。
+#
+# 但去量了之后结论**和那句话相反**（`tools\\probe_forced.py`，
+# 35 个币 / 30 天 / 1107 个 24h 减仓窗口）：
+#
+#     强平占比 < 5%（几乎全是主动平仓）   73.7%   ← 中位数只有 1.9%
+#              5~20%                    19.5%
+#             20~50%                     5.1%
+#              ≥50%（以被强平为主）        1.7%
+#
+# **主动平仓才是减仓的常态**，四分之三的窗口都这样。所以"爆仓量小说明
+# 是主动平仓"是在描述默认状态，不是洞察，每次都印等于每次都说废话。
+#
+# 真正有信息量的是**反过来**——强平占比高的那少数窗口跌得明显更狠：
+#
+#     强平占比 ≥20% 的窗口：价格中位 -2.77%（6h 尺度，只占 3~7%）
+#     强平占比 <5%  的窗口：价格中位 -0.97%
+#
+# 所以这一栏做成**异常时才出声**：常态闭嘴，被强平主导时才报，并且带上
+# "这种情况只占百分之几"，让人知道自己看见的是不是稀有事件。
+FORCED_NOTABLE = 20.0     # 超过这个算"强平占相当一部分"（实测只占 6.8%）
+FORCED_DOMINANT = 50.0    # 超过这个算"以被强平为主"（实测只占 1.7%）
+
+
+def forced_share(s):
+    """这段时间平掉的仓位里，被强平的占几成。→ % 或 None。
+
+    分母用 `closed_usd`（逐根按当时价格累计的平仓名义额），
+    不用首尾差——理由见 `seg_stats` 里那段注释：价格大幅波动时，
+    首尾差会把"价格跌了"算成"有人平仓"，或者反过来。
+
+    只在**净减仓**时有意义：加仓的窗口没什么可分的。
+    减得太少也不算（分母小，比值全是噪声）。
+
+    ⚠️ 分子分母都是 Gate 一家的（爆仓额只有它给逐根的），所以这是
+    **Gate 内部的比例**，不是全网。跨源相除会得出一个谁都不是的数。
+    """
+    if not s or s["oi_first"] <= 0:
+        return None
+    if s["oi_last"] >= s["oi_first"] * 0.97:
+        return None                    # 没怎么净减仓
+    closed = s.get("closed_usd") or 0
+    if closed <= 0:
+        return None
+    return (s["long_liq"] + s["short_liq"]) / closed * 100
+
+
+def forced_words(pct):
+    """**常态闭嘴。** 73.7% 的减仓窗口强平占比都在 5% 以下，
+    每次都印一句"主要是主动平仓"等于每次都说废话。"""
+    if pct is None or pct < FORCED_NOTABLE:
+        return None
+    if pct >= FORCED_DOMINANT:
+        return (f"**这波减仓 {pct:.0f}% 是被强平的，不是自己走的** —— "
+                f"实测这种窗口只占 1.7%，是强制去杠杆。"
+                f"同类窗口价格中位 -2.8%，比主动平仓那类（-1.0%）狠得多")
+    return (f"这波减仓里有 **{pct:.0f}% 是被强平的** —— 实测只占 6.8% 的窗口"
+            f"到得了这个程度。强平主导的去杠杆通常更猛，"
+            f"同类窗口价格中位 -2.8%（主动平仓那类 -1.0%）")
+
+
 def who_left(s):
     """账户数原值告诉你**是谁在离场**，比值告诉不了。
 
@@ -805,16 +890,25 @@ def gate_lines(g, chg=None, venues=None, liqp=None):
     if vv:
         out.append(f"→ {vv}")
 
-    # ④ 大户 vs 散户：两个口径可以同时成立且不矛盾
+    # ④ 减掉的仓是自己走的还是被打爆的。**只在异常时出声**——
+    #    实测 73.7% 的减仓窗口强平占比都在 5% 以下，主动平仓才是常态
+    fw = forced_words(forced_share(now))
+    if fw:
+        out.append(f"→ {fw}")
+
+    # ⑤ 大户 vs 散户：两个口径可以同时成立且不矛盾
     bs = big_vs_small(now)
     if bs:
         out.append(f"→ {bs}")
 
     out.append("")
-    out.append(f"持仓量 {_money(now['oi_usd'])} U（{h}h {now['oi_pct']:+.1f}%，"
-               f"振幅 {now['amp']:.1f}%，升 {now['up']} 次/降 {now['dn']} 次）")
+    # ⚠️ 这个数是**主源（Gate）一家的**，不是全网。紧挨着下面"三家各自"那行印，
+    # 不标出处会被读成合计——而 Gate 在多数币上只占全网一到两成。
+    out.append(f"持仓量 {_money(now['oi_usd'])} U · 仅 Gate"
+               f"（{h}h {now['oi_pct']:+.1f}%，振幅 {now['amp']:.1f}%，"
+               f"升 {now['up']} 次/降 {now['dn']} 次）")
     if vdetail:
-        out.append(f"　三家各自：{vdetail}")
+        out.append(f"　三家各自的变化：{vdetail}")
     out.append(f"爆仓　{_liq_pair(now)}")
     if prev:
         out.append(f"　└ 前 {ph} 小时是 {_liq_pair(prev)}")

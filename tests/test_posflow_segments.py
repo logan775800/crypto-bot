@@ -334,3 +334,91 @@ def test_venue_change_uses_rates_not_absolutes():
     src = inspect.getsource(P.venue_oi)
     assert "只能比变化率不能比绝对值" in src
     assert "倒序" in src, "Bybit 是最新在前，索引反了会算出相反的变化"
+
+
+# ── 减掉的仓：自己走的还是被打爆的 ──────────────────────────
+# 另一份 BTR 分析里说「爆仓量很小，说明大部分是主动平仓」。除法本身对，
+# 但实测（35 币 / 30 天 / 1107 个 24h 减仓窗口）结论**和那句话相反**：
+#   强平占比 <5% 的占 73.7%，中位数才 1.9%
+# **主动平仓才是减仓的常态**，所以那句话在描述默认状态，不是洞察。
+# 有信息量的是反过来——强平占比高的窗口跌得更狠（-2.8% vs -1.0%）。
+def _seg(oi_a, oi_b, liq, usd=None):
+    """oi_* 是张数；bar() 里 open_interest_usd = 张数×10，所以换算率恒为 10。"""
+    rows = [bar(oi_a, ll=liq / 2, sl=liq / 2), bar(oi_b)]
+    return P.seg_stats(rows)
+
+
+def test_normal_deleveraging_stays_quiet():
+    """73.7% 的减仓窗口强平占比都在 5% 以下。每次都印一句
+    「主要是主动平仓」等于每次都说废话——常态必须闭嘴。"""
+    s = _seg(1_000_000, 800_000, liq=20_000)      # 20万美元被平，2万被强平 = 1%
+    assert P.forced_words(P.forced_share(s)) is None
+
+
+def test_forced_deleveraging_speaks_up_with_how_rare_it_is():
+    """强平占相当一部分时才出声，并且要带上"这种情况只占百分之几"
+    ——不给稀有度，看的人不知道自己看见的是不是异常。"""
+    s = _seg(1_000_000, 500_000, liq=1_500_000)   # 500万被平，150万被强平 = 30%
+    t = P.forced_words(P.forced_share(s))
+    assert t and "被强平" in t
+    assert "%" in t and ("6.8" in t or "1.7" in t), "没说清这种情况有多罕见"
+
+
+def test_dominant_forced_gets_a_stronger_wording():
+    s = _seg(1_000_000, 400_000, liq=4_000_000)   # 600万被平，400万被强平 = 67%
+    t = P.forced_words(P.forced_share(s))
+    assert t and "不是自己走的" in t
+
+
+def test_ratio_is_meaningless_when_position_grew():
+    """加仓的窗口分母是负的，比值没有含义——不能硬算。"""
+    assert P.forced_share(_seg(500_000, 900_000, liq=50_000)) is None
+
+
+def test_tiny_drop_is_not_measured():
+    """减得太少分母就小，比值全是噪声。"""
+    assert P.forced_share(_seg(1_000_000, 990_000, liq=5_000)) is None
+
+
+def test_closed_notional_is_accumulated_bar_by_bar():
+    """**必须逐根按当时的价格折算。** 真机撞到的：BTR 那段价格跌了 52%，
+    用期末价折算总张数变化，早先在高位平掉的仓被严重低估 → 分母偏小 →
+    强平占比被算成 76%（虚高）。
+    也不能直接用 open_interest_usd 的首尾差：那个数同时包含"有人平仓"
+    和"价格跌了"两件事——价格腰斩而没人动手时它也会腰斩。"""
+    import inspect
+    src = inspect.getsource(P.seg_stats)
+    assert "逐根按当时的价格" in src
+    assert "closed" in src
+
+
+def test_price_crash_alone_is_not_counted_as_closing():
+    """价格腰斩但张数没动 —— 一分钱的仓都没平，比值不该有值。"""
+    rows = [{"open_interest": 1000, "open_interest_usd": 100_000,
+             "mark_price": 100, "long_liq_usd": 0, "short_liq_usd": 0},
+            {"open_interest": 1000, "open_interest_usd": 50_000,
+             "mark_price": 50, "long_liq_usd": 0, "short_liq_usd": 0}]
+    s = P.seg_stats(rows)
+    assert s["closed_usd"] == 0
+    assert P.forced_share(s) is None
+
+
+def test_closing_is_valued_at_the_price_it_happened_at():
+    """两根各平 500 张：第一根价 100、第二根价 50 →
+    应该是 500×100 + 500×50 = 75,000，不是 1000×50=50,000。"""
+    rows = [{"open_interest": 2000, "open_interest_usd": 200_000,
+             "mark_price": 100, "long_liq_usd": 0, "short_liq_usd": 0},
+            {"open_interest": 1500, "open_interest_usd": 75_000,
+             "mark_price": 50, "long_liq_usd": 0, "short_liq_usd": 0},
+            {"open_interest": 1000, "open_interest_usd": 50_000,
+             "mark_price": 50, "long_liq_usd": 0, "short_liq_usd": 0}]
+    s = P.seg_stats(rows)
+    assert s["closed_usd"] == pytest.approx(75_000, rel=0.01)
+
+
+def test_oi_line_says_it_is_one_venue_only():
+    """那行数字是 Gate 一家的，却紧挨着"三家各自"印——
+    不标出处会被读成全网合计，而 Gate 在多数币上只占一到两成。"""
+    g = _fake_g(flat_rows(24), [bar(1e6) for _ in range(72)], hours=24)
+    txt = "\n".join(P.gate_lines(g, chg=1.0))
+    assert "仅 Gate" in txt

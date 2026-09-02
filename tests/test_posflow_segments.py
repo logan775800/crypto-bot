@@ -422,3 +422,75 @@ def test_oi_line_says_it_is_one_venue_only():
     g = _fake_g(flat_rows(24), [bar(1e6) for _ in range(72)], hours=24)
     txt = "\n".join(P.gate_lines(g, chg=1.0))
     assert "仅 Gate" in txt
+
+
+# ── 转向清单：接下来看什么才算真的转了 ──────────────────────
+def test_checklist_direction_follows_the_move():
+    """正在跌就列**看涨确认**，正在涨就列**见顶确认**。
+    两边列同一套条件是错的——涨势里「持仓增加」是延续不是反转。"""
+    now = P.seg_stats([bar(1e6, ll=100, sl=100), bar(9e5)])
+    prev = P.seg_stats([bar(1e6, ll=5000, sl=5000) for _ in range(3)])
+    down = P.flip_checklist(now, prev, chg=-20, apr=5)
+    up = P.flip_checklist(now, prev, chg=+20, apr=5)
+    assert "看涨确认" in down[0]
+    assert "见顶确认" in up[0]
+    assert [i[0] for i in down[1]] != [i[0] for i in up[1]]
+
+
+def test_checklist_counts_how_many_are_met():
+    """差一项和差三项完全是两回事。只给一句"尚未确认"等于没说。"""
+    now = P.seg_stats([bar(1e6, ll=100, sl=100), bar(9e5)])
+    prev = P.seg_stats([bar(1e6, ll=5000, sl=5000) for _ in range(3)])
+    _t, _items, hit, total = P.flip_checklist(now, prev, chg=-20, apr=5)
+    assert total == 4 and 0 <= hit <= 4
+
+
+def test_unknown_items_are_not_counted_as_failures():
+    """取不到数 ≠ 没满足。混在一起会让"还差 N 项"变成假的。"""
+    now = P.seg_stats([bar(1e6), bar(9e5)])
+    got = P.flip_checklist(now, None, chg=-10, apr=None)
+    _t, items, hit, total = got
+    marks = [ok for _n, ok, _d in items]
+    assert None in marks
+    assert total < len(items), "取不到的那几项被算进分母了"
+
+
+def test_checklist_summary_shares_the_title_line():
+    """整张卡有 24 行预算（超了按钮会被挤出屏幕）。
+    实测加上清单正好卡在 25 行，所以汇总必须并进标题。"""
+    now = P.seg_stats([bar(1e6, ll=100, sl=100), bar(9e5)])
+    prev = P.seg_stats([bar(1e6, ll=5000, sl=5000) for _ in range(3)])
+    lines = P.checklist_lines(P.flip_checklist(now, prev, chg=-20, apr=5))
+    assert len(lines) == 5, f"清单占了 {len(lines)} 行，预算是 5"
+    assert "还差" in lines[0] or "齐了" in lines[0]
+
+
+def test_whole_card_fits_the_line_budget():
+    g = _fake_g(flat_rows(24), [bar(1e6, ll=5000, sl=5000) for _ in range(72)],
+                hours=24)
+    n = len(P.gate_lines(g, chg=-5.0, venues={"bn": 1.0, "gate": -2.0}, apr=10))
+    assert n <= 24, f"卡片 {n} 行，按钮会被挤出屏幕"
+
+
+def test_no_checklist_without_a_price_move():
+    """不知道在涨还是在跌，就不知道该列哪一套。宁可不列。"""
+    now = P.seg_stats([bar(1e6), bar(9e5)])
+    assert P.flip_checklist(now, None, chg=None) is None
+
+
+# ── 币种卡片上的爆仓行 ──────────────────────────────────────
+def test_coin_card_gets_a_liquidation_line():
+    """发个币名出来的那张卡是他最常用的路径，以前上面没有爆仓数据——
+    持仓量说的是"还剩多少仓"，爆仓说的是"过程中被打掉了多少"，两件事。"""
+    import inspect
+    from handlers import detail
+    src = inspect.getsource(detail.build_info_card)
+    assert "_liq_line" in src
+    assert "liqs" in src
+
+
+def test_liquidation_line_only_interprets_when_one_sided():
+    """五五开时说「多头略多」是把噪音当结论。"""
+    import inspect
+    src = inspect.getsource(P.liq_line)
+    assert "0.8" in src and "几乎全是" in src

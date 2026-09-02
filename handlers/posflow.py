@@ -784,6 +784,36 @@ def liq_words(p):
     return (f"爆仓强度在自己 {p['days']:.0f} 天历史里排 **{v:.0f} 分位**（{w}）")
 
 
+# ── 给币种卡片用的一行爆仓摘要 ────────────────────────────────
+# 发个币名出来的那张卡是他最常用的路径，但上面一直没有爆仓数据。
+# 卡片有 24 行的硬预算（超了按钮会被挤出屏幕），所以这里**最多两行**：
+# 一行数字、一行解读，解读只在有话可说时才出现。
+async def liq_line(symbol, hours=24):
+    """→ [一行或两行] 或 []。取不到就整段不出现，不占位不报错。"""
+    import httpx
+    sym = symbol.upper().replace("USDT", "")
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            rows = await _gate_stats(c, sym, hours + 1)
+    except Exception as e:
+        log.info(f"[posflow] {sym} 卡片爆仓行取数失败: {e}")
+        return []
+    if len(rows) < 3:
+        return []
+    lg = sum(_f(x.get("long_liq_usd")) for x in rows)
+    sh = sum(_f(x.get("short_liq_usd")) for x in rows)
+    if lg + sh <= 0:
+        return [f"爆仓({hours}h): 两边都是 0——这个币没人被强平"]
+    out = [f"爆仓({hours}h): 多 {_money(lg)} / 空 {_money(sh)}"]
+    tot = lg + sh
+    # 一边压倒性地多才说话。五五开时说"多头略多"是把噪音当结论。
+    if lg >= tot * 0.8:
+        out.append("　└ 几乎全是多头被打——价格被砸穿的那一侧是多头")
+    elif sh >= tot * 0.8:
+        out.append("　└ 几乎全是空头被打——价格被轧上去的那一侧是空头")
+    return out
+
+
 _cache = {}          # sym -> (ts, block)
 CACHE_TTL = 120
 
@@ -837,11 +867,80 @@ def kb(sym, hours=DEFAULT_HOURS):
     ])
 
 
+# ── 转向清单：接下来要看到什么，才算真的转了 ──────────────────
+#
+# 卡片现在能说清"发生了什么"，但说不清"**接下来看什么才算翻转**"。
+# 后者才是能拿来盯盘的东西——不然每隔一小时就得把整张卡重读一遍，
+# 自己在脑子里比对哪几项变了。
+#
+# 四个条件取自那套「新资金重新开多」的判据，每一项这里都已经有数据：
+#     价格 ↑ + 持仓 ↑ + 爆仓减少 + 资金费率回到正常区间
+# 逐项打勾，并且**报"满足几项"**——差一项和差三项完全是两回事，
+# 只给一句"尚未确认"等于没说。
+FUND_NORMAL_APR = 30.0     # 资金费年化在这个数以内算"回到正常"
+
+
+def flip_checklist(now, prev, chg=None, apr=None):
+    """→ (标题, [逐条], 满足数, 总数)。数据不够就返回 None。
+
+    方向按当前处境定：正在跌就列**看涨确认**，正在涨就列**见顶确认**。
+    两边列同一套条件是错的——涨势里"持仓增加"是延续不是反转。
+    """
+    if not now or chg is None:
+        return None
+    down = chg < 0
+    liq_now = (now["long_liq"] + now["short_liq"]) / max(now["bars"], 1)
+    liq_prev = ((prev["long_liq"] + prev["short_liq"]) / max(prev["bars"], 1)
+                if prev else None)
+    items = []
+    if down:
+        title = "🟢 *看涨确认*（要新资金真的进来，这四项得凑齐）"
+        items.append(("价格企稳转涨", chg > 0,
+                      f"现在 {chg:+.1f}%"))
+        items.append(("持仓量重新增加", now["oi_pct"] > 0,
+                      f"现在 {now['oi_pct']:+.1f}%"))
+    else:
+        title = "🔴 *见顶确认*（这四项凑齐说明是轧空不是真涨）"
+        items.append(("价格涨不动了", chg < 2,
+                      f"现在 {chg:+.1f}%"))
+        items.append(("持仓量不再增加", now["oi_pct"] <= 0,
+                      f"现在 {now['oi_pct']:+.1f}%"))
+    if liq_prev is not None and liq_prev > 0:
+        ok = liq_now < liq_prev * 0.5
+        items.append(("爆仓平息下来", ok,
+                      f"每小时 {_money(liq_now)}，上一段 {_money(liq_prev)}"))
+    else:
+        items.append(("爆仓平息下来", None, "上一段没有爆仓，比不了"))
+    if apr is None:
+        items.append(("资金费率回到正常", None, "取不到"))
+    else:
+        items.append(("资金费率回到正常", abs(apr) <= FUND_NORMAL_APR,
+                      f"年化 {apr:+.0f}%（±{FUND_NORMAL_APR:.0f}% 以内算正常）"))
+    hit = sum(1 for _n, ok, _d in items if ok is True)
+    total = sum(1 for _n, ok, _d in items if ok is not None)
+    return title, items, hit, total
+
+
+def checklist_lines(got):
+    """**汇总并进标题，不单独占一行。** 整张卡有 24 行的预算
+    （超了按钮会被挤出屏幕），实测加上清单正好卡在 25 行。"""
+    if not got:
+        return []
+    title, items, hit, total = got
+    tail = ("　**齐了**" if total and hit == total
+            else f"　**{hit}/{total}，还差 {total - hit} 项**" if total else "")
+    out = [title + tail]
+    for name, ok, detail in items:
+        mark = "✅" if ok is True else ("⬜" if ok is False else "❔")
+        out.append(f"　{mark} {name}　{detail}")
+    return out
+
+
 def _liq_pair(s):
     return f"多 ${s['long_liq']:,.0f} / 空 ${s['short_liq']:,.0f}"
 
 
-def gate_lines(g, chg=None, venues=None, liqp=None):
+def gate_lines(g, chg=None, venues=None, liqp=None, apr=None):
     """Gate 那套的正文。**结论在最上面，数字在下面**——
     他定过的列表版式：结论一行，细节收在后面。"""
     now, prev = g["now"], g["prev"]
@@ -924,6 +1023,13 @@ def gate_lines(g, chg=None, venues=None, liqp=None):
         out.append(f"　{wl}")
     if abs(now["funding"]) > 0.0001:
         out.append(f"资金费率 {now['funding']:+.4f}%")
+
+    # 最后放「接下来看什么」。前面全是"发生了什么"，这一段是唯一能拿去
+    # 盯盘的——不然每小时得把整张卡重读一遍，自己在脑子里比对哪几项变了。
+    ck = checklist_lines(flip_checklist(now, prev, chg, apr))
+    if ck:
+        out.append("")
+        out.extend(ck)
     return out
 
 
@@ -953,6 +1059,8 @@ async def build_text(sym, hours=DEFAULT_HOURS):
         if isinstance(liqp, Exception):
             log.info(f"[posflow] {sym} 爆仓分位取数失败: {liqp}")
             liqp = None
+        # 转向清单要用资金费年化：费率是不是"回到正常"是四项之一
+        apr = f.get("funding_apr") if isinstance(f, dict) else None
         head = f"📊 *{escape_md(sym)} 持仓结构*　近 {hours} 小时"
         if chg is not None:
             head += f"　价格 {chg:+.1f}%"
@@ -960,7 +1068,7 @@ async def build_text(sym, hours=DEFAULT_HOURS):
                 f"｜对比段取前 {g['prev_hours']} 小时"
                 f"｜⚠️ 结构分析不构成投资建议")
         return (head + "\n\n"
-                + "\n".join(gate_lines(g, chg, venues, liqp)) + "\n" + tail)
+                + "\n".join(gate_lines(g, chg, venues, liqp, apr)) + "\n" + tail)
 
     f = await fetch(sym, hours)
     if not f:

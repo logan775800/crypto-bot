@@ -354,10 +354,11 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_
     # 没给才自己取，保证这个函数单独调用时行为不变。
     _flow_job = (asyncio.sleep(0, result=flow_lines(flow_pre)) if flow_pre is not None
                  else build_flow_block(sym))
-    md_res, rsi_res, flow, oils, fng, fint = await asyncio.gather(
+    from handlers.posflow import liq_line as _liq_line
+    md_res, rsi_res, flow, oils, fng, fint, liqs = await asyncio.gather(
         get_market_data([sym]), build_rsi_multi(sym), _flow_job,
         build_oi_ls(sym), get_fear_greed(), get_funding_interval(sym),
-        return_exceptions=True)
+        _liq_line(sym), return_exceptions=True)
 
     # 市值/排名/成交量/多周期涨跌 + 24h高低 + ATH + 供应量/FDV（CoinGecko 同一接口）
     md = None
@@ -448,6 +449,12 @@ async def build_info_card(symbol, spot, spot_src, swap, swap_fr, swap_src, flow_
             v = oils["ls"]
             lines.append(f"多空比: {v:.2f}　{_ls_read(v)}（{_ls_tag(v)}）")
             lines.append("　└ 口径是**账户数**不是持仓金额，反映散户情绪，常作反向参考")
+
+    # 爆仓：持仓量说的是"现在还剩多少仓"，爆仓说的是"过程中被打掉了多少"，
+    # 两件事。以前这张卡只有前者，看不出这波是有人认赔走的还是被强平的。
+    # 只有 Gate 给逐根的多空爆仓额（币安 allForceOrders 已 404）。
+    if isinstance(liqs, list) and liqs:
+        lines.extend(liqs)
 
     # 恐惧贪婪指数（全局）
     if isinstance(fng, dict) and fng.get("value") is not None:

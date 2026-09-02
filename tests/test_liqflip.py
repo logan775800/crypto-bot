@@ -53,14 +53,31 @@ def test_threshold_is_per_coin_not_a_fixed_dollar_amount():
     assert L.percentile([1.0, 2.0], 0.95) is None, "样本太少还给分位数"
 
 
-def test_higher_level_means_a_higher_percentile():
-    """回测里门槛越高信号越强，所以"严"必须是更高的分位不是更低。"""
-    assert L.LEVELS["宽"] < L.LEVELS["标准"] < L.LEVELS["严"]
-    assert L.LEVELS[L.DEFAULT_LEVEL] == 0.95
+def test_levels_tighten_on_both_gates():
+    """档位管两个数：相对分位 + 绝对下限，越严的档两个都更高。
+
+    ⚠️ 这条原来断言的是「门槛越高信号越强」。**加了绝对闸之后那句话不成立了**
+    ——实测三档胜率都在 65~68%，分位再往上提只降频率不提胜率。
+    所以档位的语义从"提高准确度"变成了"控频率"，断言也跟着改成
+    只锁单调性，不再暗示胜率。
+    """
+    qs = [L.LEVELS[k][0] for k in ("宽", "标准", "严")]
+    fs = [L.LEVELS[k][1] for k in ("宽", "标准", "严")]
+    assert qs[0] < qs[1] < qs[2]
+    assert fs[0] < fs[1] < fs[2]
+    assert L.LEVELS[L.DEFAULT_LEVEL] == (0.95, 30_000)
+
+
+def test_absolute_floor_kills_the_zero_edge_zone():
+    """他实际收到「爆仓 5106 U，100% 是空头」之后骂的那件事。
+    实测 **$1 万以下抄底胜率 49.5%，基线 49.6%——零边际**，
+    而 32 个币里 27 个的 90 分位低于 2 万美元，绝大多数命中落在那里。
+    所以最宽的那档也不能让 $1 万以下的进来。"""
+    assert min(f for _q, f in L.LEVELS.values()) >= 10_000
 
 
 # ── 卡片：限定条件不能掉 ────────────────────────────────────
-@pytest.mark.parametrize("q", sorted(L.LEVELS.values()))
+@pytest.mark.parametrize("q", sorted(v[0] for v in L.LEVELS.values()))
 def test_every_level_has_backtested_numbers(q):
     """卡片上印的胜率必须每档都有实测值。缺一档就会退回默认值 0，
     卡片上会出现「上涨概率 0%」这种明显错误的话。"""
@@ -74,7 +91,7 @@ def test_long_side_card_says_one_hour():
     t = L.format_hit("SOL", "long", 0.93, 412_000, 180_000, 128.4, 0.95)
     assert "1 小时" in t
     assert "4 小时就没了" in t
-    assert "68%" in t and "基线" in t
+    assert "66%" in t and "基线" in t
 
 
 def test_short_side_card_says_four_hours_and_the_tail_risk():
@@ -90,7 +107,7 @@ def test_short_side_card_says_four_hours_and_the_tail_risk():
 def test_card_shows_the_sample_size_and_the_baseline():
     """只给"68%"没有基线，读的人不知道这算不算高（基线就有 49.6%）。"""
     t = L.format_hit("SOL", "long", 0.93, 412_000, 180_000, 128.4, 0.95)
-    assert "样本 181" in t
+    assert "样本 125" in t
     assert "基线" in t
 
 
@@ -109,8 +126,9 @@ def test_panel_admits_leverage_cannot_be_filtered():
 
 def test_panel_shows_the_backtest_table():
     t = L.panel_text(-100)
-    assert "68.0%" in t and "33.6%" in t
+    assert "68.0%" in t and "33.3%" in t   # 宽档抄底 / 标准档摸顶
     assert "基线" in t
+    assert "绝对下限" in t, "没写清第二道闸"
 
 
 # ── 去重与闸门 ──────────────────────────────────────────────
@@ -188,7 +206,7 @@ def test_toggle_and_level():
     assert not L.is_on(-100)
     L.toggle(-100, True)
     assert L.is_on(-100)
-    assert L.set_level("严")[1] == L.LEVELS["严"]
+    assert L.set_level("严")[1:] == L.LEVELS["严"]
     assert L.set_level("没这个档") is None
     L.toggle(-100, False)
     assert not L.is_on(-100)

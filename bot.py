@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch, newtoken, posflow, liqflip, alpha
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch, newtoken, posflow, liqflip, alpha, listgap
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -113,6 +113,8 @@ BOT_COMMANDS = [
     BotCommand("pos", "📊 持仓结构(这波是大户加仓还是散户接盘)"),
     BotCommand("liqflip", "🩸 爆仓一边倒告警(摸顶抄底)"),
     BotCommand("alpha", "🔮 币安上币候选池(还没上现货的)"),
+    BotCommand("gapspot", "🕳 三家现货上币缺口(别家有它没有)"),
+    BotCommand("gapfut", "🕳 三家合约上币缺口"),
     BotCommand("movers", "📸 异动快照"),
     BotCommand("weak", "😴 弱势/横盘扫描"),
     BotCommand("momentum", "📈 动量轮动回测"),
@@ -478,6 +480,10 @@ def main():
     app.add_handler(CommandHandler("liqflip", liqflip.liqflip_cmd))
     # 币安上币候选池：Alpha 是官方孵化位，不是预知上币，基础概率 14%
     app.add_handler(CommandHandler("alpha", alpha.alpha_cmd))
+    # 跨所缺口：只有币安有公开孵化池，Gate 403 / Bybit 404，
+    # 所以「三家的候选池」只能用三家上币列表相减来算
+    app.add_handler(CommandHandler("gapspot", listgap.gapspot_cmd))
+    app.add_handler(CommandHandler("gapfut", listgap.gapfut_cmd))
     app.add_handler(CommandHandler("liqmap", liqmap.liqmap_cmd))
     app.add_handler(CommandHandler("lmap", liqmap.liqmap_cmd))
     app.add_handler(CommandHandler("compare", price.compare))

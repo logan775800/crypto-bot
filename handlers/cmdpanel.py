@@ -36,6 +36,13 @@ MODULE_CN = {
     "handlers.chart": "📈 分析与回测",
     "handlers.annotchart": "📈 分析与回测",
     "handlers.liqmap": "📈 分析与回测",   # /liqmap 清算地图
+    # ⚠️ 新加模块**必须在这儿登记分类**，否则命令掉进「其他」。
+    # 这五个是被 test_almost_nothing_falls_into_other 一次抓出来的——
+    # 连着几版都忘了登记，而命令面板上完全看不出来（它们照样能点）。
+    "handlers.posflow": "📈 分析与回测",   # /pos 持仓结构
+    "handlers.liqflip": "🔔 预警与监控",   # /liqflip 爆仓一边倒
+    "handlers.alpha": "🔔 预警与监控",     # /alpha 币安上币候选池
+    "handlers.listgap": "💰 行情查询",     # /gapspot /gapfut 跨所上币缺口
     "handlers.strategy": "📈 分析与回测",
     "handlers.backtest": "📈 分析与回测",
     "handlers.weak_scan": "📈 分析与回测",

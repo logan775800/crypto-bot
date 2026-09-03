@@ -627,6 +627,11 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await safe_edit(query, NOTIFY_TEXT, reply_markup=notify_kb(cid),
                         parse_mode="Markdown")
 
+    elif d.startswith("gp:"):
+        # 跨所上币缺口：gp:spot / gp:fut / gp:i
+        from handlers import listgap as _gp
+        await _gp.on_button(query, context)
+
     elif d.startswith("al:"):
         # 上币候选池：al:r 刷新 / al:toggle 开关
         from handlers import alpha as _al

@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch, newtoken, posflow, liqflip
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch, newtoken, posflow, liqflip, alpha
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -112,6 +112,7 @@ BOT_COMMANDS = [
     BotCommand("liqmap", "💣 清算地图(各价位待强平仓位·估算)"),
     BotCommand("pos", "📊 持仓结构(这波是大户加仓还是散户接盘)"),
     BotCommand("liqflip", "🩸 爆仓一边倒告警(摸顶抄底)"),
+    BotCommand("alpha", "🔮 币安上币候选池(还没上现货的)"),
     BotCommand("movers", "📸 异动快照"),
     BotCommand("weak", "😴 弱势/横盘扫描"),
     BotCommand("momentum", "📈 动量轮动回测"),
@@ -475,6 +476,8 @@ def main():
     app.add_handler(CommandHandler("pos", posflow.pos_cmd))
     # 爆仓一边倒：5 分钟内某一侧被扫光。判据是回测出来的，见模块头部那张表
     app.add_handler(CommandHandler("liqflip", liqflip.liqflip_cmd))
+    # 币安上币候选池：Alpha 是官方孵化位，不是预知上币，基础概率 14%
+    app.add_handler(CommandHandler("alpha", alpha.alpha_cmd))
     app.add_handler(CommandHandler("liqmap", liqmap.liqmap_cmd))
     app.add_handler(CommandHandler("lmap", liqmap.liqmap_cmd))
     app.add_handler(CommandHandler("compare", price.compare))
@@ -741,6 +744,9 @@ def main():
     # 用倒数第二根（已收盘）判，错开半个周期避免每轮都撞在收盘瞬间
     jq.run_repeating(monitor.tracked(liqflip.scan, "爆仓一边倒", 300),
                      interval=300, first=260)
+    # Alpha 名单一天变不了几次，一小时一轮足够；first 错开别和别的任务撞在一起
+    jq.run_repeating(monitor.tracked(alpha.scan, "上币候选池", 3600),
+                     interval=3600, first=420)
     jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
     jq.run_repeating(monitor.tracked(rtrade.check_liq_alerts, "实盘爆仓预警", 60), interval=60, first=55)  # 实盘爆仓临近预警，每60秒
     jq.run_repeating(monitor.tracked(riskguard.check_risk, "风险守护", 60), interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒

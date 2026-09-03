@@ -144,6 +144,57 @@ async def binance_spot():
             if s.get("status") == "TRADING"}
 
 
+# ── 别家上了没：他看到 MARSCOIN 在 Gate/Bybit 之后问出来的 ──────
+#
+# 「已经在别家上了」是个和市值正交的信号：**需求被别家验证过**。
+# 实测候选 319 个里有 167 个已经在币安合约 / Gate / Bybit 上——
+# 这一半和另一半，从"离上币安现货还有多远"看不是一回事。
+#
+# 注意币安**合约**也算：MARSCOIN 就是先上币安合约（09-01）、
+# 现货还没上。合约先行是常见路径，不把它算进来会漏掉最贴近的那一批。
+async def cex_sets():
+    """→ (币安合约, Gate合约, Bybit现货)。取不到的那家返回空集，不影响其余。"""
+    import asyncio
+    out = {"fut": set(), "gate": set(), "bybit": set()}
+
+    async def go(c, key, url, params, pick):
+        try:
+            r = await c.get(url, params=params)
+            if r.status_code == 200:
+                out[key] = pick(r.json())
+        except Exception as e:
+            log.info(f"[alpha] 取 {key} 列表失败: {e}")
+
+    async with httpx.AsyncClient(timeout=25) as c:
+        await asyncio.gather(
+            go(c, "fut", "https://fapi.binance.com/fapi/v1/exchangeInfo", None,
+               lambda j: {s["baseAsset"] for s in (j.get("symbols") or [])
+                          if s.get("status") == "TRADING"}),
+            go(c, "gate", "https://api.gateio.ws/api/v4/futures/usdt/contracts",
+               None, lambda j: {x["name"][:-5] for x in (j or [])
+                                if str(x.get("name", "")).endswith("_USDT")}),
+            go(c, "bybit", "https://api.bybit.com/v5/market/instruments-info",
+               {"category": "spot"},
+               lambda j: {x["symbol"][:-4] for x in
+                          ((j.get("result") or {}).get("list") or [])
+                          if str(x.get("symbol", "")).endswith("USDT")}),
+            return_exceptions=True)
+    return out
+
+
+def where_listed(sym, sets):
+    """这个币已经在哪几家上了。→ 短字符串或 ""。"""
+    s = (sym or "").upper()
+    got = []
+    if s in (sets.get("fut") or set()):
+        got.append("币安合约")
+    if s in (sets.get("gate") or set()):
+        got.append("Gate")
+    if s in (sets.get("bybit") or set()):
+        got.append("Bybit")
+    return "/".join(got)
+
+
 def sym_of(x):
     return str(x.get("symbol") or "").upper()
 
@@ -169,14 +220,57 @@ def _money(v):
     return m(v)
 
 
-def line(x, i=None):
+def line(x, i=None, sets=None):
     n = f"{i}. " if i else "　"
+    w = where_listed(sym_of(x), sets or {})
+    # 已经在别家上了的标出来——这是和市值正交的一层信号（需求已被验证），
+    # 而且他就是看到 MARSCOIN 在 Gate/Bybit 才问的
+    tail = f"　🏷 {w}" if w else ""
     return (f"{n}*{escape_md(sym_of(x))}*　{x.get('chainName') or '?'}　"
             f"市值 {_money(_f(x, 'marketCap'))}　"
-            f"流动性 {_money(_f(x, 'liquidity'))}")
+            f"流动性 {_money(_f(x, 'liquidity'))}{tail}")
 
 
-def build_text(rows, spot):
+def find(rows, q):
+    """按代号模糊找。**榜单只列 12 个，池子里有几百个**——
+    他找 MARSCOIN 找不到，就是因为它市值不够进前 12，
+    而不是没收录。所以必须能单独查。"""
+    q = (q or "").upper().strip()
+    if not q:
+        return []
+    exact = [x for x in rows if sym_of(x) == q]
+    if exact:
+        return exact
+    return [x for x in rows if q in sym_of(x)][:8]
+
+
+def build_one(x, spot, sets, rate):
+    s = sym_of(x)
+    listed = s in spot
+    w = where_listed(s, sets)
+    addr = x.get("contractAddress") or ""
+    lines = [f"🔮 *{escape_md(x.get('symbol') or s)}*　"
+             f"{x.get('chainName') or '?'}", ""]
+    if listed:
+        lines.append("✅ **已经上了币安现货**——它已经从候选池毕业了")
+    else:
+        lines.append("⬜ 还没上币安现货，仍在候选池里")
+    lines += [
+        f"市值 {_money(_f(x, 'marketCap'))}　流动性 {_money(_f(x, 'liquidity'))}",
+        f"持币 {x.get('holders') or '?'}　24h {_f(x, 'percentChange24h'):+.1f}%",
+    ]
+    if w:
+        lines.append(f"🏷 已经在 **{w}** 上了"
+                     + ("（币安合约先行是常见路径）" if "币安合约" in w else ""))
+    elif not listed:
+        lines.append("🏷 别的所也还没上——只在 Alpha 池里")
+    if addr:
+        lines += ["", f"合约 `{addr}`", f"查它：`/oc {addr}`"]
+    lines += ["", f"⚠️ 候选不等于会上，基础概率 {rate:.0f}%。不构成投资建议"]
+    return "\n".join(lines)
+
+
+def build_text(rows, spot, sets=None):
     cand = candidates(rows, spot)
     grad = graduated(rows, spot)
     total = len([x for x in rows if not is_stock(x)])
@@ -189,15 +283,16 @@ def build_text(rows, spot):
         "",
     ]
     for i, x in enumerate(cand[:TOP_N], 1):
-        lines.append(line(x, i))
+        lines.append(line(x, i, sets))
     # 细节收进 ℹ️。整张卡有 24 行预算（超了按钮会被挤出屏幕），
     # 第一版把那张对比表印在卡上，直接 32 行。
     lines += [
         "",
-        "按**市值**排——实测那是唯一有区分度的指标（10.6x），"
-        "流动性只有 1.9x、持币数 0.8x（反的）。口径点 ℹ️",
-        f"⚠️ **这不是预知上币。** 币安不公布上币计划，基础概率就 {rate:.0f}%——"
-        f"这里做的是把几百个缩到十几个值得盯的。",
+        "按**市值**排（实测唯一有区分度的指标，10.6x）。"
+        "🏷 = 已经在别家上了，需求被验证过，理论上更近一步。口径点 ℹ️",
+        f"池子里还有 {max(0, len(cand) - TOP_N)} 个没列出来——"
+        f"查具体某个发 `/alpha 币名`",
+        f"⚠️ **这不是预知上币。** 币安不公布上币计划，基础概率就 {rate:.0f}%。",
     ]
     return "\n".join(lines)
 
@@ -236,6 +331,19 @@ def detail_text():
         "· 合约的 `PENDING_TRADING` **不是提前量**：唯一那个 GAIBUSDT 的",
         "　onboardDate 是 287 天前，卡住的旧条目；没有合约的时间在未来。",
         "· 公告接口能打通但很快被 WAF 挡，而且公告发出来时币已经在涨了。",
+        "",
+        "*Alpha 收全了吗——75%*",
+        "有些币不经过 Alpha，直接上币安。实测最近上币安**合约**的 40 个",
+        "真加密币里，**30 个在 Alpha 池**（75%）；漏掉的主要是 BTC/ETH 的",
+        "季度交割合约那类，不是新币。所以覆盖不错但**不是全部**。",
+        "（第一眼算出来只有 7%，那是因为最近上的 30 个里绝大部分是",
+        "代币化美股 GTLB/ZS/MDB/DDOG/NVDL——剔掉才是真数）",
+        "",
+        "*🏷 标记：已经在别家上了*",
+        "候选 319 个里有 **167 个已经在币安合约 / Gate / Bybit 上**。",
+        "这是和市值**正交**的一层：需求被别家验证过。",
+        "币安**合约**也算——MARSCOIN 就是先上币安合约、现货还没上，",
+        "合约先行是常见路径，不算进来会漏掉最贴近的那一批。",
         "",
         "*剔掉了什么*",
         "80 个 Ondo 的代币化美股（XOMon / TSLAon / COINon…）。",
@@ -363,10 +471,26 @@ def kb(chat_id):
     ])
 
 
-async def render(chat_id, force=False):
+async def render(chat_id, force=False, query=None):
+    import asyncio
     rows = await fetch(force=force)
-    spot = await binance_spot()
-    txt = build_text(rows, spot)
+    spot, sets = await asyncio.gather(binance_spot(), cex_sets())
+    if query:
+        hits = find(rows, query)
+        rate = base_rate(rows, spot)
+        if not hits:
+            return (f"🔮 Alpha 候选池里没有 `{escape_md(query)}`。\n\n"
+                    f"池子里有 {len(rows)} 个代币，但**它不是全部**——"
+                    f"实测最近上币安合约的真加密币里，Alpha 收录了 75%，"
+                    f"剩下的是直接上的。发 /alpha 看榜单。")
+        if len(hits) == 1:
+            return build_one(hits[0], spot, sets, rate)
+        out = [f"🔮 找到 {len(hits)} 个匹配 `{escape_md(query)}` 的：", ""]
+        out += [line(x, i, sets) for i, x in enumerate(hits, 1)]
+        out.append("")
+        out.append("发完整代号看单个详情。")
+        return "\n".join(out)
+    txt = build_text(rows, spot, sets)
     if is_on(chat_id):
         txt += "\n\n✅ 已开新进池告警（有币新进 Alpha 就推给你）"
     else:
@@ -378,15 +502,20 @@ async def alpha_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/alpha —— 币安上币候选池（Binance Alpha）。"""
     chat_id = update.effective_chat.id
     args = [str(a).lower() for a in (context.args or [])]
+    q = None
     if args and args[0] in ("on", "开", "订阅"):
         toggle(chat_id, True)
     elif args and args[0] in ("off", "关", "退订"):
         toggle(chat_id, False)
         await safe_reply(update.message, "🔕 已关闭新进池告警")
         return
-    msg = await safe_reply(update.message, "🔮 拉币安候选池…")
+    elif context.args:
+        # 榜单只列 12 个而池子里几百个——他找 MARSCOIN 找不到就是因为这个
+        q = str(context.args[0]).strip()
+    msg = await safe_reply(update.message,
+                           f"🔮 查 {q}…" if q else "🔮 拉币安候选池…")
     try:
-        txt = await render(chat_id)
+        txt = await render(chat_id, query=q)
     except Exception as e:
         log.error(f"/alpha 出错: {e}", exc_info=True)
         await safe_reply(update.message, f"取不到候选池：{str(e)[:90]}")

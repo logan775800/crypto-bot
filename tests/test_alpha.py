@@ -158,3 +158,71 @@ def test_command_button_and_job_registered():
     assert "al:r" in cbs
     import inspect
     assert 'd.startswith("al:")' in inspect.getsource(menu._dispatch)
+
+
+# ── 查单个：榜单只列 12 个，池子里几百个 ──────────────────────
+def test_lookup_finds_a_coin_not_in_the_top_list():
+    """他找 MARSCOIN 找不到，问「是不是因为币安没上、Gate/Bybit 上了所以
+    查不到」——其实它**在池子里**，只是市值不够进前 12。
+    榜单长度不该等于收录范围。"""
+    rows = [tok(f"BIG{i}", mcap=1e9 - i) for i in range(20)] + [tok("MarsCoin", mcap=1e8)]
+    assert [A.sym_of(x) for x in A.find(rows, "marscoin")] == ["MARSCOIN"]
+    assert "MARSCOIN" not in [A.sym_of(x) for x in A.candidates(rows, set())[:12]]
+
+
+def test_lookup_prefers_exact_match():
+    """模糊匹配会让 `M` 命中一堆。有精确匹配就只给它。"""
+    rows = [tok("M"), tok("MARSCOIN"), tok("MOON")]
+    assert [A.sym_of(x) for x in A.find(rows, "M")] == ["M"]
+
+
+def test_lookup_of_nothing_returns_nothing():
+    assert A.find([tok("A")], "") == []
+
+
+# ── 🏷 已经在别家上了 ───────────────────────────────────────
+def test_binance_futures_counts_as_listed_elsewhere():
+    """MARSCOIN 就是先上币安**合约**、现货还没上。合约先行是常见路径，
+    不算进来会漏掉最贴近上现货的那一批。"""
+    sets = {"fut": {"MARSCOIN"}, "gate": set(), "bybit": set()}
+    assert A.where_listed("MARSCOIN", sets) == "币安合约"
+
+
+def test_where_listed_joins_all_venues():
+    sets = {"fut": {"A"}, "gate": {"A"}, "bybit": {"A"}}
+    assert A.where_listed("A", sets) == "币安合约/Gate/Bybit"
+    assert A.where_listed("B", sets) == ""
+
+
+def test_badge_shows_up_in_the_list():
+    """🏷 是和市值**正交**的一层信号：需求已被别家验证。
+    实测候选 319 个里有 167 个已经在别家上了——这一半和另一半不是一回事。"""
+    sets = {"fut": {"A"}, "gate": set(), "bybit": set()}
+    assert "🏷" in A.line(tok("A"), 1, sets)
+    assert "🏷" not in A.line(tok("B"), 1, sets)
+
+
+def test_missing_venue_data_does_not_break_the_badge():
+    """某一家接口挂了不能让整张榜单出不来。"""
+    assert A.where_listed("A", {}) == ""
+    assert "🏷" not in A.line(tok("A"), 1, {})
+
+
+# ── 覆盖率要写脸上 ──────────────────────────────────────────
+def test_detail_states_the_75_percent_coverage():
+    """有些币不经过 Alpha 直接上币安。实测最近上币安合约的 40 个真加密币里
+    30 个在 Alpha（75%）——不写的话会被当成「全部」。
+
+    另外记下那个 7% 的误算：第一眼算出来只有 7%，因为最近上的 30 个里
+    绝大部分是代币化美股。**算覆盖率前先剔品类**。"""
+    t = A.detail_text()
+    assert "75%" in t and "不是全部" in t
+    assert "7%" in t and "代币化美股" in t, "没记下那次误算的原因"
+
+
+def test_not_found_message_admits_alpha_is_not_exhaustive():
+    """查不到时不能只说「没有」——要说清 Alpha 收录了 75%，
+    不然会被理解成「币安不会上它」。"""
+    import inspect
+    src = inspect.getsource(A.render)
+    assert "75%" in src and "不是全部" in src

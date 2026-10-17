@@ -278,6 +278,37 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"双实例告警发送失败: {e}")
         return
 
+    # 长轮询 getUpdates 偶发断线（Bad Gateway / ReadError / ConnectError）：
+    # PTB 自己会退避重试，消息不丢（offset 没前进，下一轮照样取到）。
+    # 线上 6 周 113 条「机器人异常」全是这一种，一天推好几条纯噪音。
+    # 只有连续失败撑过 3 分钟（真断了、机器人收不到命令）才值得告警——
+    # 断线时 PTB 最多每 30 秒重试一次，所以失败会一直来；历史上最长一串只有 14 秒。
+    from telegram.error import NetworkError, BadRequest
+    if (update is None and getattr(context, "job", None) is None
+            and isinstance(err, NetworkError) and not isinstance(err, BadRequest)):
+        now = datetime.datetime.now().timestamp()
+        bd = context.bot_data
+        last = bd.get("poll_err_last", 0)
+        if now - last > 60:                # 隔了一分钟以上 = 新的一串
+            bd["poll_err_start"] = now
+        bd["poll_err_last"] = now
+        lasting = now - bd["poll_err_start"]
+        logging.warning(f"getUpdates 网络错误（PTB 自动重试，已持续 {lasting:.0f}s）: "
+                        f"{type(err).__name__}: {err}")
+        if lasting < 180 or now - bd.get("poll_err_notified", 0) < 1800:
+            return
+        bd["poll_err_notified"] = now
+        try:
+            from handlers.monitor import notify_admin
+            await notify_admin(context,
+                f"📡 机器人连不上 Telegram 已 {lasting / 60:.0f} 分钟\n"
+                f"这段时间收不到命令和按钮点击（PTB 还在自动重试）。\n"
+                f"最近一次: {type(err).__name__}: {str(err)[:100]}\n\n"
+                f"偶发一两次是 Telegram 侧抖动，不用管；一直持续就看服务器网络。")
+        except Exception as e:
+            logging.error(f"断线告警发送失败: {e}")
+        return
+
     logging.error(f"未捕获异常: {err}", exc_info=err)
     try:
         where = ""

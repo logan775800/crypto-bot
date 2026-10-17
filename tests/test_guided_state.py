@@ -176,8 +176,8 @@ def test_quickprice_uses_the_guard_everywhere():
     import inspect
     from handlers import quickprice
     src = inspect.getsource(quickprice.quick_price)
-    for key in ("await_cmd", "await_track_addr", "await_ropen", "await_ropen_coin",
-                "await_rsl", "await_watchpct", "await_alert_coin", "await_alert",
+    for key in ("await_cmd", "await_track_addr",
+                "await_watchpct", "await_alert_coin", "await_alert",
                 "await_onchain"):
         assert f'should_handle(context, "{key}"' in src, f"{key} 没走引导闸"
 

@@ -138,17 +138,9 @@ _STOP_SYMS = {"USDT", "USDC", "DAI", "BUSD"}     # 稳定币不值得当持仓�
 
 
 async def held_symbols():
-    """当前「我关心的币」= Bybit 实盘持仓 ∪ 虚拟持仓 ∪ 记账持仓。
+    """当前「我关心的币」= 虚拟持仓 ∪ 记账持仓。
     任一来源失败都不影响其它（拿不到就当没有，新闻照推）。"""
     syms = set()
-    try:
-        from handlers.rtrade import _client
-        for p in await _client().positions_all():
-            s = (p.get("symbol") or "").replace("USDT", "")
-            if s:
-                syms.add(s.upper())
-    except Exception as e:      # 没配密钥/接口挂了都走这里，静默
-        logging.debug(f"新闻优先：取实盘持仓跳过（{str(e)[:60]}）")
     try:
         for acct in (_ndata.get("vtrade") or {}).values():
             for s in (acct.get("positions") or {}):

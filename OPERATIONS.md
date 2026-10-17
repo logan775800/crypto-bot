@@ -18,7 +18,7 @@
 | AI 模型 | `AI_MODEL`（当前 `gpt-5.6-terra-openai-compact`，中转站 kuaipao.ai/v1） |
 | 启动成功标志(日志) | `Bot 启动中...`、`已加载 XXX 种币`、`命令菜单已设置` |
 
-> **线上自查最快的方式：私聊机器人发 `/version`** —— 一条消息告诉你「当前版本 / AI模型是否配置 / Bybit 模拟盘还是实盘还是未配置 / 管理员几人 / 你是不是管理员」。版本号对不上就是部署没生效，不用再靠猜。
+> **线上自查最快的方式：私聊机器人发 `/version`** —— 一条消息告诉你「当前版本 / AI模型是否配置 / 管理员几人 / 你是不是管理员」。版本号对不上就是部署没生效，不用再靠猜。
 
 > 以下命令默认在服务器 `/data/crypto-bot` 目录执行。
 
@@ -161,7 +161,7 @@ vi .env && docker compose up -d --force-recreate
 1. **BOT_TOKEN**：@BotFather → `/revoke` → 拿新 token → 更新 `.env` 的 `BOT_TOKEN` + **Jenkins 凭据 `telegram-bot-token`（必须同一个）** → `docker compose up -d --force-recreate`。
 2. **Jenkins API Token**：Jenkins 用户 → Security → 撤销旧 token、生成新 → 更新 `.env` 的 `JENKINS_API_TOKEN` → 重建容器。
 3. **AI_API_KEY**：中转站后台重置 → 更新 `.env` → 重建。
-4. **BYBIT_API_KEY/SECRET**：Bybit 后台重建（**只勾合约下单+持仓，绝不勾提币**，加服务器 IP 白名单）→ 更新 `.env` → 重建。先用 `BYBIT_TESTNET=true` 验证：`docker compose exec crypto-bot python bybit_trade.py` 冒烟（只读不下单）。
+4. ~~BYBIT_API_KEY/SECRET~~：v1.70.0 起没有实盘，机器人不再读交易所密钥。`.env` 里残留的 `BYBIT_*` / `BINANCE_*` / `LIVE_TRADING` 可以删；交易所后台那几把 key 也建议直接删掉。
 
 > 改任何 `.env` 后都要 `docker compose up -d --force-recreate` 才生效。
 

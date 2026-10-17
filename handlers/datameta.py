@@ -348,9 +348,9 @@ async def probe(symbol, kline_ivs=KLINE_IVS, oi_ivs=OI_IVS):
 
 
 # ── 系统体检：地基通没通电 ──────────────────────────────────
-# 2026-08-07 的教训：Bybit 密钥从来没配过，于是实盘台、驾驶舱、复盘、周报、
-# 组合风险、连亏降险这一整批功能一直是空的，却没有任何地方会说出来——
+# 2026-08-07 的教训：依赖没通电时一整批功能会一直是空的，却没有任何地方会说出来——
 # 只有等用户去点某个功能才发现。体检必须覆盖**依赖链**，不只是行情源。
+# （账户链路那一项随实盘在 v1.70.0 移除。）
 
 
 async def _check_market():
@@ -361,25 +361,6 @@ async def _check_market():
         return ok, ("正常" if ok else "返回空"), srv
     except Exception as e:
         return False, str(e)[:50], None
-
-
-async def _check_account():
-    """账户链路：密钥配了没、能不能连上、有没有危险权限。"""
-    try:
-        from bybit_trade import BYBIT_API_KEY, _is_testnet
-    except Exception as e:
-        return False, f"模块加载失败：{str(e)[:40]}", {}
-    if not BYBIT_API_KEY:
-        return False, ("**未配置密钥** —— 实盘台/驾驶舱/复盘/周报/组合风险/"
-                       "连亏降险全部无数据"), {}
-    env = "🧪模拟盘" if _is_testnet() else "🔴实盘"
-    try:
-        from handlers.rtrade import _client
-        bal = await _client().wallet_balance("USDT")
-        eq = bal.get("totalEquity")
-        return True, f"{env}｜权益 {eq} USDT", {"env": env}
-    except Exception as e:
-        return False, f"{env}｜连接失败：{str(e)[:50]}", {"env": env}
 
 
 async def _check_ai():
@@ -402,14 +383,13 @@ def _check_subs():
                        ("weekly_subs", "周报")):
         n = len(_d.get(key) or [])
         rows.append(f"{label} {n}" if n else f"{label} ⚠️0")
-    killed = _d.get("trading_disabled")
-    return rows, killed
+    return rows
 
 
 async def system_health():
     """不带币名的 /datacheck：整条依赖链的体检。"""
-    market, account, ai = await asyncio.gather(
-        _check_market(), _check_account(), _check_ai(), return_exceptions=True)
+    market, ai = await asyncio.gather(
+        _check_market(), _check_ai(), return_exceptions=True)
 
     def unpack(x, n=3):
         if isinstance(x, Exception):
@@ -417,24 +397,14 @@ async def system_health():
         return x
 
     m_ok, m_msg, _srv = unpack(market)
-    a_ok, a_msg, _extra = unpack(account, 3)
     ai_ok, ai_msg = unpack(ai, 2)[:2]
-    subs, killed = _check_subs()
+    subs = _check_subs()
 
     lines = ["🩺 *系统体检*", "━━━━━━━━━━━━━━",
              f"{'✅' if m_ok else '❌'} 行情源(Bybit)　{m_msg}",
              f"{'✅' if ai_ok else '❌'} AI 中转站　{ai_msg}",
-             f"{'✅' if a_ok else '❌'} 账户链路　{a_msg}",
              "━━━━━━━━━━━━━━",
              "订阅：" + "｜".join(subs)]
-    if killed:
-        lines.append("🔴 *实盘下单已被 killswitch 禁用* —— 恢复发 `/killswitch off`")
-    if not a_ok:
-        lines.append("")
-        lines.append("_账户链路不通时，以下功能返回的是空数据而不是报错，"
-                     "很容易被误认为「没交易记录」：_")
-        lines.append("_/trade /rpos /cockpit /rstats /weekly、组合风险、亏损归因、"
-                     "计划vs成交、连亏自动降险_")
     # 更新播报这条链：部署成功了群里却没有更新内容时，以前完全没有可观测性
     # （日志在服务器上，他看不到），只能靠猜。现在体检里直接给出状态。
     try:

@@ -5,7 +5,7 @@
 里注册了什么，按模块分组，用 docstring 首行当标签。加了新命令自动出现。
 
 一个关键前提让这件事变得简单：**这个 bot 里几乎每个带参数的命令，
-在不带参数调用时都会打印自己的用法**（/net /sym /plan /backtest /restore …）。
+在不带参数调用时都会打印自己的用法**（/net /sym /backtest /restore …）。
 所以按钮统一「不带参数执行」就够了——要么直接出结果，要么出用法。
 """
 import logging
@@ -61,15 +61,9 @@ MODULE_CN = {
     "handlers.breakout": "🔍 机会发现",
     "handlers.steady": "🔍 机会发现",
     "handlers.changelog": "🧭 菜单与帮助",
-    "handlers.plan": "📋 交易计划",
     "handlers.econ": "🧮 成本与仓位",
-    "handlers.sizing": "🧮 成本与仓位",
     "handlers.symbols": "🧮 成本与仓位",
-    "handlers.riskguard": "🛡 风险管理",
-    "handlers.riskprofile": "🛡 风险管理",
-    "handlers.keyguard": "🛡 风险管理",
     "handlers.access": "🛡 风险管理",
-    "handlers.venue": "🏦 交易所专区",
     "handlers.vorders": "🎮 虚拟交易",
     "handlers.vpanel": "🎮 虚拟交易",
     "handlers.vspot": "🎮 虚拟交易",      # 谁能用这个机器人
@@ -88,14 +82,10 @@ MODULE_CN = {
     "handlers.broadcast": "📰 资讯与推送",
     "handlers.relay": "📰 资讯与推送",   # /relay 频道搬运
     "handlers.summary": "📰 资讯与推送",
-    "handlers.brief": "📰 资讯与推送",
     "handlers.vtrade": "🎮 虚拟合约",
-    "handlers.rtrade": "🔴 实盘交易",
-    "handlers.grid": "🔴 实盘交易",
     "handlers.rstats": "📅 复盘中心",
     "handlers.weekly": "📅 复盘中心",
     "handlers.portfolio": "💼 我的持仓",
-    "handlers.cockpit": "💼 我的持仓",
     "handlers.datameta": "🩺 诊断与维护",
     "handlers.backup": "🩺 诊断与维护",
     "handlers.monitor": "🩺 诊断与维护",
@@ -144,9 +134,7 @@ FALLBACK_DESC = {
     "chart": "价格走势图", "piechart": "持仓占比饼图",
     "chartanalyze": "K线图 + 技术分析", "indicators": "技术指标明细",
     "multi": "多周期分析",
-    "delplan": "删除交易计划（/delplan all 全删）",
     "vreset": "重置虚拟账户", "vtrade": "虚拟账户总览",
-    "rcancel": "撤销实盘挂单",
     "backup": "立即备份数据",
     "broadcast": "立即播报一次（测试用）",
 }

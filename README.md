@@ -1,6 +1,6 @@
 # crypto-bot · Telegram 加密货币行情机器人
 
-一个基于 `python-telegram-bot` 的 Telegram 机器人：查币价、技术分析、**AI 对话+量化分析**、价格预警、波动/合约异动监控、**虚拟合约练手**、**Bybit 实盘交易台**，以及 OKX / 币安 / Bybit 交易所专区。行情数据源支持 **CoinGecko → OKX → 币安 → Bybit** 多级回退，并标注来源。
+一个基于 `python-telegram-bot` 的 Telegram 机器人：查币价、技术分析、**AI 对话+量化分析**、价格预警、波动/合约异动监控、**虚拟合约练手**（v1.70.0 起不再有实盘交易），以及 OKX / 币安 / Bybit 交易所专区。行情数据源支持 **CoinGecko → OKX → 币安 → Bybit** 多级回退，并标注来源。
 
 ---
 
@@ -31,11 +31,10 @@
 - **连涨连跌扫描**：`/upstreak 3 bybit`、`/downstreak`（多所永续日线同向）
 - **合约风控清单**：`/checklist`（开仓前自查）
 - **🎮 虚拟合约**（练手不碰真钱）：`/vopen BTC long 1000 10` 开多、`/vclose` 平仓、`/vpos` 持仓浮盈爆仓价、`/vhistory` 胜率、`/vreset`；含 0.05% 手续费、自动爆仓监控
-- **🔴 Bybit 实盘交易台**（管理员·默认模拟盘）：`/trade` 点按钮开平仓；`/ropen` 限价开仓(带TP/SL、二次确认)、`/rclose`(强制 reduceOnly)、`/rpos`、`/rbal`、`/rtpsl`、`/rliqalert` 爆仓预警
-- **网格**：`/gridstart`（Bybit 永续，管理员）
+- **📊 复盘**：`/rstats 30` 虚拟盘成绩单（加 `ai` 出 AI 诊断）、`/weekly` 行为周报
 
 ### 运维自查
-- `/version` 版本+AI模型+Bybit状态+管理员　`/id` 会话与身份　`/whois <id>` 反查用户　`/migratechat <旧群id>` 迁移订阅
+- `/version` 版本+AI模型+管理员　`/id` 会话与身份　`/whois <id>` 反查用户　`/migratechat <旧群id>` 迁移订阅
 
 > 交互以 **/menu 菜单 + 底部常驻键盘** 为主，绝大多数功能点按钮即可，无需记命令。
 
@@ -49,16 +48,13 @@ config.py           配置（环境变量）+ VERSION + is_admin()（支持多�
 api.py              CoinGecko 数据源封装（缓存+限流）
 indicators.py       技术指标（纯 Python 实现）
 storage.py          JSON 持久化（原子写入）+ migrate_chat() 群升级迁移
-bybit_trade.py      Bybit V5 私有客户端（HMAC签名/下单/持仓/杠杆，网格+实盘台共用）
 handlers/
-  menu.py           菜单 + 所有内联按钮回调（含部署审批、交易台、AI助手入口）
+  menu.py           菜单 + 所有内联按钮回调（含部署审批、虚拟交易台、AI助手入口）
   quickprice.py     发币名直接查价（多级回退）+ 各引导流程的输入路由
   chat.py           💬 群内@对话 / /ask：AI + 12个只读工具（按调用者鉴权）
   marketdata.py     Bybit 公开行情 + 服务端算指标（K线/OI/资金费/盘口/逐笔/联动）
   ai.py             AI 网关：ask_ai / ask_ai_messages(多轮) / ask_ai_tools(函数调用循环)
   vtrade.py         🎮 虚拟合约交易（模拟盘、自动爆仓监控）
-  rtrade.py         🔴 Bybit 实盘交易台（限价开+TP/SL、reduceOnly平仓、爆仓预警）
-  grid.py           Bybit 永续网格策略
   watchpct.py       持续波动监控（多所取价，WS秒级+轮询兜底）
   contract_alert.py 全交易所合约异动分级告警（含推送冷却去重）
   contract_ws.py    OKX/Bybit 永续 WebSocket 实时流
@@ -94,9 +90,7 @@ docker compose logs -f    # 看到 "Bot 启动中..." 即成功
 |------|------|
 | `BOT_TOKEN` | Telegram 机器人 token（@BotFather） |
 | `AI_API_KEY` / `AI_BASE_URL` / `AI_MODEL` | AI 用的中转站配置（OpenAI 兼容）。换模型只改 `AI_MODEL` + 重建容器，无需改代码 |
-| `ADMIN_CHAT_ID` | 管理员 user_id，**支持多个用逗号分隔**（如 `123,456`）：接运维告警 + 部署审批 + 实盘/账户权限 |
-| `BYBIT_API_KEY` / `BYBIT_API_SECRET` | Bybit 实盘台/网格/AI查账户用。**只勾合约下单+持仓权限，绝不开提币**，并加服务器 IP 白名单 |
-| `BYBIT_TESTNET` | `true`(默认)=模拟盘；改 `false` 才走实盘真钱 |
+| `ADMIN_CHAT_ID` | 管理员 user_id，**支持多个用逗号分隔**（如 `123,456`）：接运维告警 + 部署审批 |
 | `JENKINS_URL` / `JENKINS_JOB` | Jenkins 地址与部署任务名 |
 | `JENKINS_USER` / `JENKINS_API_TOKEN` | 触发部署用的 Jenkins 用户 API Token（推荐） |
 | `JENKINS_DEPLOY_TOKEN` | 备选：任务「触发远程构建」令牌 |

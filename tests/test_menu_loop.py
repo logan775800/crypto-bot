@@ -60,9 +60,9 @@ def test_followup_carries_the_symbol():
 
 
 def test_followup_covers_the_whole_loop():
-    """分析 → 计划 / 算成本 / 算仓位 / 设预警 / 模拟 —— 一步都不缺。"""
+    """分析 → 算成本 / 设预警 / 模拟 —— 一步都不缺（计划/算仓位随实盘在 v1.70.0 删了）。"""
     cbs = _cbs(menu.followup_kb("BTC"))
-    for key in ("plan", "net", "risk", "alert", "vopen"):
+    for key in ("net", "alert", "vopen"):
         assert f"fu:{key}:BTC" in cbs
 
 
@@ -70,9 +70,7 @@ def test_every_followup_maps_to_a_real_command():
     """按钮点了报错比没按钮更糟。"""
     import importlib
     table = {
-        "plan": ("handlers.plan", "plan_cmd"),
         "net": ("handlers.econ", "net_cmd"),
-        "risk": ("handlers.riskguard", "risk"),
         "watchpct": ("handlers.watchpct", "watchpct"),
         "vopen": ("handlers.vtrade", "vopen"),
         "datacheck": ("handlers.datameta", "datacheck"),
@@ -99,4 +97,4 @@ def test_followup_handles_missing_symbol():
     """没币名时不能崩，也不能生成空的 callback。"""
     cbs = _cbs(menu.followup_kb(None))
     assert all(len(c) < 64 for c in cbs)          # Telegram 限制 64 字节
-    assert any(c.startswith("fu:plan:") for c in cbs)
+    assert any(c.startswith("fu:net:") for c in cbs)

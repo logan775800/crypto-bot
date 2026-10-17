@@ -115,15 +115,15 @@ def test_dead_chat_does_not_block_others_or_replay(notes, monkeypatch):
 
 # ---------------------------------------------------------------- 目标集合
 def test_subscribed_chats_covers_every_subscription_shape():
-    """四类结构都要认：id列表 / 带chat_id的字典列表 / 以chat_id为键的字典 / 内嵌字段。"""
+    """各类结构都要认：id列表 / 带chat_id的字典列表 / 以chat_id为键的字典 / 虚拟盘账户 / holding_watch。
+    （原「内嵌字段」那类的 brief/riskguard/rtrade_alert 随实盘在 v1.70.0 删了。）"""
     storage.data["contract_watch"] = [-1]                      # id 列表
     storage.data["watchpct"] = [{"chat_id": -2, "symbol": "BTC"}]  # 字典列表
     storage.data["fex_subs"] = {"-3": {"threshold": 1}}        # 以 id 为键
-    storage.data["brief"] = {"enabled": True, "chat_id": -4}   # 内嵌字段
     storage.data["vtrade"] = {"42": {"chat_id": -5}}
     storage.data["holding_watch"] = {"42": -6}
     got = set(storage.subscribed_chats())
-    assert got == {-1, -2, -3, -4, -5, -6}
+    assert got == {-1, -2, -3, -5, -6}
 
 
 def test_subscribed_chats_dedups_and_normalizes_types():

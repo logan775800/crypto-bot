@@ -247,10 +247,10 @@ SYSTEM = (
     "- get_recent_trades(币)：主动买卖 delta、大单方向（突破有没有承接）\n"
     "- get_market_context()：BTC/ETH 多周期 + 情绪\n"
     "- get_liquidations(币)：清算密集/挤压空间\n"
-    "- get_my_account()：用户真实 Bybit 账户（权益/持仓/杠杆/爆仓价，仅管理员）\n"
-    "- get_my_trade_stats(天数)：用户真实**历史成绩单**（胜率/盈亏比/期望值/最大回撤/"
+    "- get_my_virtual_positions()：用户的虚拟盘账户（余额/持仓/杠杆/理论爆仓价）\n"
+    "- get_my_trade_stats(天数)：用户虚拟盘的**历史成绩单**（胜率/盈亏比/期望值/最大回撤/"
     "按币·多空·持仓时长·时段拆解的盈亏）。问「我最近怎么样」「我亏在哪」「帮我复盘」"
-    "「我这打法行不行」时必调，别凭感觉评价（仅管理员）\n"
+    "「我这打法行不行」时必调，别凭感觉评价\n"
     "- get_price / get_contract / get_top_movers / get_fear_greed：快速报价与榜单\n\n"
     "**分析交易计划时的标准流程**（别偷懒只调一个）：\n"
     "0) resolve_symbol(代号) 先把合约身份钉死——这一步不能跳。同一个代号在不同所"
@@ -262,7 +262,7 @@ SYSTEM = (
     "2) get_klines 大周期(4h/1h)定方向与结构，再 get_klines 小周期(15m/5m)定执行；\n"
     "3) get_oi_history + get_funding_history 判断是谁推动、有没有拥挤/挤压风险；\n"
     "4) 需要精确进场时再 get_orderbook + get_recent_trades 看承接与挂单墙；\n"
-    "5) 涉及仓位大小/该不该减仓，调 get_my_account() 按真实权益算。\n\n"
+    "5) 涉及仓位大小/该不该减仓，调 get_my_virtual_positions() 按虚拟盘权益算。\n\n"
     "**盈亏比一律看净的**：给出任何带止盈的方案前调 estimate_costs，用扣掉"
     "手续费/滑点/资金费之后的净盈亏比做判断。用价格距离算的毛盈亏比只能用来对比——"
     "止损 1% 的短线单，光两次吃单手续费就能把毛 1.2:1 压到净 0.98:1，"
@@ -270,7 +270,7 @@ SYSTEM = (
     "并给出「入场位挪到哪里才划算」，而不是硬凑一个近的止盈。\n"
     "**给方案时要具体、可执行**：方向与理由、进场区间(挂单还是等回踩/破位确认)、"
     "止损放在哪(用 ATR 或结构失效位，别拍脑袋)、止盈分段(参考流动性/前高前低)、"
-    "仓位按「单笔风险≈权益0.5%~1%÷止损距离」反推(拿到账户就用真实数字算，"
+    "仓位按「单笔风险≈权益0.5%~1%÷止损距离」反推(拿到虚拟盘账户就用它的数字算，"
     "拿不到就给公式让用户代入)、以及这单的风险温度。\n"
     "**别做的**：不要输出没有数据支撑的价位；不要只给一句「注意风控」；"
     "不要在没查 BTC 联动时就给山寨的追多计划。\n\n"
@@ -313,7 +313,7 @@ SYSTEM = (
     "末尾简短带一句「不构成投资建议」即可（不用每段都加）。"
     "也能解释这个 bot 的功能和命令怎么用：/menu 菜单，/price 查价，/dashboard 看板，"
     "/analyze 技术分析，/watchpct 波动监控，/alert 预警，/checklist 合约风控清单，"
-    "/vopen 虚拟合约练手、/vpos 虚拟持仓，/trade 实盘交易台(Bybit,点按钮开平仓)。"
+    "/vopen 虚拟合约练手、/vpos 虚拟持仓、/vtrade 虚拟交易台(点按钮开平仓)。没有实盘下单功能。"
 )
 
 # 降级用的提示词：工具链挂了的时候用它，**绝不能再用上面那个 SYSTEM**。
@@ -416,7 +416,7 @@ TOOLS = [
         "name": "estimate_costs",
         "description": ("算这一单**扣掉手续费/滑点/资金费之后**的真实盈亏比。"
                         "滑点按当前盘口逐档吃穿估算(会告诉你深度够不够、会不会部分成交)，"
-                        "资金费按预计持仓时长累计，费率优先用账户真实值。"
+                        "资金费按预计持仓时长累计，手续费按 VIP0 默认费率。"
                         "**给出任何带止盈的计划前都要调它**——用价格距离算的 1.8:1 "
                         "在低流动性小币或窄止损上，净值可能不到 1，甚至是负的。"),
         "parameters": {"type": "object", "properties": {
@@ -445,27 +445,11 @@ TOOLS = [
                         "「我虚拟仓怎么样」时用。任何人可查自己的。"),
         "parameters": {"type": "object", "properties": {}}}},
     {"type": "function", "function": {
-        "name": "get_my_account",
-        "description": ("读取用户的 Bybit 真实账户(只读)：USDT总权益、可用保证金、当前持仓"
-                        "(方向/均价/杠杆/未实现盈亏/爆仓价)。要按真实账户算仓位、单笔风险、"
-                        "是否同向暴露过高、该不该减仓时用。仅管理员可用。"),
-        "parameters": {"type": "object", "properties": {}}}},
-    {"type": "function", "function": {
-        "name": "get_portfolio_risk",
-        "description": ("真实账户的**组合风险聚合**：每个仓的风险USDT、同向合计、"
-                        "最坏情况回撤%、以及**没设止损的裸奔仓**。还给出每个仓"
-                        "减仓25%/50%/全平之后风险和占用各变成多少。"
-                        "用户问「该不该减仓」「我现在风险大不大」「能不能再开一单」时**必调**——"
-                        "他要的是数字对比，不是再来一遍市场分析。仅管理员。"),
-        "parameters": {"type": "object", "properties": {
-            "symbol": {"type": "string",
-                       "description": "只看某个仓的减仓推演，留空=看全账户"}}}}},
-    {"type": "function", "function": {
         "name": "get_my_trade_stats",
-        "description": ("读取用户 Bybit 真实账户的**历史成绩单**(只读)：胜率、盈亏比、每笔期望值、"
+        "description": ("读取用户虚拟盘的**历史成绩单**(只读)：胜率、盈亏比、每笔期望值、"
                         "最大回撤、连亏、并按币种/多空方向/持仓时长/平仓时段拆解盈亏，含资金费净支出。"
                         "用户问「我最近怎么样」「我亏在哪」「我是不是在追高」「帮我复盘」，"
-                        "或要评价他的打法/给改进建议时**必须**调这个——别凭感觉说。仅管理员可用。"),
+                        "或要评价他的打法/给改进建议时**必须**调这个——别凭感觉说。任何人可查自己的。"),
         "parameters": {"type": "object", "properties": {
             "days": {"type": "integer",
                      "description": "回溯天数，默认30。样本太少可放大到90"}}}}},
@@ -538,125 +522,15 @@ async def _tool_exec(name, args):
     return f"未知工具 {name}"
 
 
-async def _account_snapshot():
-    """只读账户快照：权益 + 持仓（给 AI 算真实仓位/风险用）。
-
-    这份数据会经中转站，所以默认脱敏：金额一律换成占权益的百分比。
-    **价格不脱敏**（均价/标记/爆仓价都是公开行情，藏了反而没法分析），
-    但**数量必须一起藏掉**——给了「名义占权益 40%」又给数量，
-    数量×价格÷40% 就把权益反推出来了，那样的脱敏是自欺欺人。
-    """
-    from handlers.rtrade import _client, _fmt, _env_tag
-    from handlers import privacy
-    client = _client()
-    red = privacy.enabled()
-    out = [f"【真实账户 {_env_tag()}】"]
-    equity = 0.0
-    try:
-        bal = await client.wallet_balance("USDT")
-        equity = float(bal.get("totalEquity") or 0)
-        avail = float(bal.get("totalAvailableBalance") or 0)
-        upl = float(bal.get("totalPerpUPL") or 0)
-        if red:
-            out.append(f"总权益 100%（基准，绝对值不外发）｜可用 {privacy.pct(avail, equity)}"
-                       f"｜未实现盈亏 {privacy.pct(upl, equity)}")
-        else:
-            out.append(f"总权益 {equity:,.2f} USDT｜可用 {avail:,.2f} USDT"
-                       f"｜未实现盈亏 {upl:+,.2f}")
-    except Exception as e:
-        out.append(f"查余额失败：{str(e)[:60]}")
-    try:
-        ps = await client.positions_all()
-        if not ps:
-            out.append("当前无持仓")
-        else:
-            total = 0.0
-            for p in ps:
-                upnl = float(p.get("unrealisedPnl", 0) or 0)
-                total += upnl
-                side = "多" if p.get("side") == "Buy" else "空"
-                liq = _fmt(p.get("liqPrice")) if p.get("liqPrice") else "—"
-                base = (f"{p.get('symbol')} {side} {p.get('leverage')}x"
-                        f"｜均价 {_fmt(p.get('avgPrice'))}｜标记 {_fmt(p.get('markPrice'))}"
-                        f"｜爆仓价 {liq}")
-                if red:
-                    val = float(p.get("positionValue") or 0)
-                    out.append(base + f"｜名义 {privacy.pct(val, equity)}权益"
-                                      f"｜浮盈 {privacy.pct(upnl, equity)}权益")
-                else:
-                    out.append(base + f"｜数量 {p.get('size')}｜浮盈 {upnl:+.2f}")
-            out.append("合计浮盈 " + (f"{privacy.pct(total, equity)}权益" if red
-                                    else f"{total:+.2f} USDT"))
-    except Exception as e:
-        out.append(f"查持仓失败：{str(e)[:60]}")
-    return "\n".join(out) + privacy.note()
-
-
-async def _risk_snapshot(symbol=""):
-    """组合风险 + 减仓推演，给 AI 回答「该不该减仓」用。
-
-    同向仓位按**完全相关**聚合：BTC 一破位山寨是一起走的，
-    把相关性当 0 会让账面风险看起来只有真实值的几分之一。
-    """
-    from handlers.rtrade import _client, _env_tag
-    from handlers import sizing as sz
-    from handlers import marketdata as md
-    from handlers import privacy
-    red = privacy.enabled()
-    c = _client()
-    bal = await c.wallet_balance("USDT")
-    equity = float(bal.get("totalEquity") or 0)
-    poss = await c.positions_all()
-    r = sz.portfolio_risk(poss, equity)
-    out = [f"【组合风险 {_env_tag()}】总权益 "
-           + ("100%（基准，绝对值不外发）" if red else f"{equity:,.2f} USDT")]
-    if not r["positions"]:
-        out.append("当前无持仓 —— 没有敞口，任何新单都是第一笔风险。")
-        return "\n".join(out)
-    for x in r["positions"]:
-        tag = "⚠️裸奔(无止损)" if x["naked"] else ""
-        # 这里本来就有百分比，脱敏时只需把绝对值那两项去掉
-        amounts = (f"名义 {privacy.pct(x['value'], equity)}权益"
-                   f"｜风险 {x['risk']/equity*100:.2f}%" if red else
-                   f"名义 {x['value']:,.0f}｜风险 {x['risk']:,.2f} USDT"
-                   f"（{x['risk']/equity*100:.2f}%）")
-        out.append(f"{x['symbol']} {'多' if x['side']=='long' else '空'}｜{amounts}{tag}")
-    out.append(f"同向合计：多 {r['long_pct']:.2f}%｜空 {r['short_pct']:.2f}%")
-    out.append(f"**最坏情况回撤 {r['worst_pct']:.2f}%**"
-               f"（同向仓位按完全相关计——BTC 破位时山寨是一起走的，不存在分散）")
-    if r["naked"]:
-        out.append(f"⚠️ 裸奔仓（没设止损）：{'、'.join(str(s) for s in r['naked'])}"
-                   f" —— 它们的风险不是计划内的那点，是到爆仓为止")
-    # 减仓推演
-    targets = [p for p in poss if not symbol or md.norm(symbol) == p.get("symbol")]
-    for p in targets[:4]:
-        rows = sz.reduce_scenarios(p, equity)
-        if not rows:
-            continue
-        out.append(f"\n{p.get('symbol')} 减仓推演：")
-        for row in rows:
-            if red:
-                out.append(f"　减{row['pct']}% → 落袋 {privacy.pct(row['realized'], equity)}权益"
-                           f"｜剩余名义 {privacy.pct(row['left_value'], equity)}权益"
-                           f"｜剩余风险 "
-                           + (f"{row['left_risk_pct']:.2f}%" if row['left_risk_pct'] is not None else "?"))
-            else:
-                out.append(f"　减{row['pct']}% → 落袋 {row['realized']:+,.2f}｜"
-                           f"剩余名义 {row['left_value']:,.0f}｜"
-                           f"剩余风险 {row['left_risk']:,.2f} USDT"
-                           + (f"（{row['left_risk_pct']:.2f}%）" if row['left_risk_pct'] is not None else ""))
-    return "\n".join(out) + privacy.note()
-
-
-async def _stats_snapshot(days=30):
-    """真实账户历史成绩单（给 AI 做复盘用）。复用 /rstats 的统计口径，
+def _stats_snapshot(uid, days=30):
+    """虚拟盘历史成绩单（给 AI 做复盘用）。复用 /rstats 的统计口径，
     只丢统计结论不丢原始几百笔——省 token，模型也算不准。"""
-    from handlers.rstats import _load, build_ai_digest, MAX_DAYS
+    from handlers.rstats import load_virtual, virtual_funding, build_ai_digest, MAX_DAYS
     days = max(1, min(int(days or 30), MAX_DAYS))
-    trades, fund = await _load(days)
+    trades = load_virtual(uid, days)
     if not trades:
-        return f"【真实账户成绩单】近{days}天没有已平仓记录（样本为空，别硬下结论）"
-    return "【真实账户成绩单】\n" + build_ai_digest(trades, days, fund)
+        return f"【虚拟盘成绩单】近{days}天没有已平仓记录（样本为空，别硬下结论）"
+    return "【虚拟盘成绩单】\n" + build_ai_digest(trades, days, virtual_funding(uid, days))
 
 
 def _virtual_snapshot(uid):
@@ -744,34 +618,11 @@ def _make_exec(update, context, mf=None):
         from handlers import docfile
         if name in docfile.TOOL_NAMES:
             return docfile.run_tool(update.effective_chat.id, name, args)
-        if name == "get_my_account":
-            from config import is_admin
-            if not is_admin(uid):
-                return "（无权限：只有管理员能查询真实账户）"
-            try:
-                return await _account_snapshot()
-            except RuntimeError:
-                return "（未配置 Bybit API 密钥，拿不到真实账户数据；可改用虚拟盘 get_my_virtual_positions）"
         if name == "get_my_trade_stats":
-            from config import is_admin
-            if not is_admin(uid):
-                return "（无权限：只有管理员能查询真实账户成绩单）"
             try:
-                return await _stats_snapshot(int(args.get("days") or 30))
-            except RuntimeError:
-                return "（未配置 Bybit API 密钥，拿不到历史成绩单）"
+                return _stats_snapshot(uid, int(args.get("days") or 30))
             except Exception as e:
                 return f"（拉取成绩单失败：{str(e)[:80]}）"
-        if name == "get_portfolio_risk":
-            from config import is_admin
-            if not is_admin(uid):
-                return "（无权限：只有管理员能查询真实账户风险）"
-            try:
-                return await _risk_snapshot(str(args.get("symbol") or "").upper())
-            except RuntimeError:
-                return "（未配置 Bybit API 密钥，拿不到真实持仓）"
-            except Exception as e:
-                return f"（组合风险计算失败：{str(e)[:80]}）"
         if name == "get_my_virtual_positions":
             return _virtual_snapshot(uid)
         return await _tool_exec(name, args)

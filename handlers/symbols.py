@@ -228,9 +228,9 @@ async def resolve(query):
 
 
 def _rank(i, raw):
-    """候选排序。第一名会被 sizing 等处直接采用，所以顺序本身是有语义的：
+    """候选排序。第一名会被 bybit_perp_spec 等处直接采用，所以顺序本身是有语义的：
 
-    实盘走的是 **USDT 结算的永续**，所以 USDC 永续(BTCPERP)、交割合约
+    虚拟盘按 **USDT 结算的永续**校验，所以 USDC 永续(BTCPERP)、交割合约
     (BTCUSDT-14AUG26) 必须排在后面——否则「查 BTC 的合约规格」会拿到 USDC 那条，
     结算币都不对，算出来的保证金和爆仓价全是另一个合约的。
     """
@@ -391,3 +391,28 @@ async def sym_cmd(update, context):
         log.error(f"/sym 解析失败: {e}")
         txt = f"解析失败：{str(e)[:80]}"
     await safe_reply(update.message, txt, parse_mode="Markdown")
+
+
+async def bybit_perp_spec(symbol):
+    """取该币在 **Bybit USDT 永续** 的合约规格（最小下单量/步长/面值/杠杆上限）。
+
+    虚拟盘开仓用它校验「这个量在交易所下不下得进去」——行情也走 Bybit，规格要对得上。
+    （原在 sizing.spec_for，v1.70.0 删 /sizing 时挪到这里。）
+    解析不到就返回 None——拿不到规格只是少一层校验，不该让开仓失败。"""
+    if not symbol:
+        return None
+    try:
+        insts, _under = await resolve(symbol)
+        # 必须是 Bybit 的 USDT 永续：USDC 永续(BTCPERP)和交割合约(BTCUSDT-14AUG26)
+        # 结算币/到期日都不同，拿错了保证金和爆仓价算的是另一个合约
+        by = [i for i in insts if i.exchange == "Bybit"
+              and (i.settle or "") == "USDT" and "永续" in (i.kind or "")]
+        if not by:
+            return None
+        i = by[0]
+        return {"min_qty": i.min_qty, "qty_step": i.qty_step, "max_lev": i.max_lev,
+                "multiplier": i.multiplier, "symbol": i.symbol, "unit": i.qty_unit,
+                "ambiguous": len(insts) > 1}
+    except Exception as e:
+        log.warning(f"取合约规格失败 {symbol}: {e}")
+        return None

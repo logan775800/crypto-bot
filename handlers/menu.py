@@ -79,16 +79,14 @@ def _back():
 def followup_kb(symbol=None, back=None):
     """分析结果底下的**闭环按钮**。
 
-    以前分析完是死胡同：你得自己记住币名和价位，再去打 /net、/risk、/plan。
+    以前分析完是死胡同：你得自己记住币名和价位，再去打 /net、/vopen。
     中间这段手工搬运正是「看完就算了」的原因——闭环不是锦上添花，
     它决定了这个分析会不会真的被用上。
     带上 symbol 后续步骤就不用再问一遍币名。
     """
     s = (symbol or "").upper().replace("USDT", "") or "-"
     rows = [
-        [InlineKeyboardButton("📋 生成计划", callback_data=f"fu:plan:{s}"),
-         InlineKeyboardButton("💰 净盈亏比", callback_data=f"fu:net:{s}")],
-        [InlineKeyboardButton("🧮 算仓位", callback_data=f"fu:risk:{s}"),
+        [InlineKeyboardButton("💰 净盈亏比", callback_data=f"fu:net:{s}"),
          InlineKeyboardButton("🔔 设预警", callback_data=f"fu:alert:{s}")],
         [InlineKeyboardButton("🎮 模拟开仓", callback_data=f"fu:vopen:{s}"),
          InlineKeyboardButton("🩺 数据体检", callback_data=f"fu:check:{s}")],
@@ -98,9 +96,6 @@ def followup_kb(symbol=None, back=None):
         # 同一个币的两个问题，并排放，不该有一个要去翻命令
         [InlineKeyboardButton("💣 清算地图", callback_data=f"lq:w:{s}:7日"),
          InlineKeyboardButton("📊 这波是谁推的", callback_data=f"pf:r:{s}")],
-        # 闭环的最后一环：前面几步都在"算"，真要下单还得自己去翻 /trade。
-        # 少这一个按钮，分析和实盘之间就还隔着一次手工搬运。
-        [InlineKeyboardButton("🎛 进交易台", callback_data="tpanel")],
     ]
     rows.append([InlineKeyboardButton("⬅️ 返回", callback_data=back or "menu_main")])
     return InlineKeyboardMarkup(rows)
@@ -109,11 +104,8 @@ def followup_kb(symbol=None, back=None):
 # 闭环按钮 → (提示文案模板, 引导式命令名)。模板里的 {s} 会替换成币名，
 # 这样用户只需要补价位，不用重复输入币种。
 FOLLOWUP = {
-    "plan": ("📋 *生成 {s} 交易计划*　发方向：`{s} long` 或 `{s} short`", "plan"),
     "net": ("💰 *{s} 净盈亏比*　发：`{s} long 入场 止损 止盈 名义USDT`\n"
             "　例 `{s} long 0.081 0.0795 0.086 2000`", "net"),
-    "risk": ("🧮 *{s} 反推仓位*　发：`{s} 入场 止损 [风险%]`\n"
-             "　例 `{s} 0.081 0.0828 0.5%`", "risk"),
     "alert": ("🔔 *{s} 持续波动监控*　发：`{s} 幅度%`\n"
               "　例 `{s} 2` —— 涨跌超 ±2% 就提醒，报后自动续盯", "watchpct"),
     "vopen": ("🎮 *{s} 模拟开仓*　发：`{s} long 保证金 杠杆`\n"
@@ -141,35 +133,29 @@ CATS = {
          [InlineKeyboardButton("🔗 链上代币专区", callback_data="cat_onchain")]]),
     "cat_calc": (
         "🧮 *交易工具*\n\n"
-        "下单前的三件事：这是哪个合约、扣完成本还剩多少、这个止损能开多大。",
+        "下单前的两件事：这是哪个合约、扣完成本还剩多少。",
         [[InlineKeyboardButton("💰 净盈亏比", callback_data="ask:net"),
           InlineKeyboardButton("🔎 合约身份", callback_data="ask:sym")],
          [InlineKeyboardButton("🧪 规则回测", callback_data="ask:backtest"),
           InlineKeyboardButton("🩺 数据体检", callback_data="ask:datacheck")],
-         [InlineKeyboardButton("📋 生成交易计划", callback_data="ask:plan"),
-          InlineKeyboardButton("📐 标注图表", callback_data="ask:achart")],
+         [InlineKeyboardButton("📐 标注图表", callback_data="ask:achart")],
          # 合并进来的：原首页「实用工具」（Gas/巨鲸/套利/解锁那些）
          [InlineKeyboardButton("🛠 实用工具（Gas/巨鲸/套利/解锁）",
                                callback_data="cat_tools")],
          [InlineKeyboardButton("🎮 虚拟盘怎么用", callback_data="cat_vtrade")]]),
     "cat_risk": (
         "🛡 *风险中心*\n\n"
-        "参数会**真的挡住**仓位计算，不是印在文档里让你自己遵守。",
-        [[InlineKeyboardButton("⚙️ 我的风控参数", callback_data="do:riskprofile")],
-         [InlineKeyboardButton("🧮 反推仓位", callback_data="ask:risk"),
-          InlineKeyboardButton("🛡 风险守护", callback_data="rgpanel")],
-         [InlineKeyboardButton("🔔 事件预警", callback_data="ask:events"),
+        "盯住会让你出事的盘面变化，开仓前过一遍清单。",
+        [[InlineKeyboardButton("🔔 事件预警", callback_data="ask:events"),
           InlineKeyboardButton("📊 合约异动", callback_data="ctr:panel")],
          [InlineKeyboardButton("✅ 开仓检查清单", callback_data="do:checklist")],
          # 合并进来的：原首页「我的持仓」——持仓本来就是风险的主体
          [InlineKeyboardButton("💼 我的持仓", callback_data="cat_holding")]]),
     "cat_review": (
         "📅 *复盘中心*\n\n"
-        "周报看的是**行为漂移**而不是单周盈亏——行为你能控制，盈亏你不能。",
+        "数据来自虚拟盘。周报看的是**行为漂移**而不是单周盈亏——行为你能控制，盈亏你不能。",
         [[InlineKeyboardButton("📅 本周周报", callback_data="do:weekly"),
-          InlineKeyboardButton("📊 成绩单30天", callback_data="do:rstats")],
-         [InlineKeyboardButton("🚗 持仓驾驶舱", callback_data="do:cockpit"),
-          InlineKeyboardButton("📋 我的计划", callback_data="do:plans")]]),
+          InlineKeyboardButton("📊 成绩单30天", callback_data="do:rstats")]]),
 }
 
 # 引导式输入：callback → (提示文案, 对应命令名)
@@ -180,10 +166,7 @@ ASK = {
     "backtest": ("🧪 *规则回测*　发参数：`BTC 1h trend`\n"
                  "　周期 5m/15m/1h/4h　规则 trend/pullback/breakout", "backtest"),
     "datacheck": ("🩺 *数据体检*　发币名，如 `BANK`", "datacheck"),
-    "plan": ("📋 *交易计划*　发「币 方向」，如 `BANK short`", "plan"),
     "achart": ("📐 *标注图表*　发「币 周期」，如 `BTC 1h`", "achart"),
-    "risk": ("🧮 *反推仓位*　发「入场 止损 [风险%]」，如 `0.081 0.0828 0.5%`\n"
-             "　带币名更好：`BANK 0.081 0.0828 0.5%`", "risk"),
     "events": ("🔔 *事件预警*　发要盯的币，如 `BTC ETH`\n"
                "　盯 OI跳升/价OI结构切换/费率跨拥挤区/盘口翻转", "events"),
 }
@@ -216,11 +199,8 @@ async def _run_direct(query, context, name):
     handlers = {
         "scan": ("handlers.scan", "scan_cmd", "🔍 扫描中…"),
         "steady": ("handlers.steady", "steady_cmd", "🌱 扫描中…"),
-        "riskprofile": ("handlers.riskprofile", "risk_profile_cmd", None),
         "weekly": ("handlers.weekly", "weekly_cmd", "📅 生成周报…"),
         "rstats": ("handlers.rstats", "rstats", "📊 拉取成绩单…"),
-        "cockpit": ("handlers.cockpit", "cockpit", "🚗 读取持仓…"),
-        "plans": ("handlers.plan", "plans_cmd", None),
         "checklist": ("handlers.checklist", "checklist", None),
         "datacheck": ("handlers.datameta", "datacheck", "🩺 体检中…"),
     }
@@ -257,10 +237,8 @@ async def run_awaited_cmd(update, context, text):
         "sym": ("handlers.symbols", "sym_cmd"),
         "backtest": ("handlers.backtest", "backtest_cmd"),
         "datacheck": ("handlers.datameta", "datacheck"),
-        "plan": ("handlers.plan", "plan_cmd"),
         "achart": ("handlers.annotchart", "achart"),
         "events": ("handlers.events", "events_cmd"),
-        "risk": ("handlers.riskguard", "risk"),
     }
     if cmd not in table:
         return False
@@ -1932,7 +1910,6 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("🪙 现货持币", callback_data="vspot_show")],
             [InlineKeyboardButton("📋 我的委托单", callback_data="vord_show"),
              InlineKeyboardButton("📜 历史/胜率", callback_data="vhist_show")],
-            [InlineKeyboardButton("🔴 实盘交易(Bybit)", callback_data="cat_rtrade")],
             [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
         ])
         await safe_edit(query,
@@ -2103,37 +2080,6 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logging.error(f"虚拟历史出错: {e}")
             await safe_edit(query, f"查询失败，稍后再试：{str(e)[:80]}", reply_markup=back_to("cat_vtrade"))
 
-    # ---- 实盘交易说明卡（仅文字，下单须手打命令+确认，防误触）----
-    elif d == "cat_rtrade":
-        from bybit_trade import _is_testnet
-        env = "🧪 当前模拟盘(testnet)" if _is_testnet() else "🔴 当前实盘(动真钱)"
-        rtkb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎛 打开交易台（推荐，点按钮操作）", callback_data="tpanel")],
-            [InlineKeyboardButton("📊 实盘复盘", callback_data="rsd:30"),
-             InlineKeyboardButton("🛡 风险守护", callback_data="rgpanel")],
-            [InlineKeyboardButton("🌅 AI 盘前简报", callback_data="brnow")],
-            [InlineKeyboardButton("⬅️ 返回主菜单", callback_data="menu_main")],
-        ])
-        await safe_edit(query, 
-            "🔴 *Bybit 实盘交易*（管理员·私聊·真金白银）\n"
-            f"{env}\n\n"
-            "💡 记不住命令就点【🎛 交易台】，开仓/平仓/改止损/预警全是按钮。\n\n"
-            "*或手打命令：*\n"
-            "`/ropen BTC long 1000 10 62000 sl=60000 tp=68000`\n"
-            "　限价开仓（保证金1000U·10x·价62000·带止盈止损），弹确认再下\n"
-            "`/rclose BTC` 市价全平　`/rclose BTC 50` 平一半　`/rclose BTC 100 63000` 限价平\n"
-            "`/rpos` 实盘持仓（入场/爆仓价/浮盈直读交易所）\n"
-            "`/rtpsl BTC tp=68000 sl=61000` 改已有仓位止盈止损（清除填0）\n"
-            "`/rliqalert 5` 爆仓预警：距爆仓≤5%推送（`off`关）\n"
-            "`/rbal` 合约余额　`/rorders BTC` 挂单　`/rcancel BTC` 撤单\n\n"
-            "*📊 复盘 / 风控*\n"
-            "`/rstats 30` 成绩单：胜率·盈亏比·期望值·最大回撤，按币/多空/持仓时长/时段拆\n"
-            "`/rstats 30 ai` AI 从你的数字里挑行为漏洞\n"
-            "`/risk` 风险守护　`/brief` AI 盘前简报\n\n"
-            "⚠️ 平仓强制 reduceOnly 只减不反开；先在模拟盘验证再上实盘\n"
-            "（切换：服务器 .env 的 `BYBIT_TESTNET` true/false）",
-            reply_markup=rtkb, parse_mode="Markdown")
-
     # ---- AI 助手：点按钮 → 进入 AI 问答会话（连续聊，直到退出）----
     elif d == "ask_start":
         if query.message.chat.type in ("group", "supergroup"):
@@ -2156,76 +2102,13 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop("ai_session", None)
         await safe_edit(query, "已退出 AI 问答。发 /menu 打开菜单。", reply_markup=back_kb())
 
-    # ---- 交易台 / 引导式开仓 / 一键持仓操作 ----
-    elif d == "tpanel":
-        from handlers import rtrade
-        await rtrade.panel_edit(query, context)
-    elif d == "topen":
-        from handlers import rtrade
-        await rtrade.guided_open_coins(query)
-    elif d == "topother":
-        from handlers import rtrade
-        await rtrade.guided_other(query, context)
-    elif d.startswith("tops:"):
-        from handlers import rtrade
-        await rtrade.guided_dir(query, d.split(":", 1)[1])
-    elif d.startswith("topd:"):
-        from handlers import rtrade
-        _, sym, side = d.split(":")
-        await rtrade.guided_lev(query, sym, side)
-    elif d.startswith("topm:"):
-        _, sym, side, lev, mgn = d.split(":")
-        await rtrade.guided_price(query, context, sym, side, lev, mgn)
-
-    elif d.startswith("topx:"):
-        _, sym, side, lev = d.split(":")
-        await rtrade.guided_amount(query, context, sym, side, lev)
-
-    elif d.startswith("topl:"):
-        from handlers import rtrade
-        _, sym, side, lev = d.split(":")
-        await rtrade.guided_margin(query, context, sym, side, lev)
-    elif d.startswith("tcls:"):
-        from handlers import rtrade
-        _, sym, pct = d.split(":")
-        await rtrade.close_from_btn(query, context, sym, float(pct))
-    elif d.startswith("tsl:"):
-        from handlers import rtrade
-        await rtrade.ask_sl(query, context, d.split(":", 1)[1])
-    elif d == "tliq":
-        from handlers import rtrade
-        await rtrade.liq_menu(query)
-    elif d.startswith("tliqset:"):
-        from handlers import rtrade
-        await rtrade.liq_set(query, context, d.split(":", 1)[1])
-
-    # ---- 实盘复盘 / 风险守护 / 盘前简报 ----
+    # ---- 复盘（虚拟盘）----
     elif d.startswith("rsd:"):          # 复盘：切换统计天数
         from handlers import rstats
         await rstats.days_from_btn(query, context, int(d.split(":", 1)[1]))
     elif d.startswith("rsai:"):         # 复盘：AI 诊断
         from handlers import rstats
         await rstats.ai_from_btn(query, context, int(d.split(":", 1)[1]))
-    elif d == "rgpanel":
-        from handlers import riskguard
-        text, kb = riskguard.panel_content()
-        await safe_edit(query, text, reply_markup=kb, parse_mode="Markdown")
-    elif d == "rgtog":                  # 风险守护总开关
-        from handlers import riskguard
-        await riskguard.toggle(query, context)
-    elif d.startswith("rgc:"):          # 单项检查开关
-        from handlers import riskguard
-        await riskguard.toggle_check(query, context, d.split(":", 1)[1])
-    elif d.startswith("rgset:"):        # 阈值
-        from handlers import riskguard
-        _, key, val = d.split(":")
-        await riskguard.set_threshold(query, context, key, val)
-    elif d == "brtog":                  # 盘前简报每日推送开关
-        from handlers import brief
-        await brief.toggle(query, context)
-    elif d == "brnow":
-        from handlers import brief
-        await brief.now_from_btn(query, context)
 
     # ---- 资金费率极端榜 ----
     elif d == "fex":
@@ -2235,25 +2118,6 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # 只弹 toast 不重渲染——重渲染要重扫全市场，为了一个订阅开关不值得
         from handlers import fundextreme
         await fundextreme.sub_from_btn(query, context, d.split(":", 1)[1])
-
-    # ---- 持仓驾驶舱 ----
-    elif d == "ckpt":
-        from handlers import cockpit
-        await cockpit.from_btn(query, context)
-
-    # ---- 交易计划 ----
-    elif d.startswith("pl:"):
-        from handlers import plan as _plan
-        bits = d.split(":")
-        # action 之后可能不止一段（如 pl:filll:p3:10），整体传给 button 自己拆
-        await _plan.button(query, context, bits[1],
-                           ":".join(bits[2:]) if len(bits) > 2 else None)
-
-    # ---- 仓位计算：换风险档位重算 ----
-    elif d.startswith("sz:"):
-        from handlers import sizing
-        _, sym, entry, stop, risk = d.split(":")
-        await sizing.from_btn(query, context, sym, float(entry), float(stop), float(risk))
 
     # ---- 标注图表：切周期 / AI 解读 ----
     elif d.startswith("ac:"):
@@ -2270,18 +2134,6 @@ async def _dispatch(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from handlers.condalert import USAGE
         await safe_edit(query, USAGE, reply_markup=back_to("cat_alert"),
                         parse_mode="Markdown")
-
-    # ---- 实盘开仓二次确认 ----
-    elif d == "roconf":
-        from handlers.rtrade import confirm_open
-        try:
-            await confirm_open(query, context)
-        except Exception as e:
-            logging.error(f"实盘确认下单出错: {e}")
-            await safe_edit(query, f"❌ 下单异常：{e}")
-    elif d == "rocancel":
-        from handlers.rtrade import cancel_open
-        await cancel_open(query, context)
 
     # ============ 帮助 ============
     elif d == "cat_help":

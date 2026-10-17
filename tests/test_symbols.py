@@ -129,7 +129,7 @@ def test_for_ai_collapses_same_exchange_versions():
 
 
 def test_preferred_picks_usdt_perp_over_usdc_and_futures():
-    """排第一的会被 sizing 直接采用——拿错结算币，保证金和爆仓价算的是别的合约。"""
+    """排第一的会被 bybit_perp_spec（虚拟盘规格校验）直接采用——拿错结算币，保证金和爆仓价算的是别的合约。"""
     perp = _inst(exchange="Bybit", symbol="BTCUSDT", base="BTC", underlying="BTC")
     usdc = _inst(exchange="Bybit", symbol="BTCPERP", base="BTC", underlying="BTC",
                  settle="USDC")

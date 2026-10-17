@@ -56,6 +56,6 @@ def test_modules_that_import_save_data_directly_are_the_known_risk():
     而是在文档化「为什么护栏必须是路径而不是函数」。哪天有人想把 conftest 的
     路径隔离换回打桩，这条会提醒他为什么不行。
     """
-    from handlers import contract_alert, keyguard, riskprofile
-    for mod in (contract_alert, keyguard, riskprofile):
+    from handlers import contract_alert
+    for mod in (contract_alert,):
         assert hasattr(mod, "save_data"), f"{mod.__name__} 直接导入了 save_data"

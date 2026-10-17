@@ -134,24 +134,23 @@ def build(trades, prev_snap, days=7):
 
 
 async def weekly_report(context):
-    """后台 job：给订阅者推周报。"""
+    """后台 job：给订阅者推周报。
+
+    数据源是虚拟盘（v1.70.0 起没有实盘），按订阅会话的 id 读虚拟账户——
+    私聊里会话 id 就是用户 id；群里订阅读不到个人虚拟盘，会推「这周没有已平仓交易」。
+    """
     subs = data.get("weekly_subs") or []
     if not subs:
         return
-    from handlers.rstats import _load
-    try:
-        trades, _fund = await _load(7)
-    except Exception as e:
-        log.error(f"周报取数失败: {e}")
-        return
+    from handlers.rstats import load_virtual
     snaps = data.setdefault("weekly_snap", {})
     for chat_id in list(subs):
-        prev = snaps.get(_snap_key(chat_id))
-        text, cur = build(trades, prev)
+        key = f"v{chat_id}"
+        text, cur = build(load_virtual(chat_id, 7), snaps.get(key))
         if cur:
-            snaps[_snap_key(chat_id)] = cur
+            snaps[key] = cur
         try:
-            await context.bot.send_message(chat_id=int(chat_id), text=text,
+            await context.bot.send_message(chat_id=int(chat_id), text="🎮 虚拟盘周报\n" + text,
                                            parse_mode="Markdown")
         except Exception as e:
             log.error(f"周报推送失败 {chat_id}: {e}")
@@ -159,32 +158,12 @@ async def weekly_report(context):
 
 
 async def weekly_cmd(update, context):
-    """/weekly —— 立即看一份周报；/weekly on|off 订阅每周自动推送。"""
+    """/weekly —— 立即看一份虚拟盘周报；/weekly on|off 订阅每周自动推送。"""
     from handlers.util import safe_reply
-    from config import is_admin
     uid = update.effective_user.id
     chat_id = update.effective_chat.id
     a = [x.lower() for x in (context.args or [])]
     subs = data.setdefault("weekly_subs", [])
-    # 虚拟盘周报：练手阶段的行为漂移比实盘更值得看——习惯就是那时候养成的。
-    # 它读的是自己的虚拟账户，不碰实盘接口，所以不需要管理员权限。
-    if a and a[0] in ("v", "虚拟", "模拟"):
-        from handlers.rstats import load_virtual
-        trades = load_virtual(uid, 7)
-        snaps = data.setdefault("weekly_snap", {})
-        key = f"v{chat_id}"
-        text, cur = build(trades, snaps.get(key), days=7)
-        if cur:
-            snaps[key] = cur
-            save_data()
-        await safe_reply(update.message, "🎮 虚拟盘周报\n" + text,
-                         parse_mode="Markdown")
-        return
-    if not is_admin(uid):
-        await safe_reply(update.message,
-                         "实盘周报基于真实成交记录，仅管理员可用。\n"
-                         "虚拟盘周报发 `/weekly v`（不需要权限）", parse_mode="Markdown")
-        return
     if a and a[0] in ("on", "订阅"):
         if chat_id not in subs:
             subs.append(chat_id)
@@ -196,17 +175,14 @@ async def weekly_cmd(update, context):
         save_data()
         await safe_reply(update.message, "已取消周报订阅")
         return
-    await safe_reply(update.message, "📅 生成周报中…")
-    from handlers.rstats import _load
-    try:
-        trades, _fund = await _load(7)
-    except Exception as e:
-        await safe_reply(update.message, f"取数失败：{str(e)[:80]}")
-        return
+    # 练手阶段的行为漂移最值得看——习惯就是那时候养成的。读的是自己的虚拟账户，不需要权限。
+    # 旧写法 /weekly v 照旧接受（现在只有虚拟盘，参数被忽略）
+    from handlers.rstats import load_virtual
+    trades = load_virtual(uid, 7)
     snaps = data.setdefault("weekly_snap", {})
-    prev = snaps.get(_snap_key(chat_id))
-    text, cur = build(trades, prev)
+    key = f"v{chat_id}"
+    text, cur = build(trades, snaps.get(key), days=7)
     if cur:
-        snaps[_snap_key(chat_id)] = cur
+        snaps[key] = cur
         save_data()
-    await safe_reply(update.message, text, parse_mode="Markdown")
+    await safe_reply(update.message, "🎮 虚拟盘周报\n" + text, parse_mode="Markdown")

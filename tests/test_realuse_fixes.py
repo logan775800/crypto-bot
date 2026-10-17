@@ -186,8 +186,8 @@ def test_pinned_text_covers_every_major_area():
         "提醒": ("/alert", "/watchpct", "/cond"),
         "告警订阅": ("/watchpump", "/watchcontract", "/pump3", "/watchmarket"),
         "模拟交易": ("/vtrade", "/vopen", "/vbuy", "/vreset"),
-        "复盘风险": ("/rstats", "/weekly", "/plan", "/risk"),
-        "设置": ("/source", "/venue", "/datacheck", "/changelog"),
+        "复盘风险": ("/rstats", "/weekly"),
+        "设置": ("/source", "/datacheck", "/changelog"),
     }
     for area, cmds in areas.items():
         for c in cmds:

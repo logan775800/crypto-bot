@@ -1,8 +1,23 @@
 """群升级迁移 + data.json 清理——迁移漏字段会让订阅静默失效（踩过）。"""
+import copy
 import time
+
+import pytest
+
 import storage
 
 OLD, NEW = -123456789, -1003950673952
+
+
+@pytest.fixture(autouse=True)
+def _restore_data():
+    """_seed 往全局 data 里塞了一批订阅（broadcast_chats 等），不还原会漏给后面的测试——
+    服务器随机顺序跑，test_pin_smoke 排在后面时就会多收到这几个群而失败。
+    必须原地还原：各模块 `from storage import data` 拿的是同一个 dict 对象。"""
+    snap = copy.deepcopy(storage.data)
+    yield
+    storage.data.clear()
+    storage.data.update(snap)
 
 
 def _seed():
@@ -14,7 +29,6 @@ def _seed():
         "gas_subs": {str(OLD): {"threshold": 15}}, "arb_subs": {str(OLD): {"threshold": 1}},
         "whale_addr": {str(OLD): {"0xabc": {}}}, "whale_min": {str(OLD): 10000},
         "holding_watch": {"777": OLD},
-        "rtrade_alert": {"enabled": True, "chat_id": OLD},
         "vtrade": {"777": {"balance": 10000, "chat_id": OLD}},
     })
 
@@ -32,7 +46,6 @@ def test_migrate_chat_moves_every_structure():
     assert str(NEW) in d["gas_subs"] and str(OLD) not in d["gas_subs"]
     assert str(NEW) in d["whale_addr"] and str(NEW) in d["whale_min"]
     assert d["holding_watch"]["777"] == NEW
-    assert d["rtrade_alert"]["chat_id"] == NEW
     assert d["vtrade"]["777"]["chat_id"] == NEW
 
 
@@ -50,7 +63,6 @@ def test_prune_drops_expired_and_caps_history():
         "contract_tiers": {"STALE": {"ts": now - 10 * 86400}, "FRESH": {"ts": now}},
         "pushed_news": [f"link{i}" for i in range(900)],
         "vtrade": {"777": {"history": [{"pnl": 1} for _ in range(500)]}},
-        "rtrade_alert": {"cooldown": {"OLDSYM": now - 10 * 86400, "NEWSYM": now}},
     })
     storage.prune_data(now=now)
     d = storage.data
@@ -59,4 +71,3 @@ def test_prune_drops_expired_and_caps_history():
     assert "STALE" not in d["contract_tiers"] and "FRESH" in d["contract_tiers"]
     assert len(d["pushed_news"]) == 500 and d["pushed_news"][-1] == "link899"  # 保留最新
     assert len(d["vtrade"]["777"]["history"]) == 200
-    assert "OLDSYM" not in d["rtrade_alert"]["cooldown"]

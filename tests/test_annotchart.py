@@ -275,17 +275,6 @@ class TestMaConsistency:
         closes = [100.0] * 60
         assert "缠绕" in analyze(closes)["ma_signal"]
 
-    def test_cockpit_trend_uses_the_lifeline(self):
-        import inspect
-        from handlers import cockpit
-        from handlers.annotchart import MA_PERIODS
-        src = inspect.getsource(cockpit._analyze_one)
-        assert "MA_PERIODS" in src and "ema(c, 20)" not in src
-        st, danger = cockpit.trend_state(
-            "long", {"last": 90.0, "ma_ref": 95.0, "ma_ref_period": MA_PERIODS[-1],
-                     "structure": "震荡/不明确"})
-        assert f"MA{MA_PERIODS[-1]}" in st and danger is True
-
     @staticmethod
     def _code_only(fn):
         """剥掉注释再判——注释里写「以前是 MA7/MA30」是解释，不是残留口径。

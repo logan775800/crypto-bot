@@ -50,24 +50,15 @@ def apply_defaults(d=None):
     d.setdefault("contract_watch", [])   # 订阅全交易所合约异动告警的chat_id
     d.setdefault("contract_tiers", {})   # 合约分级告警记录 {交易所_币: {tier,dir,ts}}
     d.setdefault("contract_alerted", {}) # 合约告警推送冷却 {币:方向:档位 -> ts}（防同一异动刷屏）
-    d.setdefault("grids", {})            # Bybit 永续网格 {chat_id:symbol: {区间/档位/挂单/成交/利润...}}
     d.setdefault("watchpct", [])         # 持续波动监控：**扁平 list**，每条自带 chat_id
     # [{chat_id,symbol,pct,base,src,last_ts,...}]。不是 {chat_id: [...]}——rugwatch 当成字典写过，线上抛 AttributeError
     d.setdefault("vtrade", {})           # 虚拟合约交易 {uid: {balance, positions{sym:{...}}, history[], chat_id}}
-    d.setdefault("rtrade_alert", {})     # 实盘爆仓预警 {enabled, threshold, chat_id, cooldown{sym:ts}}
-    d.setdefault("riskguard", {})        # 风险守护 {enabled, chat_id, checks{}, mmr/daily/conc/btc_drop 阈值, cooldown{}, day{date,start,fired}}
-    d.setdefault("brief", {})            # AI盘前简报每日推送 {enabled, chat_id}
     d.setdefault("cond_alerts", [])      # 条件触发提醒 [{chat_id,symbol,conds[],last_ts}]
-    d.setdefault("plans", [])            # 交易计划 [{id,chat_id,symbol,side,status,trigger,entry,stop,tps,invalid,...}]
-    d.setdefault("plan_seq", 0)          # 计划自增号（按钮 callback_data 要短 id）
     d.setdefault("fex_subs", {})         # 资金费极值订阅 {chat_id: {threshold}}
     d.setdefault("fex_alerted", {})      # 资金费极值推送冷却 {chat:ex:币:方向 -> ts}
     d.setdefault("ai_model_override", "")  # /aimodel 手动指定的AI模型（空=自动降级）
     d.setdefault("pump_watch", {})       # 15m急涨急跌订阅 {chat_id: {"pct": 阈值}}
     d.setdefault("pump_alerted", {})     # 急涨急跌去重 {chat_id: {币: {up,down,ts}}}
-    d.setdefault("trading_disabled", False)  # 实盘下单总开关(killswitch)
-    d.setdefault("audit_log", [])         # 实盘操作审计
-    d.setdefault("risk_profile", {})      # 个性化风控参数 {uid: {...}}
     d.setdefault("weekly_subs", [])       # 周报订阅 chat_id
     d.setdefault("weekly_snap", {})       # 上周行为快照（算漂移用）
     d.setdefault("event_subs", {})        # 事件驱动预警订阅 {chat_id: {symbols:[]}}
@@ -116,9 +107,8 @@ def prune_data(now=None):
         if old:
             removed["contract_tiers"] = len(old)
 
-    # 已推新闻链接去重表 / 审计日志：只留最近 N 条
-    for key, cap in (("pushed_news", 500), ("alerted_unlocks", 500),
-                     ("audit_log", 500)):
+    # 已推新闻链接去重表：只留最近 N 条
+    for key, cap in (("pushed_news", 500), ("alerted_unlocks", 500)):
         lst = data.get(key)
         if isinstance(lst, list) and len(lst) > cap:
             removed[key] = len(lst) - cap
@@ -131,18 +121,6 @@ def prune_data(now=None):
             removed[f"vtrade[{uid}].history"] = len(h) - 200
             acct["history"] = h[-200:]
 
-    # 实盘爆仓预警 / 风险守护 冷却
-    for key in ("rtrade_alert", "riskguard"):
-        ra = data.get(key)
-        if isinstance(ra, dict) and isinstance(ra.get("cooldown"), dict):
-            cd = ra["cooldown"]
-            old = [k for k, v in cd.items()
-                   if isinstance(v, (int, float)) and now - v > 2 * 86400]
-            for k in old:
-                cd.pop(k, None)
-            if old:
-                removed[f"{key}.cooldown"] = len(old)
-
     if removed:
         save_data()
     return removed
@@ -154,10 +132,12 @@ def prune_data(now=None):
 _ID_LISTS = ("broadcast_chats", "market_watch", "news_subs", "unlock_subs",
              "summary_subs", "analysis_subs", "contract_watch", "weekly_subs",
              "regime_subs")
-_DICT_LISTS = ("watchpct", "alerts", "ti_alerts", "cond_alerts", "plans")
+_DICT_LISTS = ("watchpct", "alerts", "ti_alerts", "cond_alerts")
 _ID_KEYED = ("gas_subs", "arb_subs", "whale_addr", "whale_min", "fex_subs",
              "pump_watch", "event_subs", "contract_min_tier")
-_EMBEDDED = ("rtrade_alert", "riskguard", "brief")
+# 内嵌 chat_id 的单例配置 {enabled, chat_id, ...}。原有 rtrade_alert/riskguard/brief 三个，
+# v1.70.0 随实盘删除后暂时为空；以后再加这种形状的订阅记得登记进来。
+_EMBEDDED = ()
 
 
 def subscribed_chats():

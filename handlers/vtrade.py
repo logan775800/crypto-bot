@@ -34,8 +34,8 @@ async def _real_frictions(symbol, side, notional, entry):
     # 合约规格：数量要按步长取整、不能低于最小下单量。实盘会直接拒单，
     # 模拟盘不校验的话，用户会练出一堆实盘根本下不进去的仓位
     try:
-        from handlers import sizing
-        spec = await sizing.spec_for(symbol)
+        from handlers import symbols
+        spec = await symbols.bybit_perp_spec(symbol)
         if spec:
             qty = notional / entry if entry else 0
             mul = spec.get("multiplier") or 1

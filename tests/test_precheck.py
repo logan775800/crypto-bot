@@ -4,7 +4,7 @@
 「**你这一单**在费率的付费那边、而且大家都站你这边」——那要拿这个币此刻的
 数据去算，不是背诵条款。
 
-分工要清楚：`rtrade._cost_block` 已经算了止损距离/最大亏损/爆仓距离/手续费，
+分工要清楚：止损距离/最大亏损/爆仓距离/手续费归 `/net`（econ）算，
 这里只补它没有、而 checklist 点名要看的两条（费率方向、拥挤交易）。
 """
 import pytest
@@ -110,12 +110,9 @@ def test_block_has_a_heading():
 
 # ── 接线 ──────────────────────────────────────────────────────
 def test_wired_into_both_confirm_pages():
-    """实盘确认卡和虚拟盘开仓最后一屏都要有——虚拟盘的意义是手感能迁移，
-    两边点法/看到的东西不一样，那点手感也白练。"""
+    """虚拟盘开仓最后一屏要有（实盘确认卡随实盘在 v1.70.0 删了）。"""
     import inspect
-    from handlers import rtrade, vpanel
-    assert "precheck" in inspect.getsource(rtrade._precheck_block)
-    assert "_precheck_block" in inspect.getsource(rtrade.prepare_open)
+    from handlers import vpanel
     assert "precheck" in inspect.getsource(vpanel.pick_type)
 
 

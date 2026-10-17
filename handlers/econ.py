@@ -21,7 +21,7 @@ import math
 
 log = logging.getLogger(__name__)
 
-# Bybit 线性永续 VIP0 默认费率。拿得到账户真实费率就用真实的，拿不到用这个兜底
+# Bybit 线性永续 VIP0 默认费率（v1.70.0 起没有实盘账户，不再读账户真实费率）
 # （宁可高估成本：低估会让一单看起来能做，实际做完是亏的）。
 TAKER = 0.00055
 MAKER = 0.00020
@@ -190,27 +190,6 @@ def _fmt(x):
 
 
 # ── 真实数据接线（失败一律降级，不让整条算不出来）──────────────────
-async def account_fee_rate(symbol):
-    """账户真实费率。拿不到就返回 None，由调用方回退到 VIP0 默认值。
-
-    真实费率可能比默认低不少（VIP 等级/返佣），用默认值会高估成本——
-    高估的方向是安全的，所以拿不到不算故障。
-    """
-    try:
-        from handlers.rtrade import _client
-        c = _client()
-        r = await c._get("/v5/account/fee-rate",
-                         {"category": "linear", "symbol": symbol})
-        row = ((r or {}).get("list") or [{}])[0]
-        taker, maker = row.get("takerFeeRate"), row.get("makerFeeRate")
-        if taker is None:
-            return None
-        return {"taker": float(taker), "maker": float(maker or taker)}
-    except Exception as e:
-        log.debug(f"取账户费率失败 {symbol}: {e}")
-        return None
-
-
 async def market_inputs(symbol, side, notional):
     """把「这一单」需要的真实市场参数一次取齐：盘口滑点 + 资金费率 + 费率。
 
@@ -252,13 +231,7 @@ async def market_inputs(symbol, side, notional):
         out["funding_rate"] = float(tk.get("fundingRate") or 0)
     except Exception as e:
         out["notes"].append(f"⚠️ 资金费率取不到（{str(e)[:40]}），按 0 估算")
-    # 账户真实费率（管理员配了密钥才有）
-    fr = await account_fee_rate(sym)
-    if fr:
-        out.update(taker=fr["taker"], maker=fr["maker"])
-        out["notes"].append(f"费率用的是你账户真实值（taker {fr['taker']*100:.4f}%）")
-    else:
-        out["notes"].append(f"费率用 VIP0 默认（taker {TAKER*100:.3f}%），真实费率可能更低")
+    out["notes"].append(f"费率用 VIP0 默认（taker {TAKER*100:.3f}%），你的真实费率可能更低")
     return out
 
 

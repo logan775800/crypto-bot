@@ -185,6 +185,6 @@ def test_the_jobs_that_matter_are_tracked():
     src = (pathlib.Path(__file__).resolve().parent.parent / "bot.py").read_text(
         encoding="utf-8")
     for name in ("价格预警", "波动监控", "急涨急跌", "合约异动", "市场异动",
-                 "条件提醒", "风险守护", "实盘爆仓预警", "交易计划", "LP撤出告警"):
+                 "条件提醒", "LP撤出告警"):
         assert f'"{name}"' in src, f"{name} 这条告警链没挂心跳"
     assert "monitor.job_watchdog" in src, "巡检任务没注册，心跳记了也没人看"

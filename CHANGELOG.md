@@ -3,6 +3,17 @@
 每次发版在最上面加一段。`/changelog` 看得到，启动播报会带上当前版本这一段。
 格式固定：`## vX.Y.Z　(日期)` + 若干 `- ` 条目，handlers/changelog.py 按这个格式解析。
 
+## v1.70.0　(2026-10-17)
+- 🗑 **移除 Bybit / 币安实盘交易**。机器人不再连任何交易所账户，也不再读 API 密钥，只保留虚拟盘（`/vtrade` `/vopen` 那套）
+- ❌ 实盘交易台下线：`/trade` `/ropen` `/rclose` `/rpos` `/rbal` `/rorders` `/rcancel` `/rtpsl` `/rliqalert`，网格 `/gridstart` `/gridstop` `/gridstatus`
+- ❌ 密钥相关下线：`/venue` 切交易所、`/keycheck` 密钥体检、`/killswitch` 下单总开关、`/audit`
+- ❌ 读实盘账户的功能下线：驾驶舱 `/cockpit`、风险守护和算仓位 `/risk`、盘前简报 `/brief`
+- ❌ 交易计划 `/plan` `/plans` `/replan` `/delplan`、风控参数 `/riskprofile` `/riskset` 一起删了
+- 📊 `/rstats` 复盘和 `/weekly` 周报**改成只看虚拟盘**，不用再加 `v`（加了也照常认）；每周一自动推的周报也改推虚拟盘
+- 🤖 AI 对话不再读实盘账户；问「我最近怎么样/帮我复盘」时读的是你的虚拟盘成绩单
+- 💰 `/net` 净盈亏比的手续费固定按 VIP0 默认费率算（以前会读实盘账户的真实费率）
+- 🧹 菜单里「风险中心」「复盘中心」「交易工具」去掉了对应按钮；`/datacheck` 体检不再有「账户链路」那一行
+
 ## v1.69.1　(2026-10-17)
 - 🔇 **「机器人异常 httpx.ReadError / Bad Gateway」不再推了**。
   这是机器人向 Telegram 拉新消息（长轮询）时偶发断一下，框架自己会重试、消息不丢。

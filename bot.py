@@ -7,7 +7,7 @@ from telegram.ext import (
 )
 from config import TOKEN, BROADCAST_HOUR, BROADCAST_MINUTE, update_coins, COIN_IDS
 import api
-from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, grid, watchpct, checklist, streak, vtrade, rtrade, chat, rstats, riskguard, brief, condalert, fundextreme, annotchart, datameta, sizing, plan, cockpit, pumpalert, symbols, econ, scan, events, backtest, riskprofile, weekly, keyguard, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, venue, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch, newtoken, posflow, liqflip, alpha, listgap
+from handlers import price, alert, portfolio, menu, broadcast, chart, market, analysis, ai, arbitrage, whale, welcome, dashboard, okx, market_alert, backup, monitor, prefs, movers, news, unlock, summary, quickprice, stock, whale_track, indicator_alert, strategy, contract_alert, contract_ws, watchpct, checklist, streak, vtrade, chat, rstats, condalert, fundextreme, annotchart, datameta, pumpalert, symbols, econ, scan, events, backtest, weekly, privacy, cmdpanel, steady, source, changelog, regime, onchain, breakout, microcap, access, vorders, vspot, vpanel, dayrank, lsratio, liqmap, howto, pump3, relay, rugwatch, newtoken, posflow, liqflip, alpha, listgap
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -32,11 +32,11 @@ HELP_TEXT = (
     "/cond BTC <60000 rsi15m<30 🎯 条件提醒：价格+指标**同时**满足才叫（/conds 管理）\n"
     "/fex 💵 资金费率极端榜（全市场跨所，按结算周期归一日化，标出1h高频费率）\n"
     "/achart BTC 1h 📐 标注图表：MA3/13/23、摆动高低点、前高前低、1.5×ATR止损带**画在图上**\n"
-    "/datacheck 🩺 系统体检：行情源/AI/**账户链路**/订阅状态 —— 查「地基通没通电」\n"
+    "/datacheck 🩺 系统体检：行情源/AI/订阅状态 —— 查「地基通没通电」\n"
     "　└ /datacheck BANK 查单个币各维度取不取得到、延迟多少、有没有插针\n"
     "/restore 💾 从备份恢复订阅与配置（先发 /restore 看有哪些备份）\n"
     "/privacy 🔒 AI 外发账户数据脱敏：AI 走第三方中转站，账户金额默认只给百分比\n"
-    "　└ 密钥和 token 从不进 prompt；想看真实数字用 /rbal /cockpit（不经中转站）\n"
+    "　└ 密钥和 token 从不进 prompt\n"
     "/sym LAB 🔎 合约身份：这代号在哪个所、面值倍数、按币还是按张、最小下单量\n"
     "　└ 同名不同币会全部列出并做价格偏离检测——下单前先确认是哪个\n"
     "/net BANK long 0.081 0.0795 0.086 2000 💰 净盈亏比：扣掉手续费/滑点/资金费还剩多少\n"
@@ -51,36 +51,20 @@ HELP_TEXT = (
     "　└ 每条都带上下文和「这意味着什么」，不是干巴巴一句「价格到了」\n"
     "/backtest BTC 1h trend 🧪 规则回测：不许前视、成本照扣，看**净期望**是正是负\n"
     "　└ 规则 trend/pullback/breakout；结果以 R 计，不同币能直接比\n"
-    "/riskprofile ⚙️ 我的风控参数（单笔风险/同向上限/杠杆上限/连亏降险）\n"
-    "　└ `/riskset risk_pct 0.3` 改；参数会**真的挡住** /risk 的计算\n"
-    "/weekly 📅 交易周报：行为画像（持仓时长/杠杆/亏损离散度和上周比）\n"
+    "/weekly 📅 虚拟盘周报：行为画像（持仓时长/杠杆/亏损离散度和上周比）\n"
     "　└ `/weekly on` 每周一自动推；看行为漂移，不是看单周盈亏\n"
-    "/plan BANK short 📋 交易计划：触发/入场/止损/分段止盈/**失效条件**，一屏能执行\n"
-    "　└ 后台按5m收盘盯着：触发、止盈触及、**计划失效**、过期都会主动推给你\n"
-    "　└ /plans 我的计划　/replan p3 重新校验（旧计划别硬做）\n"
     "/gasalert 15 Gas跌破提醒　/arbwatch 0.8 套利监控\n"
     "/track 0x地址 追踪巨鲸地址　/tracked 我的追踪\n"
     "/portfolio 我的持仓（请私聊使用）\n\n"
     "*🎮 虚拟合约交易*（模拟盘，练手不碰真钱，私聊）\n"
     "/vopen BTC long 1000 10 开多（1000U保证金10x，入场取现价）\n"
     "　└ /vclose BTC 平仓　/vpos 持仓+浮盈+爆仓价　/vhistory 胜率历史\n"
-    "　└ /vtpsl BTC tp=70000 sl=60000 挂止盈止损（触及自动平仓，和实盘同构）\n"
+    "　└ /vtpsl BTC tp=70000 sl=60000 挂止盈止损（触及自动平仓）\n"
     "　　 现货持币也能设（`/vtpsl BTC 现货 sl=60000`）：触及全卖，"
     "并撤掉该币挂着的限价卖单\n"
-    "　└ 开仓含真实滑点+账户费率+合约最小下单量校验，持仓扣资金费\n\n"
-    "*🔴 实盘交易*（Bybit永续·管理员·默认模拟盘）\n"
-    "/trade 🎛 交易台——点按钮开仓/平仓/改止损/预警，记不住命令就用它\n"
-    "/ropen BTC long 1000 10 62000 sl=60000 tp=68000 限价开仓(带止盈损,弹确认)\n"
-    "　└ /rclose BTC 平仓　/rpos 实盘持仓　/rbal 余额　/rorders /rcancel 挂单\n"
-    "　└ /rtpsl BTC tp= sl= 改止盈止损　/rliqalert 5 爆仓预警\n"
-    "/keycheck 🔐 密钥体检：这把key有哪些权限、能不能提现、绑没绑IP\n"
-    "　└ /killswitch on 出事时一键禁用实盘开仓（平仓查询不受影响）｜/audit 操作记录\n"
-    "/cockpit 🚗 持仓驾驶舱：每个仓的趋势状态/距爆仓/有无止损/资金费/建议动作+账户红色风险\n"
-    "/rstats 30 实盘复盘：胜率/盈亏比/期望值/最大回撤，按币·多空·持仓时长·时段拆解\n"
-    "　└ `/rstats 30 ai` 让 AI 从数字里挑出你的行为漏洞（这是唯一能提升胜率的功能）\n"
-    "/risk 🛡 风险守护：保证金率/同向集中度/当日亏损熔断/裸奔仓位/BTC破位联动\n"
-    "/risk 0.081 0.0828 0.5% 🧮 反推仓位：这个止损下能开多大（自动读你的真实权益+同向暴露）\n"
-    "/brief 🌅 AI 盘前简报：市场结构+资金费极值+**你每个仓的具体风险点**（可订阅每天8:30）\n\n"
+    "　└ 开仓含真实滑点+账户费率+合约最小下单量校验，持仓扣资金费\n"
+    "/rstats 30 📊 虚拟盘复盘：胜率/盈亏比/期望值/最大回撤，按币·多空·持仓时长·时段拆解\n"
+    "　└ `/rstats 30 ai` 让 AI 从数字里挑出你的行为漏洞\n\n"
     "*盯盘 / 合约*\n"
     "/watchpct BTC 2 持续波动监控，涨跌超±2%就提醒（报后自动续盯）\n"
     "　└ 加「合约」盯永续价，如 `/watchpct LAB 2 合约`（OKX/Bybit永续秒级实时）\n"
@@ -118,9 +102,6 @@ BOT_COMMANDS = [
     BotCommand("movers", "📸 异动快照"),
     BotCommand("weak", "😴 弱势/横盘扫描"),
     BotCommand("momentum", "📈 动量轮动回测"),
-    BotCommand("gridstart", "🔳 启动永续网格(管理员)"),
-    BotCommand("gridstatus", "🔳 网格状态/利润"),
-    BotCommand("gridstop", "🛑 停止网格"),
     BotCommand("analyze", "📈 技术分析"),
     BotCommand("ai", "🤖 AI分析"),
     BotCommand("news", "📰 最新新闻"),
@@ -176,15 +157,7 @@ BOT_COMMANDS = [
     BotCommand("vorders", "📋 虚拟委托单(挂单)"),
     BotCommand("vcancel", "❌ 撤销虚拟挂单"),
     BotCommand("vhistory", "🎮 虚拟交易胜率/历史"),
-    BotCommand("trade", "🎛 实盘交易台(点按钮操作)"),
-    BotCommand("ropen", "🔴 实盘限价开仓(Bybit)"),
-    BotCommand("rclose", "🔴 实盘平仓(Bybit)"),
-    BotCommand("rpos", "🔴 实盘持仓(Bybit)"),
-    BotCommand("rbal", "🔴 实盘合约余额(Bybit)"),
-    BotCommand("cockpit", "🚗 持仓驾驶舱(逐仓状态+建议)"),
-    BotCommand("rstats", "📊 实盘复盘成绩单(胜率/期望值)"),
-    BotCommand("risk", "🛡 风险守护｜带参数=按风险反推仓位"),
-    BotCommand("brief", "🌅 AI盘前简报(结合你的持仓)"),
+    BotCommand("rstats", "📊 虚拟盘复盘成绩单(胜率/期望值)"),
     BotCommand("cond", "🎯 条件触发提醒(价格+指标组合)"),
     BotCommand("conds", "🎯 我的条件提醒"),
     BotCommand("fex", "💵 资金费率极端榜(全市场跨所)"),
@@ -193,21 +166,15 @@ BOT_COMMANDS = [
     BotCommand("sym", "🔎 合约身份(哪个所/面值/单位)"),
     BotCommand("net", "💰 净盈亏比(扣费/滑点/资金费)"),
     BotCommand("scan", "🔍 机会扫描(可交易性评分)"),
-    BotCommand("venue", "🏦 交易所(Bybit/币安 切换)"),
     BotCommand("access", "🚪 准入控制(限制谁能用机器人)"),
     BotCommand("microcap", "💎 微市值扫描(<300万且能下单)"),
     BotCommand("steady", "🌱 缓步增长(稳中有升的币)"),
     BotCommand("events", "🔔 事件预警(OI/费率/盘口切换)"),
     BotCommand("backtest", "🧪 规则回测(扣成本的净期望)"),
-    BotCommand("riskprofile", "⚙️ 我的风控参数"),
-    BotCommand("weekly", "📅 交易周报(行为画像)"),
-    BotCommand("keycheck", "🔐 密钥权限体检"),
-    BotCommand("killswitch", "🔴 一键禁用实盘下单"),
+    BotCommand("weekly", "📅 虚拟盘周报(行为画像)"),
     BotCommand("restore", "💾 从备份恢复订阅/配置"),
     BotCommand("commands", "⌨️ 全部命令(按钮面板)"),
     BotCommand("privacy", "🔒 AI外发账户数据脱敏"),
-    BotCommand("plan", "📋 生成交易计划(会自动失效)"),
-    BotCommand("plans", "📋 我的交易计划"),
 ]
 
 
@@ -329,11 +296,6 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/version 报告线上真正在跑的版本 + 关键配置状态（排查"部署到底生效没"用）。"""
     from config import VERSION, AI_MODEL, AI_API_KEY, ADMIN_IDS, is_admin
     ai_ok = "已配置" if AI_API_KEY else "❌未配置"
-    try:
-        from bybit_trade import BYBIT_API_KEY, _is_testnet
-        by = ("🧪模拟盘" if _is_testnet() else "🔴实盘") if BYBIT_API_KEY else "❌未配置"
-    except Exception:
-        by = "❌未配置"
     me = "✅ 是" if is_admin(update.effective_user.id) else "❌ 否"
     # 显示**实际在用**的模型：.env 那个可能已被中转站下线、运行时自动降级到备用了
     from handlers.ai import current_model
@@ -344,7 +306,6 @@ async def version_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"━━━━━━━━━━━━━━\n"
         f"📦 版本　　`{VERSION}`\n"
         f"🧠 AI模型　{model_line}（{ai_ok}）\n"
-        f"💹 Bybit　 {by}\n"
         f"👤 管理员　{len(ADMIN_IDS) or '未限制'} 人｜你是管理员：{me}\n"
         f"━━━━━━━━━━━━━━\n"
         f"版本对不上就是部署没生效",
@@ -554,7 +515,6 @@ def main():
     # 机会扫描：按可交易性排序，不是按涨幅
     app.add_handler(CommandHandler("scan", scan.scan_cmd))
     # 缓步增长：找每天一点点往上磨的币（和 /scan、/upstreak 都不同）
-    app.add_handler(CommandHandler("venue", venue.venue_cmd))
     app.add_handler(CommandHandler("access", access.access_cmd))
     app.add_handler(CommandHandler("allow", access.allow_cmd))
     app.add_handler(CommandHandler("deny", access.deny_cmd))
@@ -565,28 +525,16 @@ def main():
     app.add_handler(CommandHandler("events", events.events_cmd))
     # 规则回测：扣掉成本之后这套打法历史上是正还是负
     app.add_handler(CommandHandler("backtest", backtest.backtest_cmd))
-    # 个性化风控参数（会真的挡住仓位计算）+ 连亏自动降险
-    app.add_handler(CommandHandler("riskprofile", riskprofile.risk_profile_cmd))
-    app.add_handler(CommandHandler("riskset", riskprofile.risk_set_cmd))
     # 周报：看行为漂移而不是单周盈亏
     app.add_handler(CommandHandler("weekly", weekly.weekly_cmd))
-    # 虚拟盘止盈止损（和实盘条件单同构）
+    # 虚拟盘止盈止损
     app.add_handler(CommandHandler("vtpsl", vtrade.vtpsl))
-    # 密钥安全：权限体检 / 一键停手 / 操作审计
-    app.add_handler(CommandHandler("keycheck", keyguard.keycheck_cmd))
-    app.add_handler(CommandHandler("killswitch", keyguard.killswitch_cmd))
-    app.add_handler(CommandHandler("audit", keyguard.audit_cmd))
     # 备份恢复：有自动备份却没有恢复入口，等于备份只在"我知道去翻文件"时才有用
     app.add_handler(CommandHandler("restore", backup.restore_cmd))
     # AI 外发账户数据脱敏开关（AI 走第三方中转站，金额默认只给百分比）
     app.add_handler(CommandHandler("privacy", privacy.privacy_cmd))
     # 全部命令的按钮面板（从已注册 handler 自动生成，不手工维护清单）
     app.add_handler(CommandHandler("commands", cmdpanel.commands_cmd))
-    # 交易计划：一屏能执行 + 会自己失效
-    app.add_handler(CommandHandler("plan", plan.plan_cmd))
-    app.add_handler(CommandHandler("plans", plan.plans_cmd))
-    app.add_handler(CommandHandler("replan", plan.replan_cmd))
-    app.add_handler(CommandHandler("delplan", plan.delplan_cmd))
     app.add_handler(CommandHandler("fear", market.fear))
     app.add_handler(CommandHandler("gas", market.gas))
     app.add_handler(CommandHandler("gasalert", market.set_gas_alert))
@@ -650,21 +598,8 @@ def main():
     app.add_handler(CommandHandler("vcancel", vorders.vcancel_cmd))
     app.add_handler(CommandHandler("vhistory", vtrade.vhistory))
     app.add_handler(CommandHandler("vreset", vtrade.vreset))
-    # Bybit 实盘手动交易（管理员，默认模拟盘）
-    app.add_handler(CommandHandler("ropen", rtrade.ropen))
-    app.add_handler(CommandHandler("rclose", rtrade.rclose))
-    app.add_handler(CommandHandler("rpos", rtrade.rpos))
-    app.add_handler(CommandHandler("rbal", rtrade.rbal))
-    app.add_handler(CommandHandler("rorders", rtrade.rorders))
-    app.add_handler(CommandHandler("rcancel", rtrade.rcancel))
-    app.add_handler(CommandHandler("rtpsl", rtrade.rtpsl))
-    app.add_handler(CommandHandler("rliqalert", rtrade.rliqalert))
-    app.add_handler(CommandHandler("trade", rtrade.trade))
-    app.add_handler(CommandHandler("cockpit", cockpit.cockpit))  # 持仓驾驶舱
-    # 实盘复盘 / 风险守护 / 盘前简报（都读真实账户，管理员+私聊）
+    # 虚拟盘复盘
     app.add_handler(CommandHandler("rstats", rstats.rstats))
-    app.add_handler(CommandHandler("risk", riskguard.risk))
-    app.add_handler(CommandHandler("brief", brief.brief))
     # 播报（功能1）
     app.add_handler(CommandHandler("subscribe", broadcast.subscribe))
     app.add_handler(CommandHandler("unsubscribe", broadcast.unsubscribe))
@@ -694,10 +629,6 @@ def main():
     app.add_handler(CommandHandler("movers", movers.movers))
     app.add_handler(CommandHandler("weak", strategy.weak))
     app.add_handler(CommandHandler("momentum", strategy.momentum))
-    # 实盘网格（Bybit 永续，默认模拟盘；仅管理员）
-    app.add_handler(CommandHandler("gridstart", grid.grid_start))
-    app.add_handler(CommandHandler("gridstop", grid.grid_stop))
-    app.add_handler(CommandHandler("gridstatus", grid.grid_status))
     app.add_handler(CommandHandler("news", news.news))
     app.add_handler(CommandHandler("unlock", unlock.unlock))
     app.add_handler(CommandHandler("unlocks", unlock.unlocks))
@@ -765,7 +696,6 @@ def main():
     jq.run_repeating(market.check_gas_alerts, interval=300, first=100)  # Gas阈值提醒，每5分钟
     jq.run_repeating(arbitrage.scan_arb, interval=300, first=150)  # 套利监控扫描，每5分钟
     jq.run_repeating(whale_track.check_tracked, interval=600, first=200)  # 巨鲸地址追踪，每10分钟
-    jq.run_repeating(grid.poll_grids, interval=20, first=25)  # 网格成交轮询+反向补单，每20秒
     jq.run_repeating(monitor.tracked(watchpct.check_watchpct, "波动监控", 60), interval=60, first=35)  # 持续波动监控，每60秒
     # LP 撤出告警：跑路是几分钟内发生的事，但 DexScreener 的流动性本身几分钟才更新一次，
     # 5 分钟一轮既跟得上又不至于把接口打爆。
@@ -785,10 +715,7 @@ def main():
     jq.run_repeating(monitor.tracked(alpha.scan, "上币候选池", 3600),
                      interval=3600, first=420)
     jq.run_repeating(vtrade.check_liquidations, interval=60, first=50)  # 虚拟合约爆仓监控，每60秒
-    jq.run_repeating(monitor.tracked(rtrade.check_liq_alerts, "实盘爆仓预警", 60), interval=60, first=55)  # 实盘爆仓临近预警，每60秒
-    jq.run_repeating(monitor.tracked(riskguard.check_risk, "风险守护", 60), interval=60, first=70)  # 风险守护(保证金率/集中度/当日熔断/裸奔仓/BTC联动)，每60秒
     jq.run_repeating(monitor.tracked(condalert.check_conds, "条件提醒", 120), interval=120, first=80)  # 条件触发提醒(价格+指标组合)，每2分钟
-    jq.run_repeating(monitor.tracked(plan.check_plans, "交易计划", 120), interval=120, first=95)  # 交易计划生命周期(触发/止盈/失效/过期)，每2分钟
     jq.run_repeating(events.check_events, interval=300, first=110)  # 事件驱动预警(OI跳升/四象限切换/费率跨阈/盘口翻转)，每5分钟
     jq.run_repeating(fundextreme.scan_fex, interval=3600, first=240)  # 资金费极值订阅扫描，每小时
     # 微市值扫描的市值表：翻 16 页 + 限频退避要一两分钟，放后台建好，
@@ -804,7 +731,6 @@ def main():
     # 周报：每周一北京 9 点（job 时间是 UTC）
     jq.run_daily(weekly.weekly_report, time=datetime.time(hour=1, minute=0),
                  days=(0,))  # 每日总结，北京8点
-    jq.run_daily(brief.daily_brief, time=datetime.time(hour=0, minute=30))  # AI盘前简报，北京8:30（job时间是UTC）
     jq.run_daily(
         broadcast.daily_broadcast,
         time=datetime.time(hour=BROADCAST_HOUR, minute=BROADCAST_MINUTE)

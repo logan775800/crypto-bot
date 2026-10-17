@@ -6,7 +6,6 @@
 import pytest
 
 from handlers import backtest as bt
-from handlers import riskprofile as rp
 from handlers import weekly as wk
 
 
@@ -109,75 +108,6 @@ def test_render_states_no_lookahead():
                    "bars": 2, "stop_pct": 1.0}] * 30)
     txt = bt.render(s, "BTC", "1h", "trend", 900, 2.0, 0.11)
     assert "不许前视" in txt and "按止损算" in txt
-
-
-# ── 风控参数 ─────────────────────────────────────────────────────
-@pytest.fixture(autouse=True)
-def _clean_profile():
-    from storage import data
-    data["risk_profile"] = {}
-    yield
-    data["risk_profile"] = {}
-
-
-def test_defaults_when_unset():
-    assert rp.profile(1)["risk_pct"] == rp.DEFAULTS["risk_pct"]
-
-
-def test_set_and_read_back():
-    ok, _ = rp.set_param(1, "risk_pct", "0.3")
-    assert ok and rp.profile(1)["risk_pct"] == 0.3
-
-
-def test_reject_unknown_param():
-    ok, msg = rp.set_param(1, "nonsense", "1")
-    assert not ok and "没有这个参数" in msg
-
-
-def test_reject_factor_above_one():
-    """降险系数是「降到原来的多少」，>1 就成了加险。"""
-    ok, msg = rp.set_param(1, "streak_factor", "1.5")
-    assert not ok and "≤1" in msg
-
-
-def test_streak_cuts_risk_automatically():
-    """连亏后加倍捞回来是账户归零的标准路径——这条不需要用户判断力就生效。"""
-    eff, why = rp.effective_risk(1, streak=3)
-    assert eff == pytest.approx(rp.DEFAULTS["risk_pct"] * rp.DEFAULTS["streak_factor"])
-    assert "连亏" in why and "归零" in why
-
-
-def test_no_streak_no_cut():
-    eff, why = rp.effective_risk(1, streak=1)
-    assert eff == rp.DEFAULTS["risk_pct"] and why == ""
-
-
-def test_max_risk_caps_the_base():
-    rp.set_param(1, "risk_pct", "5")
-    rp.set_param(1, "max_risk_pct", "1")
-    eff, _ = rp.effective_risk(1, 0)
-    assert eff == 1.0
-
-
-def test_limits_block_too_many_positions():
-    poss = [{"side": "Buy", "positionValue": "100"}] * 5
-    hits = rp.check_limits(1, None, poss, 10_000)
-    assert any(hard for hard, _ in hits)
-
-
-def test_limits_block_same_side_overexposure():
-    poss = [{"side": "Buy", "positionValue": "19000"}]
-    plan = {"side": "long", "notional": 5000, "risk_pct": 0.5, "lev": 5}
-    hits = rp.check_limits(1, plan, poss, 10_000)
-    assert any("同向名义" in msg for _h, msg in hits)
-
-
-def test_leverage_over_limit_is_warning_not_block():
-    """护栏不是牢笼——全部硬拦会让人干脆关掉它。"""
-    plan = {"side": "long", "notional": 100, "risk_pct": 0.5, "lev": 50}
-    hits = rp.check_limits(1, plan, [], 10_000)
-    lev_hits = [(h, m) for h, m in hits if "杠杆" in m]
-    assert lev_hits and not lev_hits[0][0]
 
 
 # ── 周报行为画像 ─────────────────────────────────────────────────

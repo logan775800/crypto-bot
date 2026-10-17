@@ -1,146 +1,20 @@
-"""实盘复盘 /rstats —— 把 Bybit 的已平仓成绩单拉下来算清楚，再交给 AI 做行为诊断。
+"""复盘 /rstats —— 把虚拟盘的已平仓成绩单算清楚，再交给 AI 做行为诊断。
 
-设计要点（都是踩过的坑，改之前先看）：
-1. 盈亏**不自己算**。用 /v5/position/closed-pnl 的 closedPnl（交易所权威口径，已含手续费），
-   自己拿入场价出场价乘一遍必然对不上（滑点/分批/资金费）。
-2. closed-pnl 的 side 是**平仓单**方向：Sell 平的是多头，Buy 平的是空头。写反多空胜率就全反了。
-3. closed-pnl **不含开仓时间**，所以「持仓时长 vs 盈亏」要靠 /v5/execution/list 逐笔成交
-   还原净仓位 0→非0 的时刻。顺带 execType=Funding 的 execFee 就是真实资金费支出。
-4. 两个接口都有 **单次窗口 ≤7 天** 的硬限制 → 按 7 天切片 + cursor 翻页。
-
-只读，不会下任何单。管理员 + 私聊。
+数据源只有虚拟盘（v1.70.0 起实盘整体移除）。虚拟盘成交记录不联网、不需要密钥，
+任何人查的都是自己的。统计口径（胜率/盈亏比/期望值/回撤/亏损归因/时长/时段）
+仍按原来实盘那套写，虚拟盘记录在 load_virtual 里转成同一结构。
 """
 import time
 import logging
-import bisect
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from handlers.util import safe_reply, safe_edit, escape_md
-from bybit_trade import BybitError
 
 log = logging.getLogger(__name__)
 
-CHUNK_MS = 7 * 86400 * 1000   # Bybit 单次查询窗口上限
-MAX_PAGES = 40                # 每个切片的翻页上限，防异常时无限翻
 DEFAULT_DAYS = 30
 MAX_DAYS = 180
-
-
-# ── 拉数（切片 + 翻页）──────────────────────────────────────────────
-async def _paged(fetch, start_ms, end_ms):
-    """按 7 天切片 + cursor 翻页拉全量。fetch(start, end, cursor) -> result dict。"""
-    out = []
-    t = start_ms
-    while t < end_ms:
-        seg_end = min(t + CHUNK_MS, end_ms)
-        cursor = None
-        for _ in range(MAX_PAGES):
-            r = await fetch(t, seg_end, cursor)
-            rows = r.get("list") or []
-            out.extend(rows)
-            cursor = r.get("nextPageCursor")
-            if not cursor or not rows:
-                break
-        t = seg_end
-    return out
-
-
-async def fetch_closed(client, days):
-    end = int(time.time() * 1000)
-    start = end - int(days) * 86400 * 1000
-    rows = await _paged(
-        lambda s, e, c: client.closed_pnl(start_ms=s, end_ms=e, cursor=c), start, end)
-    # 同一笔可能在切片边界重复拉到，按 orderId+updatedTime 去重
-    seen, uniq = set(), []
-    for r in rows:
-        k = (r.get("orderId"), r.get("updatedTime"), r.get("closedSize"))
-        if k in seen:
-            continue
-        seen.add(k)
-        uniq.append(r)
-    uniq.sort(key=lambda x: int(x.get("updatedTime") or 0))
-    return uniq
-
-
-async def fetch_execs(client, days):
-    end = int(time.time() * 1000)
-    start = end - int(days) * 86400 * 1000
-    rows = await _paged(
-        lambda s, e, c: client.executions(start_ms=s, end_ms=e, cursor=c), start, end)
-    seen, uniq = set(), []
-    for r in rows:
-        k = r.get("execId")
-        if k and k in seen:
-            continue
-        if k:
-            seen.add(k)
-        uniq.append(r)
-    return uniq
-
-
-# ── 规整 ───────────────────────────────────────────────────────────
-def norm_trade(r):
-    """closed-pnl 一行 → 统一结构。side 取的是**持仓**方向，不是平仓单方向。"""
-    closing = r.get("side")
-    return {
-        "symbol": r.get("symbol", "?"),
-        "side": "long" if closing == "Sell" else "short",
-        "pnl": float(r.get("closedPnl") or 0),
-        "entry": float(r.get("avgEntryPrice") or 0),
-        "exit": float(r.get("avgExitPrice") or 0),
-        "qty": float(r.get("closedSize") or 0),
-        "value": float(r.get("cumEntryValue") or 0),
-        "lev": float(r.get("leverage") or 0),
-        "ts": int(r.get("updatedTime") or r.get("createdTime") or 0),
-    }
-
-
-def open_times(execs):
-    """按币还原「从空仓开出新仓」的时刻列表（升序）。
-    execution 只有单笔方向，这里自己累计净仓位：0 → 非0 即为一次开仓。
-    仅在单向持仓(positionIdx=0)下成立——本 bot 全程用单向模式。"""
-    by, net = {}, {}
-    for e in sorted(execs, key=lambda x: int(x.get("execTime") or 0)):
-        if e.get("execType") != "Trade":
-            continue          # Funding/Settle 不动仓位
-        sym = e.get("symbol")
-        q = float(e.get("execQty") or 0)
-        if q <= 0 or not sym:
-            continue
-        d = q if e.get("side") == "Buy" else -q
-        prev = net.get(sym, 0.0)
-        cur = prev + d
-        if abs(prev) < 1e-12 and abs(cur) > 1e-12:
-            by.setdefault(sym, []).append(int(e.get("execTime") or 0))
-        # 浮点累计会留下 1e-15 级残渣，夹掉否则永远认为还有仓
-        net[sym] = 0.0 if abs(cur) < 1e-9 else cur
-    return by
-
-
-def attach_duration(trades, opens):
-    """给每笔平仓配上持仓时长：取该币在平仓时刻之前、最近的一次开仓时间。"""
-    for t in trades:
-        lst = opens.get(t["symbol"])
-        if not lst:
-            t["dur"] = None
-            continue
-        i = bisect.bisect_right(lst, t["ts"]) - 1
-        t["dur"] = (t["ts"] - lst[i]) / 1000.0 if i >= 0 else None
-    return trades
-
-
-def funding_cost(execs):
-    """资金费净支出 {币: USDT}。Bybit 里 execFee 为正 = 你付钱，为负 = 你收钱。"""
-    tot = {}
-    for e in execs:
-        if e.get("execType") != "Funding":
-            continue
-        sym = e.get("symbol")
-        if not sym:
-            continue
-        tot[sym] = tot.get(sym, 0.0) + float(e.get("execFee") or 0)
-    return tot
 
 
 # ── 统计 ───────────────────────────────────────────────────────────
@@ -233,14 +107,14 @@ def _hour_bucket(t):
 
 
 # ── 虚拟盘数据源 ────────────────────────────────────────────────
-# 复盘这一整层（亏损归因、行为画像、计划vs实际、周报）本来只认实盘，
+# 复盘这一整层（亏损归因、行为画像、周报）最早只认实盘，
 # 于是「先用虚拟盘练手」的阶段，最有价值的诊断反而一个都用不上——
 # 而那个阶段恰恰最需要诊断，因为习惯就是在那时候养成的。
 # 虚拟盘的成交记录字段够齐，转成同一套结构就能复用全部分析。
 
 
 def load_virtual(uid, days=DEFAULT_DAYS):
-    """虚拟盘成交 → 与实盘同构的 trade 列表。不联网。"""
+    """虚拟盘成交 → 统一的 trade 列表（沿用原实盘 closed-pnl 的结构）。不联网。"""
     from storage import data as _d
     a = (_d.get("vtrade") or {}).get(str(uid)) or {}
     cutoff = time.time() - int(days) * 86400
@@ -262,7 +136,7 @@ def load_virtual(uid, days=DEFAULT_DAYS):
             "qty": (margin * lev / float(h["entry"])) if h.get("entry") else 0.0,
             "value": float(h.get("value") or margin * lev),
             "lev": lev,
-            "ts": int(ts * 1000),        # 实盘那边是毫秒，口径要统一
+            "ts": int(ts * 1000),        # 统计口径是毫秒（沿用原实盘结构）
             "dur": h.get("dur"),
         })
     out.sort(key=lambda t: t["ts"])
@@ -270,7 +144,7 @@ def load_virtual(uid, days=DEFAULT_DAYS):
 
 
 def virtual_funding(uid, days=DEFAULT_DAYS):
-    """虚拟盘资金费净支出 {币: USDT}，口径与实盘的 funding_cost 一致。"""
+    """虚拟盘资金费净支出 {币: USDT}。正 = 付出，负 = 收到。"""
     from storage import data as _d
     a = (_d.get("vtrade") or {}).get(str(uid)) or {}
     cutoff = time.time() - int(days) * 86400
@@ -283,95 +157,6 @@ def virtual_funding(uid, days=DEFAULT_DAYS):
             sym = str(h.get("sym") or "?").upper()
             tot[sym] = tot.get(sym, 0.0) + f
     return tot
-
-
-# ── 计划 vs 实际 ────────────────────────────────────────────────
-# 「是否追单」以前只能靠"单笔亏损放大"这类间接标签去猜。有了 /plan 的历史计划，
-# 就能直接比对：计划的入场区在哪、实际成交在哪、差多少。
-# 这是行为归因里最硬的一块证据——它不依赖任何对意图的推测。
-CHASE_R = 0.25          # 实际成交偏离计划入场区超过止损距离的这个比例 = 追单
-
-
-def match_plans(trades, plans):
-    """把每笔成交和它对应的计划配上。
-
-    配对规则：同币、同方向、计划创建时间早于成交时间、且是**最近的**那份。
-    配不上的不猜——宁可少一条证据，也不能把 A 计划的价位算到 B 交易头上。
-    """
-    by_key = {}
-    for p in plans or []:
-        if not p.get("entry") or not p.get("stop"):
-            continue
-        key = (p.get("symbol"), p.get("side"))
-        by_key.setdefault(key, []).append(p)
-    for lst in by_key.values():
-        lst.sort(key=lambda x: x.get("created", 0))
-
-    out = []
-    for t in trades or []:
-        lst = by_key.get((t["symbol"], t["side"]))
-        if not lst or not t.get("entry"):
-            continue
-        ts = (t.get("ts") or 0) / 1000
-        prior = [p for p in lst if p.get("created", 0) <= ts]
-        if not prior:
-            continue
-        p = prior[-1]
-        lo, hi = min(p["entry"]), max(p["entry"])
-        risk = abs((lo + hi) / 2 - p["stop"])
-        if risk <= 0:
-            continue
-        # 偏离方向要看多空：做多在区间**上方**成交才叫追，下方成交是更好的价
-        if t["side"] == "long":
-            dev = t["entry"] - hi if t["entry"] > hi else min(0.0, t["entry"] - lo)
-        else:
-            dev = lo - t["entry"] if t["entry"] < lo else min(0.0, hi - t["entry"])
-        out.append({
-            "trade": t, "plan": p,
-            "plan_zone": (lo, hi), "actual": t["entry"],
-            "dev": dev, "dev_r": dev / risk,
-            "chased": dev / risk > CHASE_R,
-            "pnl": t["pnl"],
-        })
-    return out
-
-
-def chase_summary(matched):
-    """追单 vs 守纪律的结果对比。数字摆出来比任何说教都有用。"""
-    if not matched:
-        return None
-    chased = [m for m in matched if m["chased"]]
-    disc = [m for m in matched if not m["chased"]]
-
-    def agg(rows):
-        if not rows:
-            return None
-        n = len(rows)
-        pnl = sum(r["pnl"] for r in rows)
-        wins = sum(1 for r in rows if r["pnl"] > 0)
-        return {"n": n, "pnl": pnl, "win_rate": wins / n * 100, "avg": pnl / n}
-    return {"total": len(matched), "chased": agg(chased), "disciplined": agg(disc),
-            "avg_dev_r": sum(m["dev_r"] for m in matched) / len(matched)}
-
-
-def build_chase_text(trades, plans):
-    m = match_plans(trades, plans)
-    s = chase_summary(m)
-    if not s:
-        return ""
-    lines = ["", f"*计划 vs 实际*　配上计划的成交 {s['total']} 笔",
-             f"　平均偏离计划入场区 {s['avg_dev_r']:+.2f}R"]
-    for key, label in (("chased", f"追单（偏离>{CHASE_R}R）"), ("disciplined", "守在计划里")):
-        a = s[key]
-        if a:
-            lines.append(f"　{label}　{a['n']}笔　胜率{a['win_rate']:.0f}%　"
-                         f"合计 {_money(a['pnl'])}　均{_money(a['avg'])}/笔")
-    if s["chased"] and s["disciplined"]:
-        d = s["disciplined"]["avg"] - s["chased"]["avg"]
-        if d > 0:
-            lines.append(f"　→ 守纪律的单每笔多赚 {_money(d)}——追进去的钱是从盈亏比里扣的")
-    lines.append("只统计能配上历史计划的成交，配不上的不猜")
-    return "\n".join(lines)
 
 
 # ── 亏损归因 ────────────────────────────────────────────────────
@@ -460,12 +245,11 @@ def _dur_txt(sec):
 def build_stats_text(trades, days, fund=None, env=""):
     s = compute_stats(trades)
     if not s:
-        return (f"📊 *实盘复盘* {env}\n\n近 {days} 天没有已平仓记录。\n"
-                f"（Bybit 只保留近 2 年数据；刚换账户/刚开始交易是正常的）")
+        return f"📊 *复盘* {env}\n\n近 {days} 天没有已平仓记录。"
     rr_txt = "∞（还没亏过）" if s["rr"] == float("inf") else f"{s['rr']:.2f}"
     exp_emoji = "🟢" if s["expectancy"] > 0 else "🔴"
     lines = [
-        f"📊 *实盘复盘* 近{days}天 {env}",
+        f"📊 *复盘* 近{days}天 {env}",
         "━━━━━━━━━━━━━━",
         f"总盈亏 *{_money(s['total'])}* USDT｜{s['n']} 笔",
         f"胜率 {s['win_rate']:.1f}%（{s['wins']}胜 {s['losses']}负）",
@@ -480,14 +264,6 @@ def build_stats_text(trades, days, fund=None, env=""):
     attr = build_attribution_text(trades)
     if attr:
         lines.append(attr)
-    try:
-        from storage import data as _d
-        chase = build_chase_text(trades, _d.get("plans") or [])
-        if chase:
-            lines.append(chase)
-    except Exception as e:
-        log.warning(f"计划vs实际对比失败: {e}")
-
     # 币种：最亏的 5 个
     by_sym = _agg(trades, lambda t: t["symbol"].replace("USDT", ""))
     if by_sym:
@@ -539,13 +315,13 @@ def build_stats_text(trades, days, fund=None, env=""):
             lines.append("　" + "、".join(
                 f"{escape_md(k.replace('USDT',''))} {v:+,.2f}" for k, v in top))
 
-    lines.append("\n⚠️ 数据直读 Bybit，不构成投资建议")
+    lines.append("\n⚠️ 数据来自虚拟盘，不构成投资建议")
     return "\n".join(lines)
 
 
 # ── AI 复盘 ────────────────────────────────────────────────────────
 AI_SYSTEM = (
-    "你是一个加密永续合约交易者的复盘教练。用户给你的是他**真实账户**的成绩单统计。"
+    "你是一个加密永续合约交易者的复盘教练。用户给你的是他**虚拟盘**的成绩单统计。"
     "你的任务不是安慰他，也不是预测行情，而是从这些数字里找出**可改的行为模式**。\n\n"
     "要求：\n"
     "1) 先一句话给整体判断：这套打法目前是正期望还是负期望，主要漏在哪。\n"
@@ -634,26 +410,13 @@ async def build_ai_review(trades, days, fund=None):
         return "没有可复盘的交易记录"
     from handlers.ai import ask_ai_messages
     reply = await ask_ai_messages(
-        [{"role": "user", "content": f"这是我真实账户的交易成绩单，帮我复盘：\n\n{digest}"}],
+        [{"role": "user", "content": f"这是我虚拟盘的交易成绩单，帮我复盘：\n\n{digest}"}],
         system=AI_SYSTEM)
     return reply
 
 
 # ── 命令 ───────────────────────────────────────────────────────────
-async def _load(days):
-    """拉齐一次复盘所需的全部数据。执行明细拉失败不致命（只是没有时长/资金费）。"""
-    from handlers.rtrade import _client
-    client = _client()
-    closed = await fetch_closed(client, days)
-    trades = [norm_trade(r) for r in closed]
-    fund = None
-    try:
-        execs = await fetch_execs(client, days)
-        attach_duration(trades, open_times(execs))
-        fund = funding_cost(execs)
-    except Exception as e:
-        log.warning(f"复盘拉成交明细失败(降级：无持仓时长/资金费): {e}")
-    return trades, fund
+ENV = "🎮虚拟盘"
 
 
 def _kb(days):
@@ -662,67 +425,38 @@ def _kb(days):
         [InlineKeyboardButton("7天", callback_data="rsd:7"),
          InlineKeyboardButton("30天", callback_data="rsd:30"),
          InlineKeyboardButton("90天", callback_data="rsd:90")],
-        [InlineKeyboardButton("🎛 交易台", callback_data="tpanel")],
     ])
 
 
+def _empty(days):
+    return (f"近 {days} 天没有虚拟盘平仓记录。\n"
+            f"先用 `/vopen BTC long 1000 10` 开一单练练。")
+
+
 async def rstats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/rstats [天数] [ai] [v] —— 成绩单。加 v 看虚拟盘，加 ai 出 AI 诊断。"""
-    from handlers.rtrade import _guard, _env_tag
+    """/rstats [天数] [ai] —— 虚拟盘成绩单，加 ai 出 AI 诊断。"""
     days = DEFAULT_DAYS
     want_ai = False
-    virtual = False
     for a in (context.args or []):
         low = a.lower()
         if low in ("ai", "复盘", "诊断"):
             want_ai = True
             continue
         if low in ("v", "虚拟", "vtrade", "模拟"):
-            virtual = True
-            continue
+            continue        # 以前用来从实盘切到虚拟盘，现在只有虚拟盘，照旧接受别报错
         try:
             days = max(1, min(int(a), MAX_DAYS))
         except ValueError:
             pass
-
-    # 虚拟盘不碰实盘接口，也就不需要密钥和管理员——练手阶段本来就该能用
-    if virtual:
-        uid = update.effective_user.id
-        trades = load_virtual(uid, days)
-        fund = virtual_funding(uid, days)
-        if not trades:
-            await safe_reply(update.message,
-                f"近 {days} 天没有虚拟盘平仓记录。\n"
-                f"先用 `/vopen BTC long 1000 10` 开一单练练。", parse_mode="Markdown")
-            return
-        text = build_stats_text(trades, days, fund, "🎮虚拟盘")
-        await safe_reply(update.message, text, parse_mode="Markdown")
-        if want_ai:
-            await _send_ai(update.message, trades, days, fund)
+    uid = update.effective_user.id
+    trades = load_virtual(uid, days)
+    if not trades:
+        await safe_reply(update.message, _empty(days), parse_mode="Markdown")
         return
-
-    if not await _guard(update):
-        return
-    await safe_reply(update.message,
-        f"📊 正在拉取近 {days} 天实盘记录…（按 7 天切片翻页，稍等）")
-    try:
-        trades, fund = await _load(days)
-    except RuntimeError:
-        await safe_reply(update.message, "❌ 未配置 BYBIT API 密钥")
-        return
-    except BybitError as e:
-        await safe_reply(update.message,
-            f"❌ 查询被拒：[{e.ret_code}] {e.ret_msg}\n"
-            f"（只读权限即可，若报权限不足请给 key 勾上「持仓/订单 读取」）")
-        return
-    except Exception as e:
-        log.error(f"rstats 拉数出错: {e}")
-        await safe_reply(update.message, f"❌ 拉取失败：{str(e)[:120]}")
-        return
-
-    text = build_stats_text(trades, days, fund, _env_tag())
-    await safe_reply(update.message, text, reply_markup=_kb(days), parse_mode="Markdown")
-    if want_ai and trades:
+    fund = virtual_funding(uid, days)
+    await safe_reply(update.message, build_stats_text(trades, days, fund, ENV),
+                     reply_markup=_kb(days), parse_mode="Markdown")
+    if want_ai:
         await _send_ai(update.message, trades, days, fund)
 
 
@@ -740,37 +474,20 @@ async def _send_ai(message, trades, days, fund):
 
 # ── 按钮回调（由 menu.button_handler 分发）──────────────────────────
 async def days_from_btn(query, context, days):
-    from handlers.rtrade import _btn_admin_ok, _env_tag
-    if not _btn_admin_ok(query):
-        await query.answer("仅管理员", show_alert=True)
+    uid = query.from_user.id
+    trades = load_virtual(uid, days)
+    if not trades:
+        await safe_edit(query, _empty(days), reply_markup=_kb(days), parse_mode="Markdown")
         return
-    await safe_edit(query, f"📊 拉取近 {days} 天…")
-    try:
-        trades, fund = await _load(days)
-    except RuntimeError:
-        await safe_edit(query, "❌ 未配置 BYBIT API 密钥")
-        return
-    except Exception as e:
-        log.error(f"rstats 按钮拉数出错: {e}")
-        await safe_edit(query, f"❌ 拉取失败：{str(e)[:120]}")
-        return
-    await safe_edit(query, build_stats_text(trades, days, fund, _env_tag()),
+    await safe_edit(query, build_stats_text(trades, days, virtual_funding(uid, days), ENV),
                     reply_markup=_kb(days), parse_mode="Markdown")
 
 
 async def ai_from_btn(query, context, days):
-    from handlers.rtrade import _btn_admin_ok
-    if not _btn_admin_ok(query):
-        await query.answer("仅管理员", show_alert=True)
-        return
-    await query.answer("AI 复盘中，稍等…")
-    try:
-        trades, fund = await _load(days)
-    except Exception as e:
-        log.error(f"AI 复盘按钮拉数出错: {e}")
-        await query.answer("拉取失败", show_alert=True)
-        return
+    uid = query.from_user.id
+    trades = load_virtual(uid, days)
     if not trades:
         await query.answer("这段时间没有已平仓记录", show_alert=True)
         return
-    await _send_ai(query.message, trades, days, fund)
+    await query.answer("AI 复盘中，稍等…")
+    await _send_ai(query.message, trades, days, virtual_funding(uid, days))

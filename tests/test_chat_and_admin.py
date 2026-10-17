@@ -1,7 +1,7 @@
 """AI 输出渲染、限流、多管理员——都出过线上问题。"""
 import types
 import config
-from handlers import chat, rtrade
+from handlers import chat
 
 
 def test_md_to_tg_converts_github_markdown():
@@ -45,10 +45,3 @@ def test_is_admin_supports_multiple_ids(monkeypatch):
 def test_is_admin_unrestricted_when_unset(monkeypatch):
     monkeypatch.setattr(config, "ADMIN_IDS", set())
     assert config.is_admin(12345)                        # 未配置时不限制（方便测试）
-
-
-def test_rtrade_symbol_and_kv_parsing():
-    assert rtrade._norm("btc") == "BTCUSDT"
-    assert rtrade._norm("ETHUSDT") == "ETHUSDT"
-    assert rtrade._parse_kv(["tp=68000", "sl=60000"]) == ("68000", "60000")
-    assert rtrade._parse_kv([]) == (None, None)

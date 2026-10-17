@@ -1,7 +1,7 @@
 import os
 
 # 当前代码版本（每次发布 tag 时同步 bump，/version 用它报告线上到底跑的是哪版）
-VERSION = "v1.69.1"
+VERSION = "v1.70.0"
 
 TOKEN = os.environ["BOT_TOKEN"]
 DATA_FILE = os.environ.get("DATA_FILE", "/app/data.json")
@@ -73,9 +73,3 @@ JENKINS_API_TOKEN = os.environ.get("JENKINS_API_TOKEN", "")        # 该用户�
 
 # 巨鲸地址追踪（Etherscan V2 API，免费key：etherscan.io/apis）
 ETHERSCAN_API_KEY = os.environ.get("ETHERSCAN_API_KEY", "")
-
-# Bybit 实盘网格（V5 API，永续合约）。⚠️ 默认模拟盘，务必先在模拟盘验证再切实盘。
-# BYBIT_TESTNET=true(默认) 走模拟盘 api-testnet.bybit.com；设为 false 才是实盘。
-BYBIT_API_KEY = os.environ.get("BYBIT_API_KEY", "")
-BYBIT_API_SECRET = os.environ.get("BYBIT_API_SECRET", "")
-BYBIT_TESTNET = os.environ.get("BYBIT_TESTNET", "true")

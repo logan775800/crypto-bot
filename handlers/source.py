@@ -365,7 +365,7 @@ _TITLE = {
     "def": "📡 *默认数据源*\n\n跟着它走的：价格预警、波动监控、持仓估值。\n"
            "「自动」= 哪家有这个币就用哪家（顺序 OKX → 币安 → Bybit → Gate）。\n"
            "小币常常只有 Gate 或 Bybit 有，指定成没有该币的所会取不到价。\n\n"
-           "不跟它走的（有意为之）：实盘交易只能是 Bybit（钱在那）；"
+           "不跟它走的（有意为之）："
            "虚拟合约固定用 Bybit 永续（它模拟的就是永续，换源会让爆仓价算歪）；"
            "扫描/图表/回测这些要整段 K 线的仍是 Bybit。",
 }
@@ -457,4 +457,3 @@ async def source_cmd(update, context):
     _sel(context, "def", ex, market)
     await safe_reply(update.message, panel_text("def", ex, market),
                      reply_markup=source_kb("def", ex, market), parse_mode="Markdown")
-

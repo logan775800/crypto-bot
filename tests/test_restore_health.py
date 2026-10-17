@@ -31,7 +31,7 @@ def test_apply_defaults_is_idempotent_and_fills_gaps():
     d = {"alerts": [1]}
     apply_defaults(d)
     assert d["alerts"] == [1]              # 已有的不覆盖
-    assert "contract_watch" in d and "risk_profile" in d
+    assert "contract_watch" in d and "weekly_subs" in d
     n = len(d)
     apply_defaults(d)
     assert len(d) == n                     # 再跑一次不变
@@ -85,7 +85,7 @@ def test_restore_fills_missing_new_fields(sandbox):
     """老备份没有后来新增的字段，恢复后必须补上而不是留空洞。"""
     p = _write(sandbox, "data_old.json", {"alerts": []})
     bk.do_restore(str(p), subs_only=False)
-    for k in ("risk_profile", "event_subs", "trading_disabled", "audit_log"):
+    for k in ("event_subs", "weekly_subs", "weekly_snap", "fex_subs"):
         assert k in data
 
 
@@ -115,26 +115,5 @@ def test_subs_check_flags_empty_subscriptions():
     from handlers.datameta import _check_subs
     data["contract_watch"] = []
     data["pump_watch"] = {}
-    rows, _killed = _check_subs()
+    rows = _check_subs()
     assert any("⚠️0" in r for r in rows)
-
-
-def test_subs_check_reports_killswitch():
-    from handlers.datameta import _check_subs
-    data["trading_disabled"] = True
-    try:
-        _rows, killed = _check_subs()
-        assert killed
-    finally:
-        data["trading_disabled"] = False
-
-
-def test_account_check_says_which_features_go_dark(monkeypatch):
-    """没配密钥时必须点名哪些功能是空的——这次事故最贵的部分就是没人说。"""
-    import asyncio
-    import bybit_trade
-    monkeypatch.setattr(bybit_trade, "BYBIT_API_KEY", "")
-    from handlers.datameta import _check_account
-    ok, msg, _extra = asyncio.run(_check_account())
-    assert not ok and "未配置密钥" in msg
-    assert "复盘" in msg or "周报" in msg

@@ -21,16 +21,8 @@ services:
       JENKINS_USER: ${JENKINS_USER:-}
       JENKINS_API_TOKEN: ${JENKINS_API_TOKEN:-}
       ETHERSCAN_API_KEY: ${ETHERSCAN_API_KEY:-}
-      # Bybit 实盘台/网格/AI查账户用。缺这三行 → 容器拿不到密钥，功能全部失效
-      BYBIT_API_KEY: ${BYBIT_API_KEY:-}
-      BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
-      BYBIT_TESTNET: ${BYBIT_TESTNET:-true}
-      # 币安交易（合约+现货）。默认测试网，改 false 才是实盘
-      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
-      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
-      BINANCE_TESTNET: ${BINANCE_TESTNET:-true}
-      # 实盘下单硬开关：off = 任何命令都开不了（给「我不做实盘」用）
-      LIVE_TRADING: ${LIVE_TRADING:-}
+      # v1.70.0 起没有实盘：BYBIT_*/BINANCE_*/LIVE_TRADING 不再传进容器，
+      # .env 里残留的那几行也不会被读到（白名单之外的变量进不了容器）
       # 频道搬运（用个人账号读订阅的频道）。没配就整个功能不启用。
       # ⚠️ TG_SESSION 等于账号凭证，别提交别外发
       TG_API_ID: ${TG_API_ID:-}

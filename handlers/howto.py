@@ -153,15 +153,14 @@ def pinned_text():
         "现货 /vbuy /vsell /vspot　委托 /vorders /vcancel　重来 /vreset\n\n"
 
         "━━━ 📅 复盘和风险 ━━━\n"
-        "/rstats 30 v 近30天模拟盘成绩单（加 ai 让它挑你的行为漏洞）\n"
-        "/weekly 周报　/plan 交易计划　/checklist 开仓自查\n"
-        "/risk 风险中心　/cockpit 持仓驾驶舱　/net 成本计算\n\n"
+        "/rstats 30 近30天模拟盘成绩单（加 ai 让它挑你的行为漏洞）\n"
+        "/weekly 周报　/checklist 开仓自查　/net 成本计算\n\n"
 
         "━━━ 💬 问它 ━━━\n"
         "群里 @机器人 或回复它的消息就能直接对话｜私聊 /ask 问题\n\n"
 
         "━━━ ⚙️ 设置 ━━━\n"
-        "/source 换默认数据源（一条命令切15个模块）　/venue 换交易所\n"
+        "/source 换默认数据源（一条命令切15个模块）\n"
         "/datacheck 系统体检　/version 当前版本　/changelog 更新记录\n\n"
 
         "━━━ 新人最容易卡的三件事 ━━━\n"

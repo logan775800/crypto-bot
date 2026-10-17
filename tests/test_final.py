@@ -1,10 +1,8 @@
-"""收尾五项：菜单引导式入口 / 计划vs成交 / 扫描新否决 / 虚拟盘止盈损 / 密钥闸门。"""
+"""收尾：菜单引导式入口 / 扫描新否决 / 虚拟盘止盈损。
+（计划vs成交、密钥闸门两组随实盘在 v1.70.0 删除。）"""
 import asyncio
 
-import pytest
-
-from handlers import menu, rstats, scan, vtrade
-from handlers import keyguard as kg
+from handlers import menu, scan, vtrade
 
 
 # ── 菜单：新功能必须有按钮入口 ───────────────────────────────────
@@ -16,10 +14,8 @@ def test_every_ask_entry_maps_to_a_real_handler():
         "sym": ("handlers.symbols", "sym_cmd"),
         "backtest": ("handlers.backtest", "backtest_cmd"),
         "datacheck": ("handlers.datameta", "datacheck"),
-        "plan": ("handlers.plan", "plan_cmd"),
         "achart": ("handlers.annotchart", "achart"),
         "events": ("handlers.events", "events_cmd"),
-        "risk": ("handlers.riskguard", "risk"),
     }
     for key, (_tip, cmd) in menu.ASK.items():
         assert cmd in table, f"{key} 没有对应的命令映射"
@@ -39,64 +35,9 @@ def test_new_commands_are_reachable_from_menu():
     """P1~P3 新增的功能不能只能靠打命令。"""
     blob = "".join(str(b.callback_data) for _t, rows in menu.CATS.values()
                    for r in rows for b in r)
-    for must in ("do:scan", "ask:net", "ask:backtest", "do:riskprofile",
+    for must in ("do:scan", "ask:net", "ask:backtest",
                  "do:weekly", "ask:events", "ask:sym"):
         assert must in blob, f"{must} 在菜单里找不到入口"
-
-
-# ── 计划 vs 实际成交 ─────────────────────────────────────────────
-def _plan(sym="BANKUSDT", side="long", lo=1.0, hi=1.1, stop=0.9, created=0):
-    return {"symbol": sym, "side": side, "entry": [lo, hi], "stop": stop,
-            "created": created}
-
-
-def _tr(entry, pnl=0.0, sym="BANKUSDT", side="long", ts=10_000):
-    return {"symbol": sym, "side": side, "entry": entry, "pnl": pnl,
-            "ts": ts * 1000, "dur": 600, "lev": 10, "value": 1000}
-
-
-def test_entry_inside_zone_is_not_chasing():
-    m = rstats.match_plans([_tr(1.05)], [_plan()])
-    assert m and not m[0]["chased"] and m[0]["dev"] <= 0
-
-
-def test_entry_above_zone_is_chasing_for_long():
-    """做多在计划区上方成交才叫追单——下方成交是拿到了更好的价。"""
-    m = rstats.match_plans([_tr(1.30)], [_plan()])
-    assert m and m[0]["chased"] and m[0]["dev"] > 0
-
-
-def test_entry_below_zone_is_not_chasing_for_long():
-    m = rstats.match_plans([_tr(0.95)], [_plan()])
-    assert m and not m[0]["chased"]
-
-
-def test_short_chasing_is_mirrored():
-    p = _plan(side="short", lo=1.0, hi=1.1, stop=1.3)
-    m = rstats.match_plans([_tr(0.80, side="short")], [p])
-    assert m and m[0]["chased"]
-
-
-def test_unmatched_trade_is_skipped_not_guessed():
-    """配不上计划的成交宁可不统计，也不能算到别的计划头上。"""
-    assert rstats.match_plans([_tr(1.05, sym="OTHERUSDT")], [_plan()]) == []
-
-
-def test_plan_created_after_trade_is_not_matched():
-    assert rstats.match_plans([_tr(1.05, ts=100)], [_plan(created=999_999)]) == []
-
-
-def test_chase_summary_splits_two_groups():
-    plans = [_plan()]
-    trades = [_tr(1.30, pnl=-50), _tr(1.05, pnl=30, ts=11_000)]
-    s = rstats.chase_summary(rstats.match_plans(trades, plans))
-    assert s["chased"]["n"] == 1 and s["disciplined"]["n"] == 1
-
-
-def test_chase_text_mentions_both_groups():
-    txt = rstats.build_chase_text([_tr(1.30, pnl=-50), _tr(1.05, pnl=30, ts=11_000)],
-                                  [_plan()])
-    assert "追单" in txt and "守在计划里" in txt
 
 
 # ── 扫描器新增否决 ───────────────────────────────────────────────
@@ -210,64 +151,3 @@ def test_fill_price_is_the_order_price_not_market():
     """条件单在触发价成交，用当前价会让模拟盘系统性优于实盘。"""
     _kind, px = vtrade._check_tpsl(_pos(sl=95), 90)
     assert px == 95
-
-
-# ── 密钥闸门 ─────────────────────────────────────────────────────
-@pytest.fixture(autouse=True)
-def _reset_switch():
-    from storage import data
-    data["trading_disabled"] = False
-    data["audit_log"] = []
-    yield
-    data["trading_disabled"] = False
-    data["audit_log"] = []
-
-
-def test_killswitch_blocks_opening_orders():
-    from bybit_trade import _guard_order
-    kg.set_trading(False)
-    with pytest.raises(RuntimeError) as e:
-        _guard_order({"symbol": "BTCUSDT", "side": "Buy", "reduceOnly": False})
-    assert "killswitch" in str(e.value)
-
-
-def test_killswitch_still_allows_closing():
-    """出事时最该畅通的恰恰是平仓——拦平仓会把人锁死在仓里。"""
-    from bybit_trade import _guard_order
-    kg.set_trading(False)
-    _guard_order({"symbol": "BTCUSDT", "side": "Sell", "reduceOnly": True})
-
-
-def test_orders_are_audited_even_when_allowed():
-    from storage import data
-    from bybit_trade import _guard_order
-    _guard_order({"symbol": "BTCUSDT", "side": "Buy", "reduceOnly": False})
-    assert any(r["action"] == "order" for r in data["audit_log"])
-
-
-def test_blocked_attempts_are_audited_too():
-    from storage import data
-    from bybit_trade import _guard_order
-    kg.set_trading(False)
-    with pytest.raises(RuntimeError):
-        _guard_order({"symbol": "BTCUSDT", "side": "Buy", "reduceOnly": False})
-    assert any(r["action"] == "order_blocked" for r in data["audit_log"])
-
-
-def test_withdraw_permission_is_flagged_loudly():
-    """有提现权限的 key 是唯一「泄露=直接丢钱」的配置，必须刺眼。"""
-    _rows, risky, _notes = kg._perm_lines({"permissions": {"Wallet": ["Withdraw"]},
-                                           "ips": ["1.2.3.4"]})
-    assert any("提现权限" in x for x in risky)
-
-
-def test_missing_ip_whitelist_is_flagged():
-    _rows, risky, _notes = kg._perm_lines({"permissions": {"Order": ["Order"]},
-                                           "ips": []})
-    assert any("IP 白名单" in x for x in risky)
-
-
-def test_clean_key_has_no_warnings():
-    _rows, risky, _notes = kg._perm_lines({"permissions": {"ContractTrade": ["Order"]},
-                                           "ips": ["1.2.3.4"]})
-    assert risky == []
